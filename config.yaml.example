@@ -1,0 +1,19 @@
+api:
+  finnhub:
+    key: ""  # Set via FINNHUB_API_KEY environment variable or put your key here
+    rate_limit: 60  # requests per minute (free tier)
+  alphavantage:
+    key: ""  # Set via ALPHAVANTAGE_API_KEY environment variable or put your key here
+    rate_limit: 5   # requests per minute (free tier)
+
+scanner:
+  workers: 10
+  timeout: 30m
+
+pattern:
+  consecutive_days: 3
+  morning_drop_threshold: -1.0  # percent (minimum drop in morning)
+  close_rise_threshold: 0.5     # percent (minimum rise at close vs open)
+  rebound_threshold: 2.0        # percent (minimum rise from morning low)
+  morning_window: 60            # minutes after market open
+  closing_window: 60            # minutes before market close
