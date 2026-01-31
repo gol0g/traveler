@@ -297,7 +297,14 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 }
 
 func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider) error {
-	fmt.Printf("Running backtest for %s (%d days)...\n\n", symbol, backtestDays)
+	// If single symbol, use single backtest; otherwise portfolio backtest
+	symbols := strings.Split(symbolList, ",")
+	if len(symbols) > 1 {
+		return runPortfolioBacktest(ctx, symbols, p)
+	}
+
+	fmt.Printf("Running single-stock backtest for %s (%d days)...\n", symbol, backtestDays)
+	fmt.Println("TIP: Use --symbols with multiple tickers for full portfolio simulation\n")
 
 	cfg := backtest.DefaultBacktestConfig()
 	cfg.InitialCapital = accountBalance
@@ -313,14 +320,60 @@ func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider
 		return nil
 	}
 
-	// Output backtest results
+	outputSingleBacktest(result, cfg.InitialCapital)
+	return nil
+}
+
+func runPortfolioBacktest(ctx context.Context, symbols []string, p provider.Provider) error {
 	fmt.Println("=" + strings.Repeat("=", 59))
-	fmt.Printf(" BACKTEST RESULTS: %s Pullback Strategy\n", symbol)
+	fmt.Println(" PORTFOLIO BACKTEST")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Printf("\n Symbols:    %d stocks\n", len(symbols))
+	fmt.Printf(" Period:     %d days\n", backtestDays)
+	fmt.Printf(" Capital:    %s\n", formatKRW(accountBalance))
+	fmt.Printf(" Max Positions: 5 simultaneous\n")
+	fmt.Printf(" Risk/Trade: 1%%\n\n")
+
+	cfg := backtest.DefaultPortfolioConfig()
+	cfg.InitialCapital = accountBalance
+
+	bt := backtest.NewPortfolioBacktester(cfg, p)
+	result, err := bt.Run(ctx, symbols, backtestDays)
+	if err != nil {
+		return fmt.Errorf("portfolio backtest failed: %w", err)
+	}
+
+	if result == nil || result.TotalTrades == 0 {
+		fmt.Println("No trades generated in backtest period.")
+		return nil
+	}
+
+	outputPortfolioBacktest(result)
+
+	// Monte Carlo
+	if len(result.Trades) >= 10 {
+		fmt.Println("\n--- Monte Carlo Simulation (1000 runs) ---")
+		mc := backtest.RunMonteCarlo(result.Trades, cfg.InitialCapital, 1000)
+		if mc != nil {
+			fmt.Printf(" Median Return:    %.1f%%\n", mc.MedianReturn)
+			fmt.Printf(" Best Case (95%%):  %.1f%%\n", mc.BestCase)
+			fmt.Printf(" Worst Case (5%%):  %.1f%%\n", mc.WorstCase)
+			fmt.Printf(" Ruin Probability: %.1f%%\n", mc.RuinProbability)
+		}
+	}
+
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	return nil
+}
+
+func outputSingleBacktest(result *backtest.BacktestResult, initialCapital float64) {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Printf(" SINGLE STOCK BACKTEST\n")
 	fmt.Println("=" + strings.Repeat("=", 59))
 
 	fmt.Printf("\n Period: %s\n", result.Period)
-	fmt.Printf(" Initial Capital: %s\n", formatKRW(cfg.InitialCapital))
-	fmt.Printf(" Final Capital:   %s\n", formatKRW(cfg.InitialCapital+result.TotalReturn))
+	fmt.Printf(" Initial Capital: %s\n", formatKRW(initialCapital))
+	fmt.Printf(" Final Capital:   %s\n", formatKRW(initialCapital+result.TotalReturn))
 
 	fmt.Println("\n--- Performance ---")
 	fmt.Printf(" Total Trades:    %d\n", result.TotalTrades)
@@ -351,7 +404,7 @@ func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider
 	// Monte Carlo simulation
 	if len(result.Trades) >= 10 {
 		fmt.Println("\n--- Monte Carlo Simulation (1000 runs) ---")
-		mc := backtest.RunMonteCarlo(result.Trades, cfg.InitialCapital, 1000)
+		mc := backtest.RunMonteCarlo(result.Trades, result.TotalReturn+10000000, 1000)
 		if mc != nil {
 			fmt.Printf(" Median Return:   %.1f%%\n", mc.MedianReturn)
 			fmt.Printf(" Best Case (95%%): %.1f%%\n", mc.BestCase)
@@ -361,8 +414,49 @@ func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
+}
 
-	return nil
+func outputPortfolioBacktest(result *backtest.PortfolioBacktestResult) {
+	fmt.Println("\n--- RESULTS ---")
+	fmt.Printf(" Period:          %s (%d trading days)\n", result.Period, result.TradingDays)
+	fmt.Printf(" Initial Capital: %s\n", formatKRW(result.InitialCapital))
+	fmt.Printf(" Final Equity:    %s\n", formatKRW(result.FinalEquity))
+	fmt.Printf(" Total Return:    %s (%.1f%%)\n", formatKRW(result.TotalReturn), result.TotalReturnPct)
+	fmt.Printf(" CAGR:            %.1f%%\n", result.CAGR)
+
+	fmt.Println("\n--- Trade Statistics ---")
+	fmt.Printf(" Total Trades:    %d\n", result.TotalTrades)
+	fmt.Printf(" Win Rate:        %.1f%% (%d W / %d L)\n",
+		result.WinRate, result.WinningTrades, result.LosingTrades)
+	fmt.Printf(" Avg Win:         %s (+%.2f%%)\n", formatKRW(result.AvgWin), result.AvgWinPct)
+	fmt.Printf(" Avg Loss:        %s (%.2f%%)\n", formatKRW(result.AvgLoss), result.AvgLossPct)
+	fmt.Printf(" Largest Win:     %s\n", formatKRW(result.LargestWin))
+	fmt.Printf(" Largest Loss:    %s\n", formatKRW(result.LargestLoss))
+
+	fmt.Println("\n--- Risk Metrics ---")
+	fmt.Printf(" Risk/Reward:     1:%.2f\n", result.RiskRewardRatio)
+	fmt.Printf(" Profit Factor:   %.2f\n", result.ProfitFactor)
+	fmt.Printf(" Max Drawdown:    %.1f%% (%d days)\n", result.MaxDrawdown, result.MaxDrawdownDays)
+	fmt.Printf(" Sharpe Ratio:    %.2f\n", result.SharpeRatio)
+	fmt.Printf(" Sortino Ratio:   %.2f\n", result.SortinoRatio)
+
+	fmt.Println("\n--- Expectancy ---")
+	fmt.Printf(" Per Trade:       %s\n", formatKRW(result.Expectancy))
+	fmt.Printf(" Per Trade (R):   %.2fR\n", result.ExpectancyR)
+
+	fmt.Println("\n--- Position Management ---")
+	fmt.Printf(" Avg Positions:   %.1f\n", result.AvgPositions)
+	fmt.Printf(" Max Pos Days:    %d\n", result.MaxPositionsHit)
+	fmt.Printf(" Signals Skipped: %d (due to max positions)\n", result.SignalsSkipped)
+
+	fmt.Println("\n--- Kelly Criterion ---")
+	if result.KellyOptimal > 0 {
+		fmt.Printf(" Optimal Size:    %.1f%% of capital\n", result.KellyOptimal*100)
+		fmt.Printf(" Half-Kelly:      %.1f%% (recommended)\n", result.KellyHalf*100)
+	} else {
+		fmt.Println(" Optimal Size:    0% (strategy not profitable)")
+		fmt.Println(" Recommendation:  Do NOT trade this strategy as-is")
+	}
 }
 
 func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime time.Duration) error {
