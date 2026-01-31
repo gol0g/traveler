@@ -19,38 +19,44 @@ import (
 	"traveler/internal/config"
 	"traveler/internal/provider"
 	"traveler/internal/scanner"
+	"traveler/internal/strategy"
 	"traveler/internal/symbols"
 	"traveler/pkg/model"
 )
 
 var (
-	cfgFile     string
-	days        int
-	workers     int
-	dropPct     float64
-	risePct     float64
-	reboundPct  float64
-	symbolList  string
-	format      string
-	verbose     bool
+	cfgFile      string
+	days         int
+	workers      int
+	dropPct      float64
+	risePct      float64
+	reboundPct   float64
+	symbolList   string
+	format       string
+	verbose      bool
+	strategyName string
 )
 
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "traveler",
-		Short: "Detect stocks with morning-dip → closing-rise patterns",
-		Long: `Traveler scans US stocks (NYSE/NASDAQ) for a specific intraday pattern:
-- Morning dip: Stock drops significantly in the first hour of trading
-- Closing rise: Stock recovers and closes higher than the open
+		Short: "Stock pattern scanner with multiple strategies",
+		Long: `Traveler scans US stocks (NYSE/NASDAQ) using various trading strategies:
 
-This pattern, when occurring for multiple consecutive days, may indicate
-interesting trading opportunities.`,
+Strategies:
+  morning-dip  - Detect stocks that dip in morning and recover by close (counter-trend)
+  pullback     - Detect uptrending stocks pulling back to MA20 (trend-following)
+
+Examples:
+  traveler --strategy morning-dip --days 3
+  traveler --strategy pullback --symbols AAPL,MSFT,GOOGL`,
 		RunE: run,
 	}
 
 	// Flags
 	rootCmd.Flags().StringVar(&cfgFile, "config", "config.yaml", "config file path")
-	rootCmd.Flags().IntVar(&days, "days", 3, "minimum consecutive days with pattern")
+	rootCmd.Flags().StringVar(&strategyName, "strategy", "morning-dip", "strategy: morning-dip, pullback")
+	rootCmd.Flags().IntVar(&days, "days", 1, "minimum consecutive days with pattern (morning-dip)")
 	rootCmd.Flags().IntVar(&workers, "workers", 10, "number of parallel workers")
 	rootCmd.Flags().Float64Var(&dropPct, "drop", -1.0, "minimum morning drop percentage (negative value)")
 	rootCmd.Flags().Float64Var(&risePct, "rise", 0.5, "minimum close rise percentage")
@@ -148,7 +154,19 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no stocks to scan")
 	}
 
-	fmt.Printf("Scanning %d US stocks for %d-day morning-dip pattern...\n\n", len(stocks), cfg.Pattern.ConsecutiveDays)
+	// Route to appropriate strategy
+	switch strategyName {
+	case "pullback":
+		return runPullbackStrategy(ctx, stocks, fallbackProvider, cfg)
+	case "morning-dip":
+		fallthrough
+	default:
+		return runMorningDipStrategy(ctx, stocks, fallbackProvider, cfg)
+	}
+}
+
+func runMorningDipStrategy(ctx context.Context, stocks []model.Stock, fallbackProvider *provider.FallbackProvider, cfg *config.Config) error {
+	fmt.Printf("Scanning %d stocks for %d-day morning-dip pattern...\n\n", len(stocks), cfg.Pattern.ConsecutiveDays)
 
 	// Create pattern config
 	patternCfg := analyzer.PatternConfig{
@@ -197,6 +215,140 @@ func run(cmd *cobra.Command, args []string) error {
 		return outputJSON(result)
 	}
 	return outputTable(result, cfg.Pattern.ConsecutiveDays)
+}
+
+func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProvider *provider.FallbackProvider, cfg *config.Config) error {
+	fmt.Printf("Scanning %d stocks for pullback opportunities...\n\n", len(stocks))
+
+	// Create pullback strategy
+	pullbackCfg := strategy.DefaultPullbackConfig()
+	strat := strategy.NewPullbackStrategy(pullbackCfg, fallbackProvider)
+
+	// Setup progress bar
+	bar := progressbar.NewOptions(len(stocks),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionSetDescription("Scanning"),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[green]█[reset]",
+			SaucerHead:    "[green]█[reset]",
+			SaucerPadding: "░",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	// Scan stocks
+	var signals []strategy.Signal
+	startTime := time.Now()
+
+	for i, stock := range stocks {
+		select {
+		case <-ctx.Done():
+			bar.Finish()
+			fmt.Println("\nScan interrupted")
+			break
+		default:
+		}
+
+		signal, err := strat.Analyze(ctx, stock)
+		if err == nil && signal != nil {
+			signals = append(signals, *signal)
+		}
+		bar.Set(i + 1)
+	}
+
+	bar.Finish()
+	fmt.Println()
+
+	scanTime := time.Since(startTime)
+
+	// Output results
+	if format == "json" {
+		return outputSignalsJSON(signals, len(stocks), scanTime)
+	}
+	return outputSignalsTable(signals, len(stocks), scanTime)
+}
+
+func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime time.Duration) error {
+	if len(signals) == 0 {
+		fmt.Println("No pullback opportunities found.")
+		fmt.Printf("Scanned %d stocks in %s\n", totalScanned, scanTime.Round(time.Second))
+		return nil
+	}
+
+	// Sort by probability descending
+	sort.Slice(signals, func(i, j int) bool {
+		return signals[i].Probability > signals[j].Probability
+	})
+
+	fmt.Printf("Found %d pullback opportunities:\n\n", len(signals))
+
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithHeader([]string{"Symbol", "Name", "Strength", "Prob", "Reason"}),
+	)
+
+	for _, s := range signals {
+		name := s.Stock.Name
+		if len(name) > 18 {
+			name = name[:18] + "..."
+		}
+
+		reason := s.Reason
+		if len(reason) > 45 {
+			reason = reason[:45] + "..."
+		}
+
+		table.Append([]string{
+			s.Stock.Symbol,
+			name,
+			fmt.Sprintf("%.0f", s.Strength),
+			fmt.Sprintf("%.0f%%", s.Probability),
+			reason,
+		})
+	}
+
+	table.Render()
+
+	// Print details for top signals
+	fmt.Println("\n--- Pullback Details ---")
+	count := 0
+	for _, s := range signals {
+		if count >= 5 {
+			break
+		}
+
+		fmt.Printf("\n[%s] %s\n", s.Stock.Symbol, s.Stock.Name)
+		fmt.Printf("  %s\n", s.Reason)
+		fmt.Printf("  Close: $%.2f | MA20: $%.2f | MA50: $%.2f\n",
+			s.Details["close"], s.Details["ma20"], s.Details["ma50"])
+		fmt.Printf("  Price vs MA50: %+.1f%% | Price vs MA20: %+.1f%%\n",
+			s.Details["price_vs_ma50_pct"], s.Details["price_vs_ma20_pct"])
+		if rsi, ok := s.Details["rsi14"]; ok && rsi > 0 {
+			fmt.Printf("  RSI(14): %.1f | Volume: %.1fx avg\n", rsi, s.Details["volume_ratio"])
+		}
+		fmt.Printf("  >> Probability: %.0f%% | Strength: %.0f\n", s.Probability, s.Strength)
+
+		count++
+	}
+
+	fmt.Printf("\nScanned %d stocks in %s\n", totalScanned, scanTime.Round(time.Second))
+	return nil
+}
+
+func outputSignalsJSON(signals []strategy.Signal, totalScanned int, scanTime time.Duration) error {
+	result := strategy.ScanResult{
+		Strategy:     "pullback",
+		TotalScanned: totalScanned,
+		SignalsFound: len(signals),
+		Signals:      signals,
+		ScanTime:     scanTime.String(),
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
 }
 
 func createProviders(cfg *config.Config) []provider.Provider {

@@ -289,6 +289,94 @@ func (p *AlphaVantageProvider) GetMultiDayIntraday(ctx context.Context, symbol s
 	return result, nil
 }
 
+// GetDailyCandles fetches daily OHLCV data
+func (p *AlphaVantageProvider) GetDailyCandles(ctx context.Context, symbol string, days int) ([]model.Candle, error) {
+	if err := p.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s?function=TIME_SERIES_DAILY&symbol=%s&outputsize=full&apikey=%s",
+		alphaVantageBaseURL, symbol, p.apiKey)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, &ProviderError{Provider: p.Name(), Err: err, Retryable: true}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		p.limiter.SignalRateLimited()
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("rate limited"), Retryable: true}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("status %d", resp.StatusCode), Retryable: false}
+	}
+
+	p.limiter.ResetBackoff()
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	// Check for error message
+	if errMsg, ok := raw["Error Message"]; ok {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("%s", errMsg), Retryable: false}
+	}
+
+	// Get daily time series
+	var timeSeries map[string]map[string]string
+	if tsRaw, ok := raw["Time Series (Daily)"]; ok {
+		if err := json.Unmarshal(tsRaw, &timeSeries); err != nil {
+			return nil, fmt.Errorf("parsing time series: %w", err)
+		}
+	} else {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("no daily data"), Retryable: false}
+	}
+
+	loc, _ := time.LoadLocation("America/New_York")
+	candles := make([]model.Candle, 0, len(timeSeries))
+
+	for dateStr, values := range timeSeries {
+		t, err := time.ParseInLocation("2006-01-02", dateStr, loc)
+		if err != nil {
+			continue
+		}
+
+		open, _ := strconv.ParseFloat(values["1. open"], 64)
+		high, _ := strconv.ParseFloat(values["2. high"], 64)
+		low, _ := strconv.ParseFloat(values["3. low"], 64)
+		closePrice, _ := strconv.ParseFloat(values["4. close"], 64)
+		volume, _ := strconv.ParseInt(values["5. volume"], 10, 64)
+
+		candles = append(candles, model.Candle{
+			Time:   t,
+			Open:   open,
+			High:   high,
+			Low:    low,
+			Close:  closePrice,
+			Volume: volume,
+		})
+	}
+
+	// Sort by date ascending
+	sort.Slice(candles, func(i, j int) bool {
+		return candles[i].Time.Before(candles[j].Time)
+	})
+
+	if len(candles) > days {
+		candles = candles[len(candles)-days:]
+	}
+
+	return candles, nil
+}
+
 // GetSymbols returns an empty list - Alpha Vantage doesn't have a good symbols endpoint for free tier
 func (p *AlphaVantageProvider) GetSymbols(ctx context.Context, exchange string) ([]model.Stock, error) {
 	return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("symbol listing not supported"), Retryable: false}

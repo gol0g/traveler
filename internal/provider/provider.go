@@ -19,6 +19,9 @@ type Provider interface {
 	// GetMultiDayIntraday fetches intraday data for multiple days
 	GetMultiDayIntraday(ctx context.Context, symbol string, days int, interval int) ([]model.IntradayData, error)
 
+	// GetDailyCandles fetches daily OHLCV data for the specified number of days
+	GetDailyCandles(ctx context.Context, symbol string, days int) ([]model.Candle, error)
+
 	// GetSymbols returns the list of symbols for the given exchange
 	GetSymbols(ctx context.Context, exchange string) ([]model.Stock, error)
 
@@ -88,6 +91,19 @@ func (f *FallbackProvider) GetMultiDayIntraday(ctx context.Context, symbol strin
 	var lastErr error
 	for _, p := range f.providers {
 		data, err := p.GetMultiDayIntraday(ctx, symbol, days, interval)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// GetDailyCandles tries each provider in order
+func (f *FallbackProvider) GetDailyCandles(ctx context.Context, symbol string, days int) ([]model.Candle, error) {
+	var lastErr error
+	for _, p := range f.providers {
+		data, err := p.GetDailyCandles(ctx, symbol, days)
 		if err == nil {
 			return data, nil
 		}

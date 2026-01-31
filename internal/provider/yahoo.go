@@ -265,6 +265,104 @@ func (p *YahooProvider) GetMultiDayIntraday(ctx context.Context, symbol string, 
 	return results, nil
 }
 
+// GetDailyCandles fetches daily OHLCV data
+func (p *YahooProvider) GetDailyCandles(ctx context.Context, symbol string, days int) ([]model.Candle, error) {
+	if err := p.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	loc, _ := time.LoadLocation("America/New_York")
+	now := time.Now().In(loc)
+
+	// Add buffer for weekends/holidays
+	rangeDays := days * 2
+	if rangeDays < 100 {
+		rangeDays = 100
+	}
+
+	endTime := now
+	startTime := now.AddDate(0, 0, -rangeDays)
+
+	url := fmt.Sprintf("%s/%s?period1=%d&period2=%d&interval=1d&includePrePost=false",
+		yahooBaseURL, symbol, startTime.Unix(), endTime.Unix())
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, &ProviderError{Provider: p.Name(), Err: err, Retryable: true}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		p.limiter.SignalRateLimited()
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("rate limited"), Retryable: true}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("status %d", resp.StatusCode), Retryable: false}
+	}
+
+	p.limiter.ResetBackoff()
+
+	var data yahooResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	if data.Chart.Error != nil {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("%s", data.Chart.Error.Description), Retryable: false}
+	}
+
+	if len(data.Chart.Result) == 0 || len(data.Chart.Result[0].Timestamp) == 0 {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("no data available"), Retryable: false}
+	}
+
+	result := data.Chart.Result[0]
+	quotes := result.Indicators.Quote[0]
+
+	candles := make([]model.Candle, 0, len(result.Timestamp))
+	for i := range result.Timestamp {
+		if i >= len(quotes.Open) || i >= len(quotes.High) || i >= len(quotes.Low) || i >= len(quotes.Close) {
+			continue
+		}
+		// Skip if values are 0 (missing data)
+		if quotes.Open[i] == 0 || quotes.Close[i] == 0 {
+			continue
+		}
+
+		var volume int64
+		if i < len(quotes.Volume) {
+			volume = quotes.Volume[i]
+		}
+
+		candles = append(candles, model.Candle{
+			Time:   time.Unix(result.Timestamp[i], 0).In(loc),
+			Open:   quotes.Open[i],
+			High:   quotes.High[i],
+			Low:    quotes.Low[i],
+			Close:  quotes.Close[i],
+			Volume: volume,
+		})
+	}
+
+	// Sort by date ascending (oldest first)
+	sort.Slice(candles, func(i, j int) bool {
+		return candles[i].Time.Before(candles[j].Time)
+	})
+
+	// Return only requested days
+	if len(candles) > days {
+		candles = candles[len(candles)-days:]
+	}
+
+	return candles, nil
+}
+
 // GetSymbols is not supported by Yahoo Finance unofficial API
 func (p *YahooProvider) GetSymbols(ctx context.Context, exchange string) ([]model.Stock, error) {
 	return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("symbol listing not supported"), Retryable: false}

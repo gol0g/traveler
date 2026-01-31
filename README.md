@@ -1,67 +1,57 @@
-# Traveler - 장초반 하락 → 종장 상승 패턴 탐지기
+# Traveler - 주식 패턴 스캐너
 
-미국 주식(NYSE/NASDAQ)에서 "장 초반 하락 후 종장 상승" 패턴이 연속으로 나타나는 종목을 찾아내는 Go CLI 프로그램입니다.
+미국 주식(NYSE/NASDAQ)에서 기술적 분석 패턴을 탐지하는 Go CLI 프로그램입니다.
 
-## 패턴 정의
+## 지원 전략
 
+### 1. Morning Dip (역추세)
 ```
 장 초반 하락 → 종장 상승 패턴:
+- 장 초반 (개장 후 1시간) 시가 대비 하락
+- 종가가 시가 대비 상승 또는 장중 최저점 대비 반등
+- 데이 트레이딩/스캘핑용
+```
 
-1. 장 초반 (개장 후 1시간)
-   - 시가 대비 최저점이 설정된 임계값 이하로 하락 (기본: -1%)
-
-2. 종장 조건 (둘 중 하나 충족)
-   - 종가가 시가 대비 상승 (기본: +0.5% 이상)
-   - 또는 종가가 장중 최저점 대비 반등 (기본: +2% 이상)
-
-3. 연속 감지
-   - 설정된 N일 연속 위 패턴 충족 시 탐지
+### 2. Pullback (추세 추종) - 권장
+```
+상승 추세 눌림목 매매:
+- 주가가 MA50 위에 있음 (상승 추세 확인)
+- 주가가 MA20 부근까지 조정
+- 거래량이 평균보다 적음 (매도세 약함)
+- 반전 신호 (양봉 또는 긴 아래꼬리)
+- 스윙 트레이딩용
 ```
 
 ## 설치
 
-### 요구사항
-- Go 1.21 이상
-
-### 빌드
-
 ```bash
-git clone <repository>
+git clone https://github.com/gol0g/traveler.git
 cd traveler
-
-# 의존성 설치
 go mod tidy
-
-# 빌드
 go build -o traveler ./cmd/traveler
-
-# Windows
-go build -o traveler.exe ./cmd/traveler
 ```
 
 ## 사용법
 
-### 기본 실행
+### 전략 선택
 
 ```bash
-# 기본 설정으로 실행 (3일 연속 패턴, 기본 종목 리스트)
-./traveler
+# 눌림목 전략 (추세 추종) - 권장
+./traveler --strategy pullback --symbols AAPL,MSFT,GOOGL,NVDA
 
-# 특정 종목만 검사
-./traveler --symbols AAPL,TSLA,NVDA,MSFT,GOOGL
+# Morning Dip 전략 (역추세)
+./traveler --strategy morning-dip --days 3
 
-# 5일 연속 패턴 검색
-./traveler --days 5
-
-# JSON 형식으로 출력
-./traveler --format json
+# 전체 종목 스캔
+./traveler --strategy pullback
 ```
 
 ### CLI 옵션
 
 | 옵션 | 기본값 | 설명 |
 |------|--------|------|
-| `--days` | 3 | 최소 연속 패턴 일수 |
+| `--strategy` | morning-dip | 전략 선택 (morning-dip, pullback) |
+| `--days` | 1 | 최소 연속 패턴 일수 (morning-dip) |
 | `--symbols` | (전체) | 검사할 종목 (쉼표로 구분) |
 | `--drop` | -1.0 | 장초반 최소 하락폭 (%) |
 | `--rise` | 0.5 | 종가 최소 상승폭 (%) |
@@ -71,96 +61,83 @@ go build -o traveler.exe ./cmd/traveler
 | `--config` | config.yaml | 설정 파일 경로 |
 | `--verbose` | false | 상세 출력 |
 
-### 사용 예시
-
-```bash
-# 기본 실행 (3일 연속 패턴)
-./traveler
-
-# 5일 연속 패턴, 하락폭 -2% 이상
-./traveler --days 5 --drop -2.0
-
-# 특정 종목 JSON 출력
-./traveler --symbols AAPL,TSLA,NVDA --format json
-
-# 상세 옵션 지정
-./traveler --days 3 \
-           --workers 10 \
-           --drop -1.0 \
-           --rise 0.5 \
-           --rebound 2.0
-```
-
 ### 출력 예시
 
+#### Pullback 전략
 ```
-Scanning 7 US stocks for 1-day morning-dip pattern...
+Scanning 10 stocks for pullback opportunities...
 
-Scanning 100% [████████████████████████████████████████] (7/7, 54 it/min)
+Found 4 pullback opportunities:
 
+┌────────┬───────┬──────────┬──────┬──────────────────────────────────────────────────┐
+│ SYMBOL │ NAME  │ STRENGTH │ PROB │                      REASON                      │
+├────────┼───────┼──────────┼──────┼──────────────────────────────────────────────────┤
+│ AMZN   │ AMZN  │ 59       │ 56%  │ Uptrend pullback to MA20, low volume (0.8x)...   │
+│ GOOGL  │ GOOGL │ 63       │ 48%  │ Uptrend pullback to MA20, bullish candle         │
+│ NVDA   │ NVDA  │ 59       │ 46%  │ Uptrend pullback to MA20, long lower shadow      │
+└────────┴───────┴──────────┴──────┴──────────────────────────────────────────────────┘
+
+--- Pullback Details ---
+
+[AMZN] AMZN
+  Uptrend pullback to MA20 (2.9% above MA50), low volume (0.8x), bullish candle
+  Close: $239.30 | MA20: $239.08 | MA50: $232.54
+  Price vs MA50: +2.9% | Price vs MA20: -0.6%
+  RSI(14): 40.3 | Volume: 0.8x avg
+  >> Probability: 56% | Strength: 59
+```
+
+#### Morning Dip 전략
+```
 Found 5 stocks with 1+ day morning-dip pattern:
 
 ┌────────┬───────┬──────┬─────────┬──────────┬──────┬────────┐
 │ SYMBOL │ NAME  │ DAYS │ AVG DIP │ AVG RISE │ PROB │ SIGNAL │
 ├────────┼───────┼──────┼─────────┼──────────┼──────┼────────┤
-│ GOOGL  │ GOOGL │ 1    │ -3.9%   │ +-0.8%   │ 35%  │ weak   │
-│ MSFT   │ MSFT  │ 1    │ -3.6%   │ +-1.5%   │ 32%  │ weak   │
-│ AMD    │ AMD   │ 1    │ -3.1%   │ +-1.0%   │ 31%  │ weak   │
-│ META   │ META  │ 1    │ -2.9%   │ +0.1%    │ 33%  │ weak   │
-│ NVDA   │ NVDA  │ 1    │ -1.7%   │ +0.6%    │ 27%  │ avoid  │
+│ GOOGL  │ GOOGL │ 1    │ -3.9%   │ +0.8%    │ 35%  │ weak   │
+│ MSFT   │ MSFT  │ 1    │ -3.6%   │ +1.5%    │ 32%  │ weak   │
 └────────┴───────┴──────┴─────────┴──────────┴──────┴────────┘
-
---- Technical Analysis Details ---
-
-[GOOGL] GOOGL
-  Pattern: 1 consecutive days | Strength: 72 | Consistency: 50
-  Trend: neutral (MA5: -1.8%, MA20: +0.0%)
-  >> Continuation Probability: 35% [WEAK]
-
-[MSFT] MSFT
-  Pattern: 1 consecutive days | Strength: 59 | Consistency: 50
-  Trend: neutral (MA5: -0.1%, MA20: +0.0%)
-  >> Continuation Probability: 32% [WEAK]
-
-Scanned 7 stocks in 9s
 ```
 
-## 기술적 분석 (Technical Analysis)
+## 전략 비교
 
-패턴이 감지된 종목에 대해 다음 날에도 패턴이 이어질 확률을 예측합니다.
+| 특성 | Morning Dip | Pullback |
+|------|-------------|----------|
+| 유형 | 역추세 (Counter-Trend) | 순추세 (Trend-Following) |
+| 용도 | 데이 트레이딩 | 스윙 트레이딩 |
+| 위험도 | 높음 (떨어지는 칼날) | 낮음 (검증된 상승세) |
+| 필요 데이터 | 분봉 | 일봉 (MA50, MA20) |
+| 권장 | 단기 스캘핑 | 중기 포지션 |
 
-### 분석 지표
+## Pullback 전략 상세
+
+### 진입 조건
+1. **상승 추세**: 현재가 > MA50 (장기 상승세 확인)
+2. **눌림 발생**: 저가가 MA20 부근 터치 (±2%)
+3. **약한 매도**: 거래량 < 20일 평균 (매도세 약함)
+4. **반전 신호**: 양봉 또는 긴 아래꼬리 (매수세 유입)
+
+### 신뢰도 점수
+- **Strength**: 조건 충족 정도 (0-100)
+- **Probability**: 성공 확률 추정 (0-100%)
+
+### 보조 지표
+- RSI(14): 50 이하면 추가 상승 여력
+- Volume: 0.7x 이하면 매도세 매우 약함
+- Bouncing: 전일 저가 > 전전일 저가면 반등 중
+
+## 기술적 분석 지표
 
 | 지표 | 설명 |
 |------|------|
-| **RSI(14)** | 과매수/과매도 판단 (30 이하: oversold, 70 이상: overbought) |
-| **Volume Ratio** | 당일 거래량 / 20일 평균 거래량 |
-| **MA5/MA20** | 5일/20일 이동평균 대비 현재가 위치 |
-| **Pattern Strength** | 패턴 강도 (하락폭 + 반등폭 기반) |
-| **Consistency** | 연속 패턴의 일관성 (표준편차 기반) |
-
-### 지속 확률 (Continuation Probability)
-
-다음 요소를 종합하여 0-100% 확률 산출:
-
-1. **패턴 강도** (25%): 하락폭과 반등폭이 클수록 높은 점수
-2. **일관성** (25%): 연속 패턴이 일정할수록 높은 점수
-3. **RSI** (20%): 과매도 상태(RSI < 30)일수록 반등 가능성 높음
-4. **거래량** (15%): 평균 대비 거래량 증가 시 높은 점수
-5. **연속 일수** (15%): 연속 일수가 길수록 높은 점수
-
-### 추천 등급
-
-| 등급 | 확률 | 의미 |
-|------|------|------|
-| **strong** | 70%+ | 강력 추천 - 패턴 지속 가능성 높음 |
-| **moderate** | 50-70% | 보통 - 관심 종목으로 모니터링 |
-| **weak** | 30-50% | 약함 - 추가 분석 필요 |
-| **avoid** | 30% 미만 | 회피 - 패턴 지속 가능성 낮음 |
+| **RSI(14)** | 과매수/과매도 (30 이하: oversold, 70 이상: overbought) |
+| **MA20/MA50** | 20일/50일 이동평균선 |
+| **Volume Ratio** | 당일 거래량 / 20일 평균 |
+| **Pattern Strength** | 패턴 강도 (0-100) |
 
 ## API 설정
 
-### 데이터 제공자
+### 지원 API
 
 | API | Rate Limit | 특징 |
 |-----|------------|------|
@@ -170,154 +147,54 @@ Scanned 7 stocks in 9s
 
 ### API 키 설정
 
-환경 변수로 설정:
-
 ```bash
-# Linux/macOS
-export FINNHUB_API_KEY="your_finnhub_key"
-export ALPHAVANTAGE_API_KEY="your_alphavantage_key"
+# 환경 변수
+export FINNHUB_API_KEY="your_key"
+export ALPHAVANTAGE_API_KEY="your_key"
 
-# Windows (PowerShell)
-$env:FINNHUB_API_KEY="your_finnhub_key"
-$env:ALPHAVANTAGE_API_KEY="your_alphavantage_key"
-
-# Windows (CMD)
-set FINNHUB_API_KEY=your_finnhub_key
-set ALPHAVANTAGE_API_KEY=your_alphavantage_key
-```
-
-또는 `config.yaml` 파일에서 설정:
-
-```yaml
+# 또는 config.yaml
 api:
   finnhub:
-    key: "your_finnhub_key"
-    rate_limit: 60
-  alphavantage:
-    key: "your_alphavantage_key"
-    rate_limit: 5
+    key: "your_key"
 ```
 
 ### API 키 발급
-
-- **Finnhub**: https://finnhub.io/ (무료 가입)
-- **Alpha Vantage**: https://www.alphavantage.co/support/#api-key (무료 발급)
-
-> API 키 없이도 Yahoo Finance 폴백으로 동작하지만, 안정성과 속도를 위해 Finnhub 키 설정을 권장합니다.
-
-## 설정 파일
-
-`config.yaml`:
-
-```yaml
-api:
-  finnhub:
-    key: ""  # 환경 변수 FINNHUB_API_KEY로 대체 가능
-    rate_limit: 60
-  alphavantage:
-    key: ""  # 환경 변수 ALPHAVANTAGE_API_KEY로 대체 가능
-    rate_limit: 5
-
-scanner:
-  workers: 10
-  timeout: 30m
-
-pattern:
-  consecutive_days: 3
-  morning_drop_threshold: -1.0  # 장초반 최소 하락폭 (%)
-  close_rise_threshold: 0.5     # 종가 최소 상승폭 (%)
-  rebound_threshold: 2.0        # 장중 최저점 대비 최소 반등폭 (%)
-  morning_window: 60            # 장초반 판단 시간 (분)
-  closing_window: 60            # 종장 판단 시간 (분)
-```
+- **Finnhub**: https://finnhub.io/
+- **Alpha Vantage**: https://www.alphavantage.co/support/#api-key
 
 ## 프로젝트 구조
 
 ```
 traveler/
-├── cmd/
-│   └── traveler/
-│       └── main.go           # CLI 진입점 (cobra)
+├── cmd/traveler/main.go          # CLI 진입점
 ├── internal/
-│   ├── config/
-│   │   └── config.go         # 설정 관리 (YAML)
-│   ├── provider/
-│   │   ├── provider.go       # Provider 인터페이스 + Fallback
-│   │   ├── finnhub.go        # Finnhub API 구현
-│   │   ├── alphavantage.go   # Alpha Vantage API 구현
-│   │   └── yahoo.go          # Yahoo Finance 구현 (폴백)
+│   ├── strategy/
+│   │   ├── strategy.go           # Strategy 인터페이스
+│   │   ├── pullback.go           # 눌림목 전략
+│   │   ├── morningdip.go         # Morning Dip 전략
+│   │   └── indicators.go         # 기술적 지표 계산
 │   ├── analyzer/
-│   │   ├── pattern.go        # 패턴 감지 로직
-│   │   ├── pattern_test.go   # 패턴 테스트
-│   │   ├── intraday.go       # 분봉 분석
-│   │   └── technical.go      # 기술적 분석 (RSI, MA, 지속확률)
-│   ├── scanner/
-│   │   └── scanner.go        # 병렬 스캐너 (Worker Pool)
-│   ├── symbols/
-│   │   └── loader.go         # NYSE/NASDAQ 종목 리스트 로더
-│   └── ratelimit/
-│       ├── limiter.go        # Rate Limiter (Token Bucket)
-│       └── limiter_test.go   # Rate Limiter 테스트
-├── pkg/
-│   └── model/
-│       └── types.go          # 공통 타입 정의
-├── config.yaml               # 설정 파일
-├── go.mod
-├── go.sum
+│   │   ├── pattern.go            # 패턴 감지 로직
+│   │   ├── intraday.go           # 분봉 분석
+│   │   └── technical.go          # 기술적 분석
+│   ├── provider/
+│   │   ├── provider.go           # Provider 인터페이스
+│   │   ├── finnhub.go            # Finnhub API
+│   │   ├── alphavantage.go       # Alpha Vantage API
+│   │   └── yahoo.go              # Yahoo Finance
+│   ├── scanner/scanner.go        # 병렬 스캐너
+│   ├── symbols/loader.go         # 종목 로더
+│   └── ratelimit/limiter.go      # Rate Limiter
+├── pkg/model/types.go            # 공통 타입
+├── config.yaml.example           # 설정 예시
 └── README.md
 ```
-
-## 아키텍처
-
-### 병렬 처리
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Main Scanner                          │
-├─────────────────────────────────────────────────────────┤
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │
-│  │ Worker1 │  │ Worker2 │  │ Worker3 │  │ Worker4 │    │
-│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘    │
-│       │            │            │            │          │
-│       └────────────┴─────┬──────┴────────────┘          │
-│                          │                               │
-│                  ┌───────▼───────┐                      │
-│                  │  Rate Limiter │ (API별 독립 관리)     │
-│                  └───────┬───────┘                      │
-│                          │                               │
-│     ┌────────────────────┼────────────────────┐         │
-│     │                    │                    │         │
-│  ┌──▼───┐           ┌────▼────┐          ┌───▼───┐     │
-│  │Finnhub│          │AlphaVant│          │ Yahoo │     │
-│  │60/min │          │ 5/min   │          │Fallback│    │
-│  └───────┘          └─────────┘          └───────┘     │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Rate Limiting
-
-- Token Bucket 알고리즘 사용
-- 각 API별 독립적 limiter 관리
-- 429 응답 시 Exponential Backoff 적용
 
 ## 테스트
 
 ```bash
-# 전체 테스트 실행
 go test ./... -v
-
-# 특정 패키지 테스트
-go test ./internal/analyzer -v
-go test ./internal/ratelimit -v
 ```
-
-## 주요 의존성
-
-- `github.com/spf13/cobra` - CLI 프레임워크
-- `github.com/olekukonko/tablewriter` - 테이블 출력
-- `github.com/schollz/progressbar/v3` - 진행률 표시
-- `golang.org/x/time/rate` - Rate Limiting
-- `gopkg.in/yaml.v3` - YAML 파싱
 
 ## 라이선스
 

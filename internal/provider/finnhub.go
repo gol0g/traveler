@@ -271,3 +271,80 @@ func (p *FinnhubProvider) GetSymbols(ctx context.Context, exchange string) ([]mo
 
 	return result, nil
 }
+
+// GetDailyCandles fetches daily OHLCV data
+func (p *FinnhubProvider) GetDailyCandles(ctx context.Context, symbol string, days int) ([]model.Candle, error) {
+	if err := p.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	from := now.AddDate(0, 0, -days*2) // Buffer for weekends
+
+	url := fmt.Sprintf("%s/stock/candle?symbol=%s&resolution=D&from=%d&to=%d&token=%s",
+		finnhubBaseURL, symbol, from.Unix(), now.Unix(), p.apiKey)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, &ProviderError{Provider: p.Name(), Err: err, Retryable: true}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		p.limiter.SignalRateLimited()
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("rate limited"), Retryable: true}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("status %d", resp.StatusCode), Retryable: false}
+	}
+
+	p.limiter.ResetBackoff()
+
+	var data finnhubCandle
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	if data.S == "no_data" || len(data.T) == 0 {
+		return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("no data available"), Retryable: false}
+	}
+
+	loc, _ := time.LoadLocation("America/New_York")
+	candles := make([]model.Candle, 0, len(data.T))
+	for i := range data.T {
+		if i >= len(data.O) || i >= len(data.H) || i >= len(data.L) || i >= len(data.C) {
+			continue
+		}
+
+		var volume int64
+		if i < len(data.V) {
+			volume = data.V[i]
+		}
+
+		candles = append(candles, model.Candle{
+			Time:   time.Unix(data.T[i], 0).In(loc),
+			Open:   data.O[i],
+			High:   data.H[i],
+			Low:    data.L[i],
+			Close:  data.C[i],
+			Volume: volume,
+		})
+	}
+
+	// Sort by date ascending
+	sort.Slice(candles, func(i, j int) bool {
+		return candles[i].Time.Before(candles[j].Time)
+	})
+
+	if len(candles) > days {
+		candles = candles[len(candles)-days:]
+	}
+
+	return candles, nil
+}
