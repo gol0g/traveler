@@ -69,7 +69,7 @@ Examples:
 	rootCmd.Flags().StringVar(&symbolList, "symbols", "", "comma-separated list of symbols to scan (default: all US stocks)")
 	rootCmd.Flags().StringVar(&format, "format", "table", "output format: table, json")
 	rootCmd.Flags().BoolVar(&verbose, "verbose", false, "show detailed output")
-	rootCmd.Flags().Float64Var(&accountBalance, "capital", 10000000, "account balance in KRW for position sizing")
+	rootCmd.Flags().Float64Var(&accountBalance, "capital", 100000, "account balance in USD for position sizing")
 	rootCmd.Flags().BoolVar(&runBacktest, "backtest", false, "run backtest on historical data")
 	rootCmd.Flags().IntVar(&backtestDays, "backtest-days", 365, "number of days for backtest")
 	rootCmd.Flags().StringVar(&universe, "universe", "", "stock universe for backtest: sp500, nasdaq100, test")
@@ -233,7 +233,7 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	}
 
 	fmt.Printf("Scanning %d stocks for pullback opportunities...\n", len(stocks))
-	fmt.Printf("Account: %s | Risk per trade: 1%%\n\n", formatKRW(accountBalance))
+	fmt.Printf("Account: %s | Risk per trade: 1%%\n\n", formatUSD(accountBalance))
 
 	// Create pullback strategy
 	pullbackCfg := strategy.DefaultPullbackConfig()
@@ -349,7 +349,7 @@ func runPortfolioBacktest(ctx context.Context, syms []string, p provider.Provide
 
 	fmt.Printf("\n Universe:      %s (%d symbols)\n", universeLabel, len(syms))
 	fmt.Printf(" Period:        %d trading days\n", backtestDays)
-	fmt.Printf(" Capital:       %s\n", formatKRW(accountBalance))
+	fmt.Printf(" Capital:       %s\n", formatUSD(accountBalance))
 	fmt.Printf(" Max Positions: 5 simultaneous\n")
 	fmt.Printf(" Risk/Trade:    1%%\n")
 	fmt.Printf(" Stop Loss:     2%%\n")
@@ -420,25 +420,25 @@ func outputSingleBacktest(result *backtest.BacktestResult, initialCapital float6
 	fmt.Println("=" + strings.Repeat("=", 59))
 
 	fmt.Printf("\n Period: %s\n", result.Period)
-	fmt.Printf(" Initial Capital: %s\n", formatKRW(initialCapital))
-	fmt.Printf(" Final Capital:   %s\n", formatKRW(initialCapital+result.TotalReturn))
+	fmt.Printf(" Initial Capital: %s\n", formatUSD(initialCapital))
+	fmt.Printf(" Final Capital:   %s\n", formatUSD(initialCapital+result.TotalReturn))
 
 	fmt.Println("\n--- Performance ---")
 	fmt.Printf(" Total Trades:    %d\n", result.TotalTrades)
 	fmt.Printf(" Win Rate:        %.1f%% (%d wins / %d losses)\n",
 		result.WinRate, result.WinningTrades, result.LosingTrades)
 	fmt.Printf(" Total Return:    %s (%.1f%%)\n",
-		formatKRW(result.TotalReturn), result.TotalReturnPct)
+		formatUSD(result.TotalReturn), result.TotalReturnPct)
 
 	fmt.Println("\n--- Risk Metrics ---")
-	fmt.Printf(" Avg Win:         %s (%.2f%%)\n", formatKRW(result.AvgWin), result.AvgWinPct)
-	fmt.Printf(" Avg Loss:        %s (%.2f%%)\n", formatKRW(result.AvgLoss), result.AvgLossPct)
+	fmt.Printf(" Avg Win:         %s (%.2f%%)\n", formatUSD(result.AvgWin), result.AvgWinPct)
+	fmt.Printf(" Avg Loss:        %s (%.2f%%)\n", formatUSD(result.AvgLoss), result.AvgLossPct)
 	fmt.Printf(" Risk/Reward:     1:%.2f\n", result.RiskRewardRatio)
 	fmt.Printf(" Profit Factor:   %.2f\n", result.ProfitFactor)
 	fmt.Printf(" Max Drawdown:    %.1f%%\n", result.MaxDrawdown)
 
 	fmt.Println("\n--- Expectancy ---")
-	fmt.Printf(" Per Trade:       %s\n", formatKRW(result.Expectancy))
+	fmt.Printf(" Per Trade:       %s\n", formatUSD(result.Expectancy))
 	fmt.Printf(" Per Trade (R):   %.2fR\n", result.ExpectancyR)
 
 	fmt.Println("\n--- Kelly Criterion ---")
@@ -467,19 +467,19 @@ func outputSingleBacktest(result *backtest.BacktestResult, initialCapital float6
 func outputPortfolioBacktest(result *backtest.PortfolioBacktestResult) {
 	fmt.Println("\n--- RESULTS ---")
 	fmt.Printf(" Period:          %s (%d trading days)\n", result.Period, result.TradingDays)
-	fmt.Printf(" Initial Capital: %s\n", formatKRW(result.InitialCapital))
-	fmt.Printf(" Final Equity:    %s\n", formatKRW(result.FinalEquity))
-	fmt.Printf(" Total Return:    %s (%.1f%%)\n", formatKRW(result.TotalReturn), result.TotalReturnPct)
+	fmt.Printf(" Initial Capital: %s\n", formatUSD(result.InitialCapital))
+	fmt.Printf(" Final Equity:    %s\n", formatUSD(result.FinalEquity))
+	fmt.Printf(" Total Return:    %s (%.1f%%)\n", formatUSD(result.TotalReturn), result.TotalReturnPct)
 	fmt.Printf(" CAGR:            %.1f%%\n", result.CAGR)
 
 	fmt.Println("\n--- Trade Statistics ---")
 	fmt.Printf(" Total Trades:    %d\n", result.TotalTrades)
 	fmt.Printf(" Win Rate:        %.1f%% (%d W / %d L)\n",
 		result.WinRate, result.WinningTrades, result.LosingTrades)
-	fmt.Printf(" Avg Win:         %s (+%.2f%%)\n", formatKRW(result.AvgWin), result.AvgWinPct)
-	fmt.Printf(" Avg Loss:        %s (%.2f%%)\n", formatKRW(result.AvgLoss), result.AvgLossPct)
-	fmt.Printf(" Largest Win:     %s\n", formatKRW(result.LargestWin))
-	fmt.Printf(" Largest Loss:    %s\n", formatKRW(result.LargestLoss))
+	fmt.Printf(" Avg Win:         %s (+%.2f%%)\n", formatUSD(result.AvgWin), result.AvgWinPct)
+	fmt.Printf(" Avg Loss:        %s (%.2f%%)\n", formatUSD(result.AvgLoss), result.AvgLossPct)
+	fmt.Printf(" Largest Win:     %s\n", formatUSD(result.LargestWin))
+	fmt.Printf(" Largest Loss:    %s\n", formatUSD(result.LargestLoss))
 
 	fmt.Println("\n--- Risk Metrics ---")
 	fmt.Printf(" Risk/Reward:     1:%.2f\n", result.RiskRewardRatio)
@@ -489,7 +489,7 @@ func outputPortfolioBacktest(result *backtest.PortfolioBacktestResult) {
 	fmt.Printf(" Sortino Ratio:   %.2f\n", result.SortinoRatio)
 
 	fmt.Println("\n--- Expectancy ---")
-	fmt.Printf(" Per Trade:       %s\n", formatKRW(result.Expectancy))
+	fmt.Printf(" Per Trade:       %s\n", formatUSD(result.Expectancy))
 	fmt.Printf(" Per Trade (R):   %.2fR\n", result.ExpectancyR)
 
 	fmt.Println("\n--- Position Management ---")
@@ -582,8 +582,8 @@ func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime ti
 			// Position Sizing
 			fmt.Println("\n  [POSITION SIZE]")
 			fmt.Printf("    Shares:   %d shares\n", g.PositionSize)
-			fmt.Printf("    Amount:   %s\n", formatKRW(g.InvestAmount))
-			fmt.Printf("    At Risk:  %s (%.1f%% of portfolio)\n", formatKRW(g.RiskAmount), g.RiskPct)
+			fmt.Printf("    Amount:   %s\n", formatUSD(g.InvestAmount))
+			fmt.Printf("    At Risk:  %s (%.1f%% of portfolio)\n", formatUSD(g.RiskAmount), g.RiskPct)
 
 			// Risk/Reward
 			fmt.Println("\n  [RISK/REWARD]")
@@ -633,13 +633,13 @@ func outputSignalsJSON(signals []strategy.Signal, totalScanned int, scanTime tim
 	return encoder.Encode(result)
 }
 
-func formatKRW(amount float64) string {
-	if amount >= 100000000 { // 1억 이상
-		return fmt.Sprintf("%.1f억원", amount/100000000)
-	} else if amount >= 10000 { // 1만 이상
-		return fmt.Sprintf("%.0f만원", amount/10000)
+func formatUSD(amount float64) string {
+	if amount >= 1000000 {
+		return fmt.Sprintf("$%.2fM", amount/1000000)
+	} else if amount >= 1000 {
+		return fmt.Sprintf("$%.1fK", amount/1000)
 	}
-	return fmt.Sprintf("%.0f원", amount)
+	return fmt.Sprintf("$%.2f", amount)
 }
 
 func createProviders(cfg *config.Config) []provider.Provider {
