@@ -156,15 +156,64 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		return nil, nil
 	}
 
+	// Calculate trading guide
+	probability := calculatePullbackProbability(strength, ind.RSI14, volumeRatio, bouncing)
+	guide := s.calculateTradeGuide(today.Close, ind.MA20, probability)
+
 	return &Signal{
 		Stock:       stock,
 		Type:        signalType,
 		Strategy:    s.Name(),
 		Strength:    strength,
-		Probability: calculatePullbackProbability(strength, ind.RSI14, volumeRatio, bouncing),
+		Probability: probability,
 		Reason:      reason,
 		Details:     details,
+		Guide:       guide,
 	}, nil
+}
+
+// calculateTradeGuide generates actionable trade guidance
+func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, winRate float64) *TradeGuide {
+	// Stop loss: below MA20 by a small margin
+	stopLossPct := 0.02 // 2% below entry
+	stopLoss := currentPrice * (1 - stopLossPct)
+
+	// Make sure stop is below MA20
+	if stopLoss > ma20*0.98 {
+		stopLoss = ma20 * 0.98
+		stopLossPct = (currentPrice - stopLoss) / currentPrice
+	}
+
+	riskPerShare := currentPrice - stopLoss
+
+	guide := &TradeGuide{
+		EntryPrice:  currentPrice,
+		EntryType:   "limit",
+		StopLoss:    stopLoss,
+		StopLossPct: stopLossPct * 100,
+
+		// Targets based on R-multiples
+		Target1:    currentPrice + riskPerShare*1.5, // 1.5R
+		Target1Pct: riskPerShare * 1.5 / currentPrice * 100,
+		Target2:    currentPrice + riskPerShare*2.5, // 2.5R
+		Target2Pct: riskPerShare * 2.5 / currentPrice * 100,
+
+		RiskRewardRatio: 2.0, // Targeting 2R
+	}
+
+	// Position sizing (will be calculated with account balance in CLI)
+	// Kelly fraction based on probability
+	if winRate > 0 {
+		avgWin := 2.0 // 2R target
+		avgLoss := 1.0
+		w := winRate / 100
+		guide.KellyFraction = (w*avgWin - (1-w)*avgLoss) / avgWin
+		if guide.KellyFraction < 0 {
+			guide.KellyFraction = 0
+		}
+	}
+
+	return guide
 }
 
 // calculatePullbackStrength calculates signal strength 0-100
