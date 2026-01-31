@@ -34,10 +34,11 @@ type TradeGuide struct {
 	PositionSize    int     `json:"position_size"`
 	InvestAmount    float64 `json:"invest_amount"`
 	RiskAmount      float64 `json:"risk_amount"`
-	RiskPct         float64 `json:"risk_pct"` // % of portfolio
+	RiskPct         float64 `json:"risk_pct"`        // Risk as % of portfolio
+	AllocationPct   float64 `json:"allocation_pct"`  // Investment as % of portfolio
 
 	// Kelly
-	KellyFraction   float64 `json:"kelly_fraction"`
+	KellyFraction float64 `json:"kelly_fraction"`
 }
 
 // Signal represents a trading signal from a strategy

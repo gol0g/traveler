@@ -233,7 +233,7 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	}
 
 	fmt.Printf("Scanning %d stocks for pullback opportunities...\n", len(stocks))
-	fmt.Printf("Account: %s | Risk per trade: 1%%\n\n", formatUSD(accountBalance))
+	fmt.Printf("Account: %s\n\n", formatUSD(accountBalance))
 
 	// Create pullback strategy
 	pullbackCfg := strategy.DefaultPullbackConfig()
@@ -255,7 +255,7 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 		}),
 	)
 
-	// Scan stocks
+	// Scan stocks - first pass to collect all signals
 	var signals []strategy.Signal
 	startTime := time.Now()
 
@@ -270,17 +270,6 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 
 		signal, err := strat.Analyze(ctx, stock)
 		if err == nil && signal != nil {
-			// Calculate position size based on account balance
-			if signal.Guide != nil {
-				riskAmount := accountBalance * 0.01 // 1% risk
-				riskPerShare := signal.Guide.EntryPrice - signal.Guide.StopLoss
-				if riskPerShare > 0 {
-					signal.Guide.PositionSize = int(riskAmount / riskPerShare)
-					signal.Guide.InvestAmount = float64(signal.Guide.PositionSize) * signal.Guide.EntryPrice
-					signal.Guide.RiskAmount = riskAmount
-					signal.Guide.RiskPct = 1.0
-				}
-			}
 			signals = append(signals, *signal)
 		}
 		bar.Set(i + 1)
@@ -289,13 +278,56 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	bar.Finish()
 	fmt.Println()
 
+	// Calculate position sizing based on number of signals
+	if len(signals) > 0 {
+		// Sort by probability first to prioritize best signals
+		sort.Slice(signals, func(i, j int) bool {
+			return signals[i].Probability > signals[j].Probability
+		})
+
+		// Limit to top 5 positions max
+		maxPositions := 5
+		if len(signals) > maxPositions {
+			signals = signals[:maxPositions]
+		}
+
+		// Calculate allocation per position
+		allocationPerPosition := accountBalance / float64(len(signals))
+		riskPerPosition := accountBalance * 0.01 / float64(len(signals)) // Total 1% risk split
+
+		for i := range signals {
+			if signals[i].Guide != nil {
+				g := signals[i].Guide
+				riskPerShare := g.EntryPrice - g.StopLoss
+				if riskPerShare > 0 {
+					// Calculate shares based on risk limit
+					sharesByRisk := int(riskPerPosition / riskPerShare)
+					// Calculate shares based on allocation limit
+					sharesByAllocation := int(allocationPerPosition / g.EntryPrice)
+					// Use the smaller of the two
+					g.PositionSize = sharesByRisk
+					if sharesByAllocation < sharesByRisk {
+						g.PositionSize = sharesByAllocation
+					}
+					if g.PositionSize < 1 {
+						g.PositionSize = 1
+					}
+					g.InvestAmount = float64(g.PositionSize) * g.EntryPrice
+					g.RiskAmount = float64(g.PositionSize) * riskPerShare
+					g.RiskPct = g.RiskAmount / accountBalance * 100
+					g.AllocationPct = g.InvestAmount / accountBalance * 100
+				}
+			}
+		}
+	}
+
 	scanTime := time.Since(startTime)
 
 	// Output results
 	if format == "json" {
 		return outputSignalsJSON(signals, len(stocks), scanTime)
 	}
-	return outputSignalsTable(signals, len(stocks), scanTime)
+	return outputSignalsTable(signals, len(stocks), scanTime, accountBalance)
 }
 
 func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider) error {
@@ -507,91 +539,87 @@ func outputPortfolioBacktest(result *backtest.PortfolioBacktestResult) {
 	}
 }
 
-func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime time.Duration) error {
+func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime time.Duration, capital float64) error {
 	if len(signals) == 0 {
 		fmt.Println("No pullback opportunities found.")
 		fmt.Printf("Scanned %d stocks in %s\n", totalScanned, scanTime.Round(time.Second))
 		return nil
 	}
 
-	// Sort by probability descending
-	sort.Slice(signals, func(i, j int) bool {
-		return signals[i].Probability > signals[j].Probability
-	})
+	// Calculate portfolio summary
+	var totalInvest, totalRisk float64
+	for _, s := range signals {
+		if s.Guide != nil {
+			totalInvest += s.Guide.InvestAmount
+			totalRisk += s.Guide.RiskAmount
+		}
+	}
+	cashRemaining := capital - totalInvest
 
-	fmt.Printf("Found %d pullback opportunities:\n\n", len(signals))
+	// Portfolio Summary Header
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println(" PORTFOLIO ALLOCATION SUMMARY")
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Printf(" Total Capital:     %s\n", formatUSD(capital))
+	fmt.Printf(" Recommended Picks: %d stocks\n", len(signals))
+	fmt.Printf(" Total Investment:  %s (%.1f%%)\n", formatUSD(totalInvest), totalInvest/capital*100)
+	fmt.Printf(" Total Risk:        %s (%.2f%%)\n", formatUSD(totalRisk), totalRisk/capital*100)
+	fmt.Printf(" Cash Remaining:    %s (%.1f%%)\n", formatUSD(cashRemaining), cashRemaining/capital*100)
+	fmt.Println(strings.Repeat("=", 60))
+
+	fmt.Printf("\nFound %d pullback opportunities (sorted by probability):\n\n", len(signals))
 
 	table := tablewriter.NewTable(os.Stdout,
-		tablewriter.WithHeader([]string{"Symbol", "Name", "Strength", "Prob", "Reason"}),
+		tablewriter.WithHeader([]string{"#", "Symbol", "Price", "Shares", "Amount", "Alloc%", "Risk$"}),
 	)
 
-	for _, s := range signals {
-		name := s.Stock.Name
-		if len(name) > 18 {
-			name = name[:18] + "..."
+	for i, s := range signals {
+		if s.Guide == nil {
+			continue
 		}
-
-		reason := s.Reason
-		if len(reason) > 45 {
-			reason = reason[:45] + "..."
-		}
+		g := s.Guide
 
 		table.Append([]string{
+			fmt.Sprintf("%d", i+1),
 			s.Stock.Symbol,
-			name,
-			fmt.Sprintf("%.0f", s.Strength),
-			fmt.Sprintf("%.0f%%", s.Probability),
-			reason,
+			fmt.Sprintf("$%.2f", g.EntryPrice),
+			fmt.Sprintf("%d", g.PositionSize),
+			formatUSD(g.InvestAmount),
+			fmt.Sprintf("%.1f%%", g.AllocationPct),
+			formatUSD(g.RiskAmount),
 		})
 	}
 
 	table.Render()
 
-	// Print actionable trade guides for top signals
+	// Print detailed trade guides
 	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println(" TRADE GUIDE - Top Opportunities")
+	fmt.Println(" DETAILED TRADE GUIDE")
 	fmt.Println(strings.Repeat("=", 60))
 
-	count := 0
-	for _, s := range signals {
-		if count >= 3 { // Top 3 only for actionable guide
-			break
-		}
-
-		fmt.Printf("\n[%d] %s (%s)\n", count+1, s.Stock.Symbol, s.Stock.Name)
+	for i, s := range signals {
+		fmt.Printf("\n[%d] %s (%s)\n", i+1, s.Stock.Symbol, s.Stock.Name)
 		fmt.Println(strings.Repeat("-", 50))
 
 		// Signal info
 		fmt.Printf("  Signal: %s\n", s.Reason)
-		fmt.Printf("  Win Probability: %.0f%% | Breakeven: 33%%\n", s.Probability)
+		fmt.Printf("  Win Probability: %.0f%%\n", s.Probability)
 
 		if s.Guide != nil {
 			g := s.Guide
 
 			// Entry/Exit Guide
 			fmt.Println("\n  [ENTRY]")
-			fmt.Printf("    Price:    $%.2f (%s order)\n", g.EntryPrice, g.EntryType)
+			fmt.Printf("    Buy %d shares @ $%.2f = %s\n", g.PositionSize, g.EntryPrice, formatUSD(g.InvestAmount))
+			fmt.Printf("    Allocation: %.1f%% of portfolio\n", g.AllocationPct)
 
 			fmt.Println("\n  [EXIT - Stop Loss]")
-			fmt.Printf("    Price:    $%.2f (%.1f%% below entry)\n", g.StopLoss, g.StopLossPct)
+			fmt.Printf("    Sell @ $%.2f (%.1f%% loss)\n", g.StopLoss, g.StopLossPct)
+			fmt.Printf("    Max Loss: %s (%.2f%% of portfolio)\n", formatUSD(g.RiskAmount), g.RiskPct)
 
-			fmt.Println("\n  [EXIT - Targets]")
-			fmt.Printf("    Target 1: $%.2f (+%.1f%%) - Take 50%% profit\n", g.Target1, g.Target1Pct)
-			fmt.Printf("    Target 2: $%.2f (+%.1f%%) - Take remaining\n", g.Target2, g.Target2Pct)
-
-			// Position Sizing
-			fmt.Println("\n  [POSITION SIZE]")
-			fmt.Printf("    Shares:   %d shares\n", g.PositionSize)
-			fmt.Printf("    Amount:   %s\n", formatUSD(g.InvestAmount))
-			fmt.Printf("    At Risk:  %s (%.1f%% of portfolio)\n", formatUSD(g.RiskAmount), g.RiskPct)
-
-			// Risk/Reward
-			fmt.Println("\n  [RISK/REWARD]")
-			fmt.Printf("    Ratio:    1:%.1f (target 2R)\n", g.RiskRewardRatio)
-			if g.KellyFraction > 0 {
-				fmt.Printf("    Kelly:    %.1f%% optimal, %.1f%% recommended (half)\n",
-					g.KellyFraction*100, g.KellyFraction*50)
-			}
+			fmt.Println("\n  [EXIT - Take Profit]")
+			fmt.Printf("    Target 1: $%.2f (+%.1f%%) - Sell 50%%\n", g.Target1, g.Target1Pct)
+			fmt.Printf("    Target 2: $%.2f (+%.1f%%) - Sell remaining\n", g.Target2, g.Target2Pct)
 		}
 
 		// Technical Details
@@ -607,8 +635,6 @@ func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime ti
 			}
 			fmt.Printf("    RSI(14): %.1f (%s) | Volume: %.1fx avg\n", rsi, rsiStatus, s.Details["volume_ratio"])
 		}
-
-		count++
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
