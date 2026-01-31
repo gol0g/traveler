@@ -40,6 +40,7 @@ var (
 	runBacktest    bool
 	backtestDays   int
 	universe       string
+	outputFile     string
 )
 
 func main() {
@@ -73,6 +74,7 @@ Examples:
 	rootCmd.Flags().BoolVar(&runBacktest, "backtest", false, "run backtest on historical data")
 	rootCmd.Flags().IntVar(&backtestDays, "backtest-days", 365, "number of days for backtest")
 	rootCmd.Flags().StringVar(&universe, "universe", "", "stock universe for backtest: sp500, nasdaq100, test")
+	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "save report to file (auto-generates filename if empty)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -643,6 +645,21 @@ func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime ti
 	fmt.Println(strings.Repeat("=", 60))
 
 	fmt.Printf("\nScanned %d stocks in %s\n", totalScanned, scanTime.Round(time.Second))
+
+	// Save report to file if requested
+	if outputFile != "" || len(signals) > 0 {
+		filename := outputFile
+		if filename == "" {
+			// Auto-generate filename with date
+			filename = fmt.Sprintf("report_%s.txt", time.Now().Format("2006-01-02_150405"))
+		}
+		if err := saveReport(filename, signals, capital, totalScanned, scanTime); err != nil {
+			fmt.Printf("Warning: failed to save report: %v\n", err)
+		} else {
+			fmt.Printf("Report saved to: %s\n", filename)
+		}
+	}
+
 	return nil
 }
 
@@ -657,6 +674,94 @@ func outputSignalsJSON(signals []strategy.Signal, totalScanned int, scanTime tim
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(result)
+}
+
+func saveReport(filename string, signals []strategy.Signal, capital float64, totalScanned int, scanTime time.Duration) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Calculate totals
+	var totalInvest, totalRisk float64
+	for _, s := range signals {
+		if s.Guide != nil {
+			totalInvest += s.Guide.InvestAmount
+			totalRisk += s.Guide.RiskAmount
+		}
+	}
+
+	// Write header
+	fmt.Fprintf(f, "TRAVELER STOCK SCAN REPORT\n")
+	fmt.Fprintf(f, "Generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(f, "%s\n\n", strings.Repeat("=", 60))
+
+	// Portfolio Summary
+	fmt.Fprintf(f, "PORTFOLIO ALLOCATION SUMMARY\n")
+	fmt.Fprintf(f, "%s\n", strings.Repeat("-", 40))
+	fmt.Fprintf(f, "Total Capital:     %s\n", formatUSD(capital))
+	fmt.Fprintf(f, "Stocks Scanned:    %d\n", totalScanned)
+	fmt.Fprintf(f, "Recommended Picks: %d\n", len(signals))
+	fmt.Fprintf(f, "Total Investment:  %s (%.1f%%)\n", formatUSD(totalInvest), totalInvest/capital*100)
+	fmt.Fprintf(f, "Total Risk:        %s (%.2f%%)\n", formatUSD(totalRisk), totalRisk/capital*100)
+	fmt.Fprintf(f, "Cash Remaining:    %s (%.1f%%)\n", formatUSD(capital-totalInvest), (capital-totalInvest)/capital*100)
+	fmt.Fprintf(f, "Scan Duration:     %s\n\n", scanTime.Round(time.Second))
+
+	// Quick Reference Table
+	fmt.Fprintf(f, "QUICK REFERENCE\n")
+	fmt.Fprintf(f, "%s\n", strings.Repeat("-", 40))
+	fmt.Fprintf(f, "%-6s %-10s %-8s %-10s %-8s %-10s\n", "#", "Symbol", "Price", "Shares", "Amount", "Risk")
+	fmt.Fprintf(f, "%s\n", strings.Repeat("-", 60))
+	for i, s := range signals {
+		if s.Guide != nil {
+			fmt.Fprintf(f, "%-6d %-10s $%-7.2f %-8d %-10s %-10s\n",
+				i+1, s.Stock.Symbol, s.Guide.EntryPrice, s.Guide.PositionSize,
+				formatUSD(s.Guide.InvestAmount), formatUSD(s.Guide.RiskAmount))
+		}
+	}
+	fmt.Fprintf(f, "\n")
+
+	// Detailed Trade Guide
+	fmt.Fprintf(f, "DETAILED TRADE GUIDE\n")
+	fmt.Fprintf(f, "%s\n\n", strings.Repeat("=", 60))
+
+	for i, s := range signals {
+		fmt.Fprintf(f, "[%d] %s (%s)\n", i+1, s.Stock.Symbol, s.Stock.Name)
+		fmt.Fprintf(f, "%s\n", strings.Repeat("-", 50))
+		fmt.Fprintf(f, "Signal: %s\n", s.Reason)
+		fmt.Fprintf(f, "Win Probability: %.0f%%\n\n", s.Probability)
+
+		if s.Guide != nil {
+			g := s.Guide
+			fmt.Fprintf(f, "[ENTRY]\n")
+			fmt.Fprintf(f, "  Buy %d shares @ $%.2f = %s\n", g.PositionSize, g.EntryPrice, formatUSD(g.InvestAmount))
+			fmt.Fprintf(f, "  Allocation: %.1f%% of portfolio\n\n", g.AllocationPct)
+
+			fmt.Fprintf(f, "[STOP LOSS]\n")
+			fmt.Fprintf(f, "  Sell @ $%.2f (%.1f%% loss)\n", g.StopLoss, g.StopLossPct)
+			fmt.Fprintf(f, "  Max Loss: %s (%.2f%% of portfolio)\n\n", formatUSD(g.RiskAmount), g.RiskPct)
+
+			fmt.Fprintf(f, "[TAKE PROFIT]\n")
+			fmt.Fprintf(f, "  Target 1: $%.2f (+%.1f%%) - Sell 50%%\n", g.Target1, g.Target1Pct)
+			fmt.Fprintf(f, "  Target 2: $%.2f (+%.1f%%) - Sell remaining\n\n", g.Target2, g.Target2Pct)
+		}
+
+		fmt.Fprintf(f, "[TECHNICALS]\n")
+		fmt.Fprintf(f, "  Close: $%.2f | MA20: $%.2f | MA50: $%.2f\n",
+			s.Details["close"], s.Details["ma20"], s.Details["ma50"])
+		if rsi, ok := s.Details["rsi14"]; ok && rsi > 0 {
+			fmt.Fprintf(f, "  RSI(14): %.1f | Volume: %.1fx avg\n", rsi, s.Details["volume_ratio"])
+		}
+		fmt.Fprintf(f, "\n%s\n\n", strings.Repeat("=", 60))
+	}
+
+	// Disclaimer
+	fmt.Fprintf(f, "DISCLAIMER\n")
+	fmt.Fprintf(f, "This is not financial advice. Always do your own research.\n")
+	fmt.Fprintf(f, "Past performance doesn't guarantee future results.\n")
+
+	return nil
 }
 
 func formatUSD(amount float64) string {
