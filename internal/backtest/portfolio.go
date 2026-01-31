@@ -134,23 +134,44 @@ type symbolData struct {
 
 // Run executes the portfolio backtest
 func (pb *PortfolioBacktester) Run(ctx context.Context, symbols []string, days int) (*PortfolioBacktestResult, error) {
+	return pb.RunWithProgress(ctx, symbols, days, nil)
+}
+
+// ProgressCallback reports loading progress
+type ProgressCallback func(loaded, total int, symbol string)
+
+// RunWithProgress executes the portfolio backtest with progress callback
+func (pb *PortfolioBacktester) RunWithProgress(ctx context.Context, symbols []string, days int, progress ProgressCallback) (*PortfolioBacktestResult, error) {
 	// Fetch historical data for all symbols
 	fmt.Printf("Loading historical data for %d symbols...\n", len(symbols))
 
 	allData := make(map[string][]model.Candle)
-	for _, sym := range symbols {
+	for i, sym := range symbols {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		candles, err := pb.provider.GetDailyCandles(ctx, sym, days+60) // Extra for MA calculation
 		if err != nil || len(candles) < 60 {
+			if progress != nil {
+				progress(i+1, len(symbols), sym+" (skipped)")
+			}
 			continue
 		}
 		allData[sym] = candles
+
+		if progress != nil {
+			progress(i+1, len(symbols), sym)
+		}
 	}
 
 	if len(allData) == 0 {
 		return nil, fmt.Errorf("no valid data for any symbol")
 	}
 
-	fmt.Printf("Loaded data for %d symbols\n", len(allData))
+	fmt.Printf("Loaded data for %d/%d symbols\n", len(allData), len(symbols))
 
 	// Find common date range
 	dates := pb.findCommonDates(allData, days)

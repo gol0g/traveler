@@ -39,6 +39,7 @@ var (
 	accountBalance float64
 	runBacktest    bool
 	backtestDays   int
+	universe       string
 )
 
 func main() {
@@ -71,6 +72,7 @@ Examples:
 	rootCmd.Flags().Float64Var(&accountBalance, "capital", 10000000, "account balance in KRW for position sizing")
 	rootCmd.Flags().BoolVar(&runBacktest, "backtest", false, "run backtest on historical data")
 	rootCmd.Flags().IntVar(&backtestDays, "backtest-days", 365, "number of days for backtest")
+	rootCmd.Flags().StringVar(&universe, "universe", "", "stock universe for backtest: sp500, nasdaq100, test")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -297,14 +299,25 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 }
 
 func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider) error {
-	// If single symbol, use single backtest; otherwise portfolio backtest
-	symbols := strings.Split(symbolList, ",")
-	if len(symbols) > 1 {
-		return runPortfolioBacktest(ctx, symbols, p)
+	// Check for universe-based backtest
+	if universe != "" {
+		universeSymbols := symbols.GetUniverse(symbols.Universe(universe))
+		if universeSymbols == nil {
+			return fmt.Errorf("unknown universe: %s (use: sp500, nasdaq100, test)", universe)
+		}
+		return runPortfolioBacktest(ctx, universeSymbols, p)
+	}
+
+	// If multiple symbols specified, use portfolio backtest
+	if symbolList != "" {
+		syms := strings.Split(symbolList, ",")
+		if len(syms) > 1 {
+			return runPortfolioBacktest(ctx, syms, p)
+		}
 	}
 
 	fmt.Printf("Running single-stock backtest for %s (%d days)...\n", symbol, backtestDays)
-	fmt.Println("TIP: Use --symbols with multiple tickers for full portfolio simulation\n")
+	fmt.Println("TIP: Use --universe sp500 for full portfolio simulation with automatic stock discovery\n")
 
 	cfg := backtest.DefaultBacktestConfig()
 	cfg.InitialCapital = accountBalance
@@ -324,21 +337,56 @@ func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider
 	return nil
 }
 
-func runPortfolioBacktest(ctx context.Context, symbols []string, p provider.Provider) error {
+func runPortfolioBacktest(ctx context.Context, syms []string, p provider.Provider) error {
 	fmt.Println("=" + strings.Repeat("=", 59))
-	fmt.Println(" PORTFOLIO BACKTEST")
+	fmt.Println(" PORTFOLIO BACKTEST - Full Strategy Simulation")
 	fmt.Println("=" + strings.Repeat("=", 59))
-	fmt.Printf("\n Symbols:    %d stocks\n", len(symbols))
-	fmt.Printf(" Period:     %d days\n", backtestDays)
-	fmt.Printf(" Capital:    %s\n", formatKRW(accountBalance))
+
+	universeLabel := "custom"
+	if universe != "" {
+		universeLabel = universe
+	}
+
+	fmt.Printf("\n Universe:      %s (%d symbols)\n", universeLabel, len(syms))
+	fmt.Printf(" Period:        %d trading days\n", backtestDays)
+	fmt.Printf(" Capital:       %s\n", formatKRW(accountBalance))
 	fmt.Printf(" Max Positions: 5 simultaneous\n")
-	fmt.Printf(" Risk/Trade: 1%%\n\n")
+	fmt.Printf(" Risk/Trade:    1%%\n")
+	fmt.Printf(" Stop Loss:     2%%\n")
+	fmt.Printf(" Target:        2R (4%%)\n\n")
+
+	fmt.Println(" This backtest simulates:")
+	fmt.Println("   1. Daily scan of ALL symbols in universe")
+	fmt.Println("   2. Automatic signal detection (no look-ahead)")
+	fmt.Println("   3. Position entry on next day's open")
+	fmt.Println("   4. Portfolio management with max 5 positions")
+	fmt.Println()
 
 	cfg := backtest.DefaultPortfolioConfig()
 	cfg.InitialCapital = accountBalance
 
 	bt := backtest.NewPortfolioBacktester(cfg, p)
-	result, err := bt.Run(ctx, symbols, backtestDays)
+
+	// Progress bar for loading
+	bar := progressbar.NewOptions(len(syms),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionSetDescription("Loading data"),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[cyan]█[reset]",
+			SaucerHead:    "[cyan]█[reset]",
+			SaucerPadding: "░",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	result, err := bt.RunWithProgress(ctx, syms, backtestDays, func(loaded, total int, sym string) {
+		bar.Set(loaded)
+	})
+	bar.Finish()
+	fmt.Println()
 	if err != nil {
 		return fmt.Errorf("portfolio backtest failed: %w", err)
 	}
