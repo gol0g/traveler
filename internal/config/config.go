@@ -11,8 +11,26 @@ import (
 // Config represents the application configuration
 type Config struct {
 	API     APIConfig     `yaml:"api"`
+	KIS     KISConfig     `yaml:"kis"`
+	Trader  TraderConfig  `yaml:"trader"`
 	Scanner ScannerConfig `yaml:"scanner"`
 	Pattern PatternConfig `yaml:"pattern"`
+}
+
+// KISConfig holds KIS API settings
+type KISConfig struct {
+	AppKey    string `yaml:"app_key"`
+	AppSecret string `yaml:"app_secret"`
+	AccountNo string `yaml:"account_no"` // XXXXXXXX-XX 형식
+}
+
+// TraderConfig holds auto-trading settings
+type TraderConfig struct {
+	DryRun          bool    `yaml:"dry_run"`
+	MaxPositions    int     `yaml:"max_positions"`
+	MaxPositionPct  float64 `yaml:"max_position_pct"`
+	RiskPerTrade    float64 `yaml:"risk_per_trade"`
+	MonitorInterval int     `yaml:"monitor_interval_sec"`
 }
 
 // APIConfig holds API provider configurations
@@ -56,6 +74,18 @@ func DefaultConfig() *Config {
 				RateLimit: 5,
 			},
 		},
+		KIS: KISConfig{
+			AppKey:    os.Getenv("KIS_APP_KEY"),
+			AppSecret: os.Getenv("KIS_APP_SECRET"),
+			AccountNo: os.Getenv("KIS_ACCOUNT_NO"),
+		},
+		Trader: TraderConfig{
+			DryRun:          true,
+			MaxPositions:    5,
+			MaxPositionPct:  0.20,
+			RiskPerTrade:    0.01,
+			MonitorInterval: 30,
+		},
 		Scanner: ScannerConfig{
 			Workers: 10,
 			Timeout: 30 * time.Second,
@@ -93,6 +123,15 @@ func Load(path string) (*Config, error) {
 	}
 	if key := os.Getenv("ALPHAVANTAGE_API_KEY"); key != "" {
 		cfg.API.AlphaVantage.Key = key
+	}
+	if key := os.Getenv("KIS_APP_KEY"); key != "" {
+		cfg.KIS.AppKey = key
+	}
+	if key := os.Getenv("KIS_APP_SECRET"); key != "" {
+		cfg.KIS.AppSecret = key
+	}
+	if key := os.Getenv("KIS_ACCOUNT_NO"); key != "" {
+		cfg.KIS.AccountNo = key
 	}
 
 	return cfg, nil

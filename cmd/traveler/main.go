@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,11 +18,14 @@ import (
 
 	"traveler/internal/analyzer"
 	"traveler/internal/backtest"
+	"traveler/internal/broker/kis"
 	"traveler/internal/config"
 	"traveler/internal/provider"
 	"traveler/internal/scanner"
 	"traveler/internal/strategy"
 	"traveler/internal/symbols"
+	"traveler/internal/trader"
+	"traveler/internal/web"
 	"traveler/pkg/model"
 )
 
@@ -41,6 +45,14 @@ var (
 	backtestDays   int
 	universe       string
 	outputFile     string
+	webMode        bool
+	webPort        int
+
+	// Auto-trade flags
+	autoTrade    bool
+	dryRun       bool
+	marketOrder  bool
+	monitorMode  bool
 )
 
 func main() {
@@ -73,8 +85,16 @@ Examples:
 	rootCmd.Flags().Float64Var(&accountBalance, "capital", 100000, "account balance in USD for position sizing")
 	rootCmd.Flags().BoolVar(&runBacktest, "backtest", false, "run backtest on historical data")
 	rootCmd.Flags().IntVar(&backtestDays, "backtest-days", 365, "number of days for backtest")
-	rootCmd.Flags().StringVar(&universe, "universe", "", "stock universe for backtest: sp500, nasdaq100, test")
+	rootCmd.Flags().StringVar(&universe, "universe", "", "stock universe: test, dow30, nasdaq100, sp500, midcap, russell")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "save report to file (auto-generates filename if empty)")
+	rootCmd.Flags().BoolVar(&webMode, "web", false, "start web UI server")
+	rootCmd.Flags().IntVar(&webPort, "port", 8080, "web server port")
+
+	// Auto-trade flags
+	rootCmd.Flags().BoolVar(&autoTrade, "auto-trade", false, "enable auto-trading via KIS API")
+	rootCmd.Flags().BoolVar(&dryRun, "dry-run", true, "dry-run mode (no actual orders)")
+	rootCmd.Flags().BoolVar(&marketOrder, "market-order", false, "use market orders instead of limit orders")
+	rootCmd.Flags().BoolVar(&monitorMode, "monitor", false, "position monitoring mode only")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -128,8 +148,34 @@ func run(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	// Web mode - start web server
+	if webMode {
+		return runWebServer(cfg, fallbackProvider)
+	}
+
+	// Monitor mode - only monitor existing positions
+	if monitorMode {
+		return runMonitorMode(cfg)
+	}
+
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Auto-trade mode: fetch account balance before scanning
+	if autoTrade && cfg.KIS.AppKey != "" {
+		creds := kis.Credentials{
+			AppKey:    cfg.KIS.AppKey,
+			AppSecret: cfg.KIS.AppSecret,
+			AccountNo: cfg.KIS.AccountNo,
+		}
+		kisBroker := kis.NewClient(creds)
+		if kisBroker.IsReady() {
+			if balance, err := kisBroker.GetBalance(ctx); err == nil && balance.TotalEquity > 0 {
+				accountBalance = balance.TotalEquity
+				fmt.Printf("KIS Account Balance: %s\n", formatUSD(accountBalance))
+			}
+		}
+	}
 	defer cancel()
 
 	// Handle interrupt
@@ -151,6 +197,17 @@ func run(cmd *cobra.Command, args []string) error {
 		stocks, err = loader.LoadSymbols(ctx, syms)
 		if err != nil {
 			return fmt.Errorf("loading symbols: %w", err)
+		}
+	} else if universe != "" {
+		// Use predefined universe
+		universeSymbols := symbols.GetUniverse(symbols.Universe(universe))
+		if universeSymbols == nil {
+			return fmt.Errorf("unknown universe: %s (use: test, dow30, nasdaq100, sp500, midcap, russell)", universe)
+		}
+		fmt.Printf("Loading %s universe (%d stocks)...\n", universe, len(universeSymbols))
+		stocks, err = loader.LoadSymbols(ctx, universeSymbols)
+		if err != nil {
+			return fmt.Errorf("loading universe symbols: %w", err)
 		}
 	} else {
 		// Load all US stocks
@@ -174,6 +231,28 @@ func run(cmd *cobra.Command, args []string) error {
 	default:
 		return runMorningDipStrategy(ctx, stocks, fallbackProvider, cfg)
 	}
+}
+
+func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle interrupt
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	server := web.NewServer(cfg, p, accountBalance, universe)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nShutting down web server...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer shutdownCancel()
+		server.Shutdown(shutdownCtx)
+	}()
+
+	return server.Start(webPort)
 }
 
 func runMorningDipStrategy(ctx context.Context, stocks []model.Stock, fallbackProvider *provider.FallbackProvider, cfg *config.Config) error {
@@ -272,6 +351,11 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 
 		signal, err := strat.Analyze(ctx, stock)
 		if err == nil && signal != nil {
+			// Always fetch candle data for chart visualization (needed for JSON report & web UI)
+			candles, candleErr := fallbackProvider.GetDailyCandles(ctx, stock.Symbol, 100)
+			if candleErr == nil {
+				signal.Candles = candles
+			}
 			signals = append(signals, *signal)
 		}
 		bar.Set(i + 1)
@@ -287,37 +371,56 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 			return signals[i].Probability > signals[j].Probability
 		})
 
+		// Filter out stocks that are too expensive (price > 20% of capital)
+		maxPositionValue := accountBalance * 0.2 // Max 20% per position
+		var affordableSignals []strategy.Signal
+		for _, s := range signals {
+			if s.Guide != nil && s.Guide.EntryPrice <= maxPositionValue {
+				affordableSignals = append(affordableSignals, s)
+			} else if s.Guide != nil {
+				if verbose {
+					fmt.Printf("  Skipping %s: price $%.2f exceeds max position value $%.2f\n",
+						s.Stock.Symbol, s.Guide.EntryPrice, maxPositionValue)
+				}
+			}
+		}
+		signals = affordableSignals
+
 		// Limit to top 5 positions max
 		maxPositions := 5
 		if len(signals) > maxPositions {
 			signals = signals[:maxPositions]
 		}
 
-		// Calculate allocation per position
-		allocationPerPosition := accountBalance / float64(len(signals))
-		riskPerPosition := accountBalance * 0.01 / float64(len(signals)) // Total 1% risk split
+		if len(signals) == 0 {
+			fmt.Printf("\nNo affordable signals found (max position value: %s)\n", formatUSD(maxPositionValue))
+		} else {
+			// Calculate allocation per position
+			allocationPerPosition := accountBalance / float64(len(signals))
+			riskPerPosition := accountBalance * 0.01 / float64(len(signals)) // Total 1% risk split
 
-		for i := range signals {
-			if signals[i].Guide != nil {
-				g := signals[i].Guide
-				riskPerShare := g.EntryPrice - g.StopLoss
-				if riskPerShare > 0 {
-					// Calculate shares based on risk limit
-					sharesByRisk := int(riskPerPosition / riskPerShare)
-					// Calculate shares based on allocation limit
-					sharesByAllocation := int(allocationPerPosition / g.EntryPrice)
-					// Use the smaller of the two
-					g.PositionSize = sharesByRisk
-					if sharesByAllocation < sharesByRisk {
-						g.PositionSize = sharesByAllocation
+			for i := range signals {
+				if signals[i].Guide != nil {
+					g := signals[i].Guide
+					riskPerShare := g.EntryPrice - g.StopLoss
+					if riskPerShare > 0 {
+						// Calculate shares based on risk limit
+						sharesByRisk := int(riskPerPosition / riskPerShare)
+						// Calculate shares based on allocation limit
+						sharesByAllocation := int(allocationPerPosition / g.EntryPrice)
+						// Use the smaller of the two
+						g.PositionSize = sharesByRisk
+						if sharesByAllocation < sharesByRisk {
+							g.PositionSize = sharesByAllocation
+						}
+						if g.PositionSize < 1 {
+							g.PositionSize = 1
+						}
+						g.InvestAmount = float64(g.PositionSize) * g.EntryPrice
+						g.RiskAmount = float64(g.PositionSize) * riskPerShare
+						g.RiskPct = g.RiskAmount / accountBalance * 100
+						g.AllocationPct = g.InvestAmount / accountBalance * 100
 					}
-					if g.PositionSize < 1 {
-						g.PositionSize = 1
-					}
-					g.InvestAmount = float64(g.PositionSize) * g.EntryPrice
-					g.RiskAmount = float64(g.PositionSize) * riskPerShare
-					g.RiskPct = g.RiskAmount / accountBalance * 100
-					g.AllocationPct = g.InvestAmount / accountBalance * 100
 				}
 			}
 		}
@@ -329,7 +432,17 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	if format == "json" {
 		return outputSignalsJSON(signals, len(stocks), scanTime)
 	}
-	return outputSignalsTable(signals, len(stocks), scanTime, accountBalance)
+
+	if err := outputSignalsTable(signals, len(stocks), scanTime, accountBalance); err != nil {
+		return err
+	}
+
+	// Auto-trade mode
+	if autoTrade && len(signals) > 0 {
+		return executeAutoTrade(ctx, signals, cfg)
+	}
+
+	return nil
 }
 
 func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider) error {
@@ -337,7 +450,7 @@ func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider
 	if universe != "" {
 		universeSymbols := symbols.GetUniverse(symbols.Universe(universe))
 		if universeSymbols == nil {
-			return fmt.Errorf("unknown universe: %s (use: sp500, nasdaq100, test)", universe)
+			return fmt.Errorf("unknown universe: %s (use: test, dow30, nasdaq100, sp500, midcap, russell)", universe)
 		}
 		return runPortfolioBacktest(ctx, universeSymbols, p)
 	}
@@ -658,18 +771,39 @@ func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime ti
 		} else {
 			fmt.Printf("Report saved to: %s\n", filename)
 		}
+
+		// Also save JSON report for web UI
+		jsonFilename := fmt.Sprintf("report_%s.json", time.Now().Format("2006-01-02_150405"))
+		if err := saveJSONReport(jsonFilename, signals, capital, totalScanned, scanTime); err != nil {
+			fmt.Printf("Warning: failed to save JSON report: %v\n", err)
+		} else {
+			fmt.Printf("JSON report saved to: %s (for Web UI)\n", jsonFilename)
+		}
 	}
 
 	return nil
 }
 
 func outputSignalsJSON(signals []strategy.Signal, totalScanned int, scanTime time.Duration) error {
+	// Calculate totals
+	var totalInvest, totalRisk float64
+	for _, s := range signals {
+		if s.Guide != nil {
+			totalInvest += s.Guide.InvestAmount
+			totalRisk += s.Guide.RiskAmount
+		}
+	}
+
 	result := strategy.ScanResult{
 		Strategy:     "pullback",
 		TotalScanned: totalScanned,
 		SignalsFound: len(signals),
 		Signals:      signals,
 		ScanTime:     scanTime.String(),
+		Capital:      accountBalance,
+		TotalInvest:  totalInvest,
+		TotalRisk:    totalRisk,
+		GeneratedAt:  time.Now().Format(time.RFC3339),
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
@@ -762,6 +896,39 @@ func saveReport(filename string, signals []strategy.Signal, capital float64, tot
 	fmt.Fprintf(f, "Past performance doesn't guarantee future results.\n")
 
 	return nil
+}
+
+func saveJSONReport(filename string, signals []strategy.Signal, capital float64, totalScanned int, scanTime time.Duration) error {
+	// Calculate totals
+	var totalInvest, totalRisk float64
+	for _, s := range signals {
+		if s.Guide != nil {
+			totalInvest += s.Guide.InvestAmount
+			totalRisk += s.Guide.RiskAmount
+		}
+	}
+
+	result := strategy.ScanResult{
+		Strategy:     "pullback",
+		TotalScanned: totalScanned,
+		SignalsFound: len(signals),
+		Signals:      signals,
+		ScanTime:     scanTime.String(),
+		Capital:      capital,
+		TotalInvest:  totalInvest,
+		TotalRisk:    totalRisk,
+		GeneratedAt:  time.Now().Format(time.RFC3339),
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	encoder := json.NewEncoder(f)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
 }
 
 func formatUSD(amount float64) string {
@@ -891,4 +1058,217 @@ func outputJSON(result *model.ScanResult) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(result)
+}
+
+func executeAutoTrade(ctx context.Context, signals []strategy.Signal, cfg *config.Config) error {
+	// Check KIS config
+	if cfg.KIS.AppKey == "" || cfg.KIS.AppSecret == "" {
+		return fmt.Errorf("KIS API credentials not configured. Set KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO environment variables or add to config.yaml")
+	}
+	if cfg.KIS.AccountNo == "" {
+		return fmt.Errorf("KIS account number not configured")
+	}
+
+	fmt.Println()
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println(" AUTO-TRADE MODE")
+	fmt.Println(strings.Repeat("=", 60))
+
+	// Warning for live trading
+	if !dryRun {
+		fmt.Println()
+		fmt.Println(strings.Repeat("!", 60))
+		fmt.Println("  WARNING: LIVE TRADING MODE")
+		fmt.Println("  This will execute REAL orders with REAL money!")
+		fmt.Println("  Account: " + cfg.KIS.AccountNo)
+		fmt.Println(strings.Repeat("!", 60))
+		fmt.Print("\nType 'CONFIRM' to proceed: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		confirm, _ := reader.ReadString('\n')
+		confirm = strings.TrimSpace(confirm)
+		if confirm != "CONFIRM" {
+			fmt.Println("Trading cancelled by user")
+			return nil
+		}
+	}
+
+	// Create KIS client
+	creds := kis.Credentials{
+		AppKey:    cfg.KIS.AppKey,
+		AppSecret: cfg.KIS.AppSecret,
+		AccountNo: cfg.KIS.AccountNo,
+	}
+	kisBroker := kis.NewClient(creds)
+
+	fmt.Println("\nConnecting to KIS API...")
+	if !kisBroker.IsReady() {
+		return fmt.Errorf("failed to connect to KIS API - check your credentials")
+	}
+	fmt.Println("Connected successfully!")
+
+	// 실제 계좌 잔고 조회
+	fmt.Println("Fetching account balance...")
+	balance, err := kisBroker.GetBalance(ctx)
+	if err != nil {
+		fmt.Printf("Warning: failed to get balance: %v\n", err)
+		fmt.Printf("Using CLI capital: %s\n", formatUSD(accountBalance))
+	} else {
+		// 실제 잔고 사용
+		actualCapital := balance.TotalEquity
+		if actualCapital > 0 {
+			fmt.Printf("Account Balance: %s\n", formatUSD(actualCapital))
+			accountBalance = actualCapital
+		} else {
+			fmt.Printf("Using CLI capital: %s\n", formatUSD(accountBalance))
+		}
+
+		// 현재 보유 포지션 표시
+		if len(balance.Positions) > 0 {
+			fmt.Printf("Current Positions: %d\n", len(balance.Positions))
+			for _, p := range balance.Positions {
+				pnlSign := "+"
+				if p.UnrealizedPnL < 0 {
+					pnlSign = ""
+				}
+				fmt.Printf("  - %s: %d shares (P&L: %s%.2f)\n",
+					p.Symbol, p.Quantity, pnlSign, p.UnrealizedPnL)
+			}
+		}
+	}
+
+	// Create AutoTrader
+	traderCfg := trader.Config{
+		DryRun:          dryRun,
+		MaxPositions:    cfg.Trader.MaxPositions,
+		MaxPositionPct:  cfg.Trader.MaxPositionPct,
+		TotalCapital:    accountBalance,
+		RiskPerTrade:    cfg.Trader.RiskPerTrade,
+		MonitorInterval: time.Duration(cfg.Trader.MonitorInterval) * time.Second,
+	}
+
+	autoTrader := trader.NewAutoTrader(traderCfg, kisBroker, marketOrder)
+
+	// Execute signals
+	fmt.Printf("\nExecuting %d signals...\n", len(signals))
+	results, err := autoTrader.ExecuteSignals(ctx, signals)
+	if err != nil {
+		return fmt.Errorf("execute signals: %w", err)
+	}
+
+	// Print execution results
+	fmt.Println()
+	fmt.Println(strings.Repeat("-", 60))
+	fmt.Println(" EXECUTION RESULTS")
+	fmt.Println(strings.Repeat("-", 60))
+
+	successCount := 0
+	for _, r := range results {
+		status := "FAILED"
+		if r.Success {
+			status = "OK"
+			successCount++
+		}
+		fmt.Printf(" [%s] %s: %s %d @ $%.2f",
+			status, r.Signal.Stock.Symbol, r.Order.Side, r.Order.Quantity, r.Order.LimitPrice)
+		if r.Result != nil {
+			fmt.Printf(" (Order: %s)", r.Result.OrderID)
+		}
+		if r.Error != "" {
+			fmt.Printf(" - %s", r.Error)
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("\nTotal: %d/%d orders executed\n", successCount, len(results))
+
+	// Start monitoring if not dry-run
+	if !dryRun && successCount > 0 {
+		fmt.Println()
+		fmt.Println(strings.Repeat("=", 60))
+		fmt.Println(" POSITION MONITORING")
+		fmt.Println(strings.Repeat("=", 60))
+		fmt.Println("\nMonitoring positions for stop loss and take profit...")
+		fmt.Println("Press Ctrl+C to stop monitoring")
+		fmt.Println()
+
+		go autoTrader.StartMonitoring(ctx)
+
+		// Wait for interrupt
+		<-ctx.Done()
+		autoTrader.StopMonitoring()
+		fmt.Println("\nMonitoring stopped.")
+	}
+
+	return nil
+}
+
+func runMonitorMode(cfg *config.Config) error {
+	if cfg.KIS.AppKey == "" || cfg.KIS.AppSecret == "" {
+		return fmt.Errorf("KIS API credentials not configured")
+	}
+
+	fmt.Println("Starting position monitor...")
+
+	// Setup context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nStopping monitor...")
+		cancel()
+	}()
+
+	// Create KIS client
+	creds := kis.Credentials{
+		AppKey:    cfg.KIS.AppKey,
+		AppSecret: cfg.KIS.AppSecret,
+		AccountNo: cfg.KIS.AccountNo,
+	}
+	broker := kis.NewClient(creds)
+
+	if !broker.IsReady() {
+		return fmt.Errorf("failed to connect to KIS API")
+	}
+
+	// Show current positions
+	positions, err := broker.GetPositions(ctx)
+	if err != nil {
+		return fmt.Errorf("get positions: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("Current Positions:")
+	fmt.Println(strings.Repeat("-", 60))
+	if len(positions) == 0 {
+		fmt.Println("  No positions found")
+	} else {
+		for _, p := range positions {
+			pnlSign := "+"
+			if p.UnrealizedPnL < 0 {
+				pnlSign = ""
+			}
+			fmt.Printf("  %s: %d shares @ $%.2f (P&L: %s$%.2f / %s%.1f%%)\n",
+				p.Symbol, p.Quantity, p.AvgCost, pnlSign, p.UnrealizedPnL, pnlSign, p.UnrealizedPct)
+		}
+	}
+	fmt.Println(strings.Repeat("-", 60))
+
+	// Create trader for monitoring
+	traderCfg := trader.Config{
+		DryRun:          dryRun,
+		MaxPositions:    cfg.Trader.MaxPositions,
+		TotalCapital:    accountBalance,
+		MonitorInterval: time.Duration(cfg.Trader.MonitorInterval) * time.Second,
+	}
+
+	autoTrader := trader.NewAutoTrader(traderCfg, broker, false)
+
+	fmt.Println("\nMonitoring started. Press Ctrl+C to stop.")
+	autoTrader.StartMonitoring(ctx)
+
+	return nil
 }

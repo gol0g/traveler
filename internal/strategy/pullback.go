@@ -14,6 +14,11 @@ type PullbackConfig struct {
 	MA20TouchTolerance float64 // How close to MA20 counts as "touch" (e.g., 0.02 = 2%)
 	MinVolumeRatio     float64 // Maximum volume ratio for pullback (low volume = weak selling)
 	RequireBullishBody bool    // Require close > open (bullish candle)
+
+	// Quality filters (to avoid penny stocks, OTC, illiquid stocks)
+	MinPrice         float64 // Minimum stock price (default $5)
+	MaxTickerLength  int     // Maximum ticker length (4 = exclude OTC 5-letter tickers)
+	MinDailyDollarVol float64 // Minimum daily dollar volume (price * volume)
 }
 
 // DefaultPullbackConfig returns default configuration
@@ -22,6 +27,11 @@ func DefaultPullbackConfig() PullbackConfig {
 		MA20TouchTolerance: 0.02,  // 2% tolerance
 		MinVolumeRatio:     0.8,   // Volume should be below average
 		RequireBullishBody: false, // Allow long lower shadow too
+
+		// Quality filters
+		MinPrice:         5.0,     // $5 minimum (no penny stocks)
+		MaxTickerLength:  4,       // Exclude 5+ letter tickers (OTC, warrants)
+		MinDailyDollarVol: 500000, // $500K daily volume minimum
 	}
 }
 
@@ -56,6 +66,11 @@ func (s *PullbackStrategy) Description() string {
 
 // Analyze analyzes a stock for pullback opportunity
 func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Signal, error) {
+	// Pre-filter: Ticker length (exclude OTC 5-letter tickers, warrants, etc.)
+	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength {
+		return nil, fmt.Errorf("ticker too long: %s (likely OTC/warrant)", stock.Symbol)
+	}
+
 	// Need at least 60 days of data for MA50 + buffer
 	candles, err := s.provider.GetDailyCandles(ctx, stock.Symbol, 70)
 	if err != nil {
@@ -76,8 +91,23 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	today := candles[len(candles)-1]
 	yesterday := candles[len(candles)-2]
 
+	// Quality filter: Minimum price (no penny stocks)
+	if s.config.MinPrice > 0 && today.Close < s.config.MinPrice {
+		return nil, fmt.Errorf("price too low: $%.2f < $%.2f", today.Close, s.config.MinPrice)
+	}
+
+	// Quality filter: Minimum daily dollar volume (liquidity)
+	dailyDollarVol := today.Close * float64(today.Volume)
+	if s.config.MinDailyDollarVol > 0 && dailyDollarVol < s.config.MinDailyDollarVol {
+		return nil, fmt.Errorf("liquidity too low: $%.0f < $%.0f", dailyDollarVol, s.config.MinDailyDollarVol)
+	}
+
 	// Check conditions
 	details := make(map[string]float64)
+
+	// Record quality metrics
+	details["daily_dollar_vol"] = dailyDollarVol
+	details["avg_volume"] = ind.AvgVol
 
 	// Condition 1: Price above MA50 (uptrend)
 	aboveMA50 := today.Close > ind.MA50
@@ -253,27 +283,39 @@ func calculatePullbackStrength(
 }
 
 // calculatePullbackProbability estimates success probability
+// Realistic range: 45-65% (no strategy consistently exceeds 60-65%)
 func calculatePullbackProbability(strength, rsi, volumeRatio float64, bouncing bool) float64 {
-	prob := strength * 0.6 // Base from strength
+	// Base probability: 45% (slightly better than coin flip)
+	prob := 45.0
 
-	// RSI bonus
-	if rsi < 50 {
-		prob += 10 // Room to run
-	} else if rsi > 65 {
-		prob -= 10 // Getting overbought
+	// Strength contribution: max +10% (strength 0-100 maps to 0-10)
+	prob += strength * 0.10
+
+	// RSI factor: +3% if oversold, -5% if overbought
+	if rsi < 40 {
+		prob += 3 // Oversold, room to bounce
+	} else if rsi < 50 {
+		prob += 1 // Slightly oversold
+	} else if rsi > 70 {
+		prob -= 5 // Overbought, risky
+	} else if rsi > 60 {
+		prob -= 2 // Getting warm
 	}
 
-	// Volume bonus
-	if volumeRatio < 0.7 {
-		prob += 10 // Very low selling pressure
+	// Volume factor: +2% for very low volume pullback
+	if volumeRatio < 0.5 {
+		prob += 2 // Very weak selling pressure
+	} else if volumeRatio > 1.2 {
+		prob -= 3 // High volume pullback = more selling
 	}
 
-	// Bouncing bonus
+	// Bouncing factor: +2% if showing recovery
 	if bouncing {
-		prob += 10
+		prob += 2
 	}
 
-	return math.Max(0, math.Min(prob, 100))
+	// Cap at realistic range: 45-65%
+	return math.Max(45, math.Min(prob, 65))
 }
 
 func boolToFloat(b bool) float64 {

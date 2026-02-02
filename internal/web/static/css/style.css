@@ -1,0 +1,194 @@
+/* Custom styles for Traveler Dashboard */
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #1f2937;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #4b5563;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
+}
+
+/* Table row hover */
+#signalsTable tr:hover {
+    background-color: rgba(59, 130, 246, 0.1);
+}
+
+/* Drop zone active state */
+#dropZone.dragover {
+    border-color: #3b82f6;
+    background-color: rgba(59, 130, 246, 0.1);
+}
+
+/* Number input styling */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    opacity: 1;
+}
+
+/* Chart container */
+#chartContainer {
+    position: relative;
+}
+
+/* Modal transition */
+#stockModal, #settingsModal {
+    transition: opacity 0.2s ease-out;
+}
+
+#stockModal.show, #settingsModal.show {
+    opacity: 1;
+}
+
+/* Loading spinner */
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+
+/* Price level indicators */
+.price-entry {
+    color: #60a5fa;
+}
+
+.price-stop {
+    color: #f87171;
+}
+
+.price-target {
+    color: #34d399;
+}
+
+/* Status badges */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.badge-buy {
+    background-color: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+}
+
+.badge-hold {
+    background-color: rgba(234, 179, 8, 0.2);
+    color: #eab308;
+}
+
+/* Card hover effect */
+.card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s ease-out;
+}
+
+/* Pulse animation for scanning */
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.animate-pulse {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Table sorting indicator */
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+th.sortable:hover {
+    color: #60a5fa;
+}
+
+th.sortable::after {
+    content: '';
+    display: inline-block;
+    margin-left: 0.25rem;
+}
+
+th.sort-asc::after {
+    content: ' ^';
+}
+
+th.sort-desc::after {
+    content: ' v';
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .hide-mobile {
+        display: none;
+    }
+
+    #summaryCards {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* Dark mode form elements */
+input:focus, select:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+/* Button disabled state */
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Success/Error states */
+.success-flash {
+    animation: flash-green 0.5s ease-out;
+}
+
+.error-flash {
+    animation: flash-red 0.5s ease-out;
+}
+
+@keyframes flash-green {
+    0% {
+        background-color: rgba(34, 197, 94, 0.3);
+    }
+    100% {
+        background-color: transparent;
+    }
+}
+
+@keyframes flash-red {
+    0% {
+        background-color: rgba(239, 68, 68, 0.3);
+    }
+    100% {
+        background-color: transparent;
+    }
+}

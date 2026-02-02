@@ -24,3 +24,10 @@ config.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# Reports
+report_*.txt
+report_*.json
+
+# Windows artifacts
+nul

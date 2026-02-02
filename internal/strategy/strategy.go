@@ -52,6 +52,7 @@ type Signal struct {
 	Details     map[string]float64       `json:"details"`      // Strategy-specific metrics
 	Technical   *model.TechnicalAnalysis `json:"technical,omitempty"`
 	Guide       *TradeGuide              `json:"guide,omitempty"` // Trading guide
+	Candles     []model.Candle           `json:"candles,omitempty"` // Chart data for web UI
 }
 
 // Strategy defines the interface for trading strategies
@@ -73,4 +74,8 @@ type ScanResult struct {
 	SignalsFound  int           `json:"signals_found"`
 	Signals       []Signal      `json:"signals"`
 	ScanTime      string        `json:"scan_time"`
+	Capital       float64       `json:"capital,omitempty"`
+	TotalInvest   float64       `json:"total_invest,omitempty"`
+	TotalRisk     float64       `json:"total_risk,omitempty"`
+	GeneratedAt   string        `json:"generated_at,omitempty"`
 }
