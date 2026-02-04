@@ -95,6 +95,7 @@ func (t *DailyTracker) Start(startingBalance float64) error {
 		// 기존 상태 복원
 		t.state = *existing
 		t.state.CurrentBalance = startingBalance // 현재 잔고 업데이트
+		t.state.Status = "running"               // 재시작 시 status 리셋
 		return nil
 	}
 

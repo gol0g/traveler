@@ -153,7 +153,10 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// 7. 메인 루프
+	// 7. P&L 재계산 (재시작 시 미체결 주문 반영)
+	d.runMonitorCycle()
+
+	// 8. 메인 루프
 	return d.mainLoop()
 }
 
@@ -262,12 +265,26 @@ func (d *Daemon) runMonitorCycle() {
 		return
 	}
 
-	// 실현 손익 = 현재 잔고 - 시작 잔고 - 미실현 손익
+	// 미체결 주문 조회 (예약금은 손실이 아님)
+	pendingOrders, _ := d.broker.GetPendingOrders(d.ctx)
+	var pendingValue float64
+	for _, order := range pendingOrders {
+		if order.Side == broker.OrderSideBuy {
+			// 미체결 수량 * 주문가 = 예약 금액
+			unfilledQty := order.Quantity - order.FilledQty
+			pendingValue += float64(unfilledQty) * order.Price
+		}
+	}
+
+	// 총 자산 = 현금 + 보유 주식 + 미체결 주문 예약금
+	totalEquity := balance.TotalEquity + pendingValue
+
+	// 실현 손익 = 총 자산 - 시작 잔고 - 미실현 손익
 	state := d.tracker.GetState()
-	realizedPnL := balance.TotalEquity - state.StartingBalance - unrealizedPnL
+	realizedPnL := totalEquity - state.StartingBalance - unrealizedPnL
 
 	// 트래커 업데이트
-	d.tracker.UpdatePnL(realizedPnL, unrealizedPnL, balance.TotalEquity)
+	d.tracker.UpdatePnL(realizedPnL, unrealizedPnL, totalEquity)
 
 	// 손절/익절 체크 (autoTrader.monitor가 처리)
 }
