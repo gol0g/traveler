@@ -53,6 +53,7 @@ var (
 	dryRun       bool
 	marketOrder  bool
 	monitorMode  bool
+	adaptiveMode bool // 적응형 자동 스캔
 )
 
 func main() {
@@ -95,6 +96,7 @@ Examples:
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", true, "dry-run mode (no actual orders)")
 	rootCmd.Flags().BoolVar(&marketOrder, "market-order", false, "use market orders instead of limit orders")
 	rootCmd.Flags().BoolVar(&monitorMode, "monitor", false, "position monitoring mode only")
+	rootCmd.Flags().BoolVar(&adaptiveMode, "adaptive", false, "adaptive mode: auto-select universe based on balance")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -218,6 +220,11 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Adaptive mode: auto-select universe based on balance
+	if adaptiveMode && strategyName == "pullback" {
+		return runAdaptiveScan(ctx, fallbackProvider, cfg, loader)
+	}
+
 	if len(stocks) == 0 {
 		return fmt.Errorf("no stocks to scan")
 	}
@@ -316,9 +323,11 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	fmt.Printf("Scanning %d stocks for pullback opportunities...\n", len(stocks))
 	fmt.Printf("Account: %s\n\n", formatUSD(accountBalance))
 
-	// Create pullback strategy
-	pullbackCfg := strategy.DefaultPullbackConfig()
-	strat := strategy.NewPullbackStrategy(pullbackCfg, fallbackProvider)
+	// Get strategy from registry
+	strat, err := strategy.Get("pullback", fallbackProvider)
+	if err != nil {
+		return fmt.Errorf("strategy not found: %w", err)
+	}
 
 	// Setup progress bar
 	bar := progressbar.NewOptions(len(stocks),
@@ -364,65 +373,22 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	bar.Finish()
 	fmt.Println()
 
-	// Calculate position sizing based on number of signals
+	// Calculate position sizing using the new Sizer
 	if len(signals) > 0 {
 		// Sort by probability first to prioritize best signals
 		sort.Slice(signals, func(i, j int) bool {
 			return signals[i].Probability > signals[j].Probability
 		})
 
-		// Filter out stocks that are too expensive (price > 20% of capital)
-		maxPositionValue := accountBalance * 0.2 // Max 20% per position
-		var affordableSignals []strategy.Signal
-		for _, s := range signals {
-			if s.Guide != nil && s.Guide.EntryPrice <= maxPositionValue {
-				affordableSignals = append(affordableSignals, s)
-			} else if s.Guide != nil {
-				if verbose {
-					fmt.Printf("  Skipping %s: price $%.2f exceeds max position value $%.2f\n",
-						s.Stock.Symbol, s.Guide.EntryPrice, maxPositionValue)
-				}
-			}
-		}
-		signals = affordableSignals
+		// Use balance-adjusted sizer config
+		sizerCfg := trader.AdjustConfigForBalance(accountBalance)
+		sizer := trader.NewPositionSizer(sizerCfg)
 
-		// Limit to top 5 positions max
-		maxPositions := 5
-		if len(signals) > maxPositions {
-			signals = signals[:maxPositions]
-		}
+		// Apply sizing and filter
+		signals = sizer.ApplyToSignals(signals)
 
 		if len(signals) == 0 {
-			fmt.Printf("\nNo affordable signals found (max position value: %s)\n", formatUSD(maxPositionValue))
-		} else {
-			// Calculate allocation per position
-			allocationPerPosition := accountBalance / float64(len(signals))
-			riskPerPosition := accountBalance * 0.01 / float64(len(signals)) // Total 1% risk split
-
-			for i := range signals {
-				if signals[i].Guide != nil {
-					g := signals[i].Guide
-					riskPerShare := g.EntryPrice - g.StopLoss
-					if riskPerShare > 0 {
-						// Calculate shares based on risk limit
-						sharesByRisk := int(riskPerPosition / riskPerShare)
-						// Calculate shares based on allocation limit
-						sharesByAllocation := int(allocationPerPosition / g.EntryPrice)
-						// Use the smaller of the two
-						g.PositionSize = sharesByRisk
-						if sharesByAllocation < sharesByRisk {
-							g.PositionSize = sharesByAllocation
-						}
-						if g.PositionSize < 1 {
-							g.PositionSize = 1
-						}
-						g.InvestAmount = float64(g.PositionSize) * g.EntryPrice
-						g.RiskAmount = float64(g.PositionSize) * riskPerShare
-						g.RiskPct = g.RiskAmount / accountBalance * 100
-						g.AllocationPct = g.InvestAmount / accountBalance * 100
-					}
-				}
-			}
+			fmt.Printf("\nNo affordable signals found (max position value: %s)\n", formatUSD(accountBalance*0.2))
 		}
 	}
 
@@ -434,6 +400,147 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	}
 
 	if err := outputSignalsTable(signals, len(stocks), scanTime, accountBalance); err != nil {
+		return err
+	}
+
+	// Auto-trade mode
+	if autoTrade && len(signals) > 0 {
+		return executeAutoTrade(ctx, signals, cfg)
+	}
+
+	return nil
+}
+
+// adaptiveStockLoader implements trader.StockLoader
+type adaptiveStockLoader struct {
+	loader *symbols.Loader
+}
+
+func (l *adaptiveStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe) ([]model.Stock, error) {
+	syms := symbols.GetUniverse(u)
+	if syms == nil {
+		return nil, fmt.Errorf("unknown universe: %s", u)
+	}
+	return l.loader.LoadSymbols(ctx, syms)
+}
+
+func runAdaptiveScan(ctx context.Context, fallbackProvider *provider.FallbackProvider, cfg *config.Config, loader *symbols.Loader) error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" ADAPTIVE SCAN - Auto Universe Selection")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Printf("\n Account Balance: %s\n", formatUSD(accountBalance))
+
+	// Get strategy from registry
+	strat, err := strategy.Get("pullback", fallbackProvider)
+	if err != nil {
+		return fmt.Errorf("strategy not found: %w", err)
+	}
+
+	// Create sizer config based on balance
+	sizerCfg := trader.AdjustConfigForBalance(accountBalance)
+	fmt.Printf(" Risk per Trade:  %.1f%%\n", sizerCfg.RiskPerTrade*100)
+	fmt.Printf(" Max Positions:   %d\n", sizerCfg.MaxPositions)
+	fmt.Printf(" Min R/R:         %.1f\n", sizerCfg.MinRiskReward)
+	fmt.Println()
+
+	// Determine universe tiers
+	tiers := trader.GetUniverseTiers(accountBalance)
+	tierNames := make([]string, 0)
+	for _, t := range tiers {
+		if t.Priority == 1 {
+			tierNames = append(tierNames, t.Name)
+		}
+	}
+	fmt.Printf(" 1st Tier:        %s\n", strings.Join(tierNames, ", "))
+	fmt.Println()
+
+	// Create adaptive scanner
+	adaptiveCfg := trader.DefaultAdaptiveConfig()
+	adaptiveCfg.Verbose = verbose
+
+	// Create scan function
+	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
+		var signals []strategy.Signal
+
+		// Progress bar
+		bar := progressbar.NewOptions(len(stocks),
+			progressbar.OptionEnableColorCodes(true),
+			progressbar.OptionShowCount(),
+			progressbar.OptionSetWidth(30),
+			progressbar.OptionSetDescription("Scanning"),
+			progressbar.OptionSetTheme(progressbar.Theme{
+				Saucer:        "[green]█[reset]",
+				SaucerHead:    "[green]█[reset]",
+				SaucerPadding: "░",
+				BarStart:      "[",
+				BarEnd:        "]",
+			}),
+		)
+
+		for i, stock := range stocks {
+			select {
+			case <-ctx.Done():
+				bar.Finish()
+				return signals, ctx.Err()
+			default:
+			}
+
+			signal, err := strat.Analyze(ctx, stock)
+			if err == nil && signal != nil {
+				candles, candleErr := fallbackProvider.GetDailyCandles(ctx, stock.Symbol, 100)
+				if candleErr == nil {
+					signal.Candles = candles
+				}
+				signals = append(signals, *signal)
+			}
+			bar.Set(i + 1)
+		}
+		bar.Finish()
+		fmt.Println()
+
+		return signals, nil
+	}
+
+	scanner := trader.NewAdaptiveScanner(adaptiveCfg, sizerCfg, scanFunc)
+
+	// Run adaptive scan
+	result, err := scanner.Scan(ctx, &adaptiveStockLoader{loader: loader})
+	if err != nil {
+		return fmt.Errorf("adaptive scan failed: %w", err)
+	}
+
+	// Print results
+	fmt.Println()
+	fmt.Printf("Scan Complete:\n")
+	fmt.Printf("  Universes:    %s\n", strings.Join(result.UniversesUsed, " → "))
+	fmt.Printf("  Stocks:       %d scanned\n", result.ScannedCount)
+	fmt.Printf("  Signals:      %d found\n", result.Quality.SignalCount)
+	fmt.Printf("  Avg Prob:     %.1f%%\n", result.Quality.AvgProb)
+	fmt.Printf("  Expansions:   %d\n", result.Expansions)
+	fmt.Printf("  Decision:     %s\n", result.Decision)
+	fmt.Println()
+
+	if len(result.Signals) == 0 {
+		fmt.Println("No trading opportunities found today.")
+		return nil
+	}
+
+	// Apply position sizing
+	sizer := trader.NewPositionSizer(sizerCfg)
+	signals := sizer.ApplyToSignals(result.Signals)
+
+	if len(signals) == 0 {
+		fmt.Println("No affordable signals after sizing.")
+		return nil
+	}
+
+	// Output results
+	scanTime := time.Duration(0) // Already shown in adaptive output
+	if format == "json" {
+		return outputSignalsJSON(signals, result.ScannedCount, scanTime)
+	}
+
+	if err := outputSignalsTable(signals, result.ScannedCount, scanTime, accountBalance); err != nil {
 		return err
 	}
 
