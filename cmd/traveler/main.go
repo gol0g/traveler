@@ -20,6 +20,7 @@ import (
 	"traveler/internal/backtest"
 	"traveler/internal/broker/kis"
 	"traveler/internal/config"
+	"traveler/internal/daemon"
 	"traveler/internal/provider"
 	"traveler/internal/scanner"
 	"traveler/internal/strategy"
@@ -54,6 +55,12 @@ var (
 	marketOrder  bool
 	monitorMode  bool
 	adaptiveMode bool // 적응형 자동 스캔
+	daemonMode   bool // 데몬 모드 (완전 자동화)
+
+	// Daemon settings
+	dailyTargetPct  float64 // 일일 목표 수익률
+	dailyLossLimit  float64 // 일일 최대 손실
+	sleepOnExit     bool    // 종료시 PC 절전
 )
 
 func main() {
@@ -97,6 +104,10 @@ Examples:
 	rootCmd.Flags().BoolVar(&marketOrder, "market-order", false, "use market orders instead of limit orders")
 	rootCmd.Flags().BoolVar(&monitorMode, "monitor", false, "position monitoring mode only")
 	rootCmd.Flags().BoolVar(&adaptiveMode, "adaptive", false, "adaptive mode: auto-select universe based on balance")
+	rootCmd.Flags().BoolVar(&daemonMode, "daemon", false, "daemon mode: fully automated trading")
+	rootCmd.Flags().Float64Var(&dailyTargetPct, "daily-target", 1.0, "daily target profit percentage")
+	rootCmd.Flags().Float64Var(&dailyLossLimit, "daily-loss-limit", -2.0, "daily loss limit percentage")
+	rootCmd.Flags().BoolVar(&sleepOnExit, "sleep-on-exit", true, "sleep PC when daemon exits")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -158,6 +169,11 @@ func run(cmd *cobra.Command, args []string) error {
 	// Monitor mode - only monitor existing positions
 	if monitorMode {
 		return runMonitorMode(cfg)
+	}
+
+	// Daemon mode - fully automated trading
+	if daemonMode {
+		return runDaemonMode(cfg, fallbackProvider)
 	}
 
 	// Setup context with cancellation
@@ -238,6 +254,55 @@ func run(cmd *cobra.Command, args []string) error {
 	default:
 		return runMorningDipStrategy(ctx, stocks, fallbackProvider, cfg)
 	}
+}
+
+func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER DAEMON MODE - Automated Trading")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	// KIS API 필수
+	if cfg.KIS.AppKey == "" {
+		return fmt.Errorf("KIS API credentials required for daemon mode")
+	}
+
+	// KIS 브로커 생성
+	creds := kis.Credentials{
+		AppKey:    cfg.KIS.AppKey,
+		AppSecret: cfg.KIS.AppSecret,
+		AccountNo: cfg.KIS.AccountNo,
+	}
+	broker := kis.NewClient(creds)
+	if !broker.IsReady() {
+		return fmt.Errorf("KIS broker not ready")
+	}
+
+	// 데몬 설정
+	daemonCfg := daemon.DefaultConfig()
+	daemonCfg.Daily.TargetPct = dailyTargetPct
+	daemonCfg.Daily.LossLimitPct = dailyLossLimit
+	daemonCfg.SleepOnExit = sleepOnExit
+
+	fmt.Printf(" Daily Target:    %.1f%%\n", dailyTargetPct)
+	fmt.Printf(" Daily Loss Limit: %.1f%%\n", dailyLossLimit)
+	fmt.Printf(" Sleep on Exit:   %v\n", sleepOnExit)
+	fmt.Println()
+
+	// 데몬 생성 및 실행
+	d := daemon.NewDaemon(daemonCfg, broker, p)
+
+	// 시그널 핸들링
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		d.Stop()
+	}()
+
+	return d.Run()
 }
 
 func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {

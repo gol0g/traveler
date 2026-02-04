@@ -247,12 +247,19 @@ traveler/
 │   │       ├── client.go         # HTTP 클라이언트
 │   │       ├── auth.go           # OAuth 토큰 관리 (24h 캐시)
 │   │       └── types.go          # 요청/응답 타입
+│   ├── daemon/                   # 데몬 모드 (완전 자동화)
+│   │   ├── daemon.go             # 메인 오케스트레이터
+│   │   ├── market.go             # 마켓 시간 관리
+│   │   └── tracker.go            # 일일 P&L 추적
 │   ├── trader/                   # 자동 매매
 │   │   ├── trader.go             # AutoTrader
 │   │   ├── executor.go           # 주문 실행
 │   │   ├── monitor.go            # 손절/익절 모니터링
+│   │   ├── sizer.go              # 포지션 사이징 (수수료 고려)
+│   │   ├── adaptive.go           # 적응형 스캔
 │   │   └── risk.go               # 리스크 관리
 │   ├── strategy/                 # 매매 전략
+│   │   ├── registry.go           # 전략 레지스트리
 │   │   ├── pullback.go           # 눌림목 전략
 │   │   └── indicators.go         # 기술적 지표
 │   ├── provider/                 # 시세 데이터 API
@@ -262,15 +269,112 @@ traveler/
 │   ├── symbols/universe.go       # 종목 유니버스
 │   ├── web/                      # 웹 UI
 │   └── backtest/                 # 백테스트
+├── scripts/                      # Windows 자동화 스크립트
+│   ├── setup-daemon.ps1          # 초기 설정
+│   ├── test-wake-only.ps1        # Wake 테스트
+│   └── setup-autologin.bat       # 자동 로그인
 ├── config.yaml                   # 설정 파일
 └── README.md
 ```
 
+## Daemon 모드 (완전 자동화)
+
+### 개요
+PC 절전 → 자동 기상 → 시장 대기 → 자동 매매 → 리포트 → 절전 반복
+
+### 사용법
+```bash
+# 데몬 모드 시작 (장 열릴 때까지 대기 후 자동 매매)
+./traveler --daemon
+
+# 절전 없이 테스트
+./traveler --daemon --sleep-on-exit=false
+
+# 일일 목표/손실 한도 설정
+./traveler --daemon --daily-target=1.5 --daily-loss-limit=-2.0
+```
+
+### Daemon 옵션
+| 옵션 | 기본값 | 설명 |
+|------|--------|------|
+| `--daemon` | false | 데몬 모드 활성화 |
+| `--sleep-on-exit` | true | 종료 시 PC 절전 |
+| `--daily-target` | 1.0 | 일일 목표 수익률 (%) |
+| `--daily-loss-limit` | -2.0 | 일일 최대 손실 (%) |
+| `--adaptive` | true | 적응형 스캔 (잔고 기반 유니버스 선택) |
+
+### 동작 흐름
+```
+1. 시작 → 마켓 상태 확인
+2. 마켓 닫힘 → 오픈까지 대기 (최대 2시간)
+3. 마켓 오픈 → 적응형 스캔 (30분 주기)
+4. 시그널 발견 → 포지션 사이징 → 주문 실행
+5. 포지션 모니터링 (30초 주기) → 손절/익절
+6. 종료 조건 (마감/목표달성/손실한도) → 리포트 생성
+7. 다음 날 Wake timer 등록 → PC 절전
+8. 다음 날 자동 기상 → 1번부터 반복
+```
+
+### Windows 자동 기상 설정
+```powershell
+# 관리자 PowerShell에서 초기 설정 (1회만)
+.\scripts\setup-daemon.ps1
+
+# 테스트 (2분 후 자동 기상)
+.\scripts\test-wake-only.ps1
+```
+
+## 수수료 및 리스크 관리
+
+### 수수료 계산
+- 매매 시 자동으로 수수료 계산 (기본 0.25% × 2 = 0.5%)
+- P&L에서 수수료 차감한 순이익 표시
+- 리포트에 총 수수료 표시
+
+### 최소 기대수익률 필터
+- 기대수익률 < 1% 시그널 자동 스킵
+- 수수료(0.5%) + 마진(0.5%) 보장
+- 소액 계좌(<$500)는 1.5% 기준 적용
+
+### 리포트 예시
+```
+SUMMARY
+-------
+  Realized P&L:     $100.00
+  Unrealized P&L:   $50.00
+  Commission:       $12.50 (0.25%)
+  Net P&L:          $137.50 (2.75%)
+```
+
+## 적응형 스캔
+
+잔고에 따라 자동으로 유니버스와 설정 조정:
+
+| 잔고 | 유니버스 | 리스크/거래 | 최대 포지션 |
+|------|----------|-------------|-------------|
+| < $500 | test (소형주) | 2% | 3개 |
+| < $5,000 | russell (중소형) | 1% | 5개 |
+| ≥ $5,000 | nasdaq100 (대형) | 1% | 5개 |
+
+시그널 부족 시 자동으로 다른 유니버스까지 확대 스캔.
+
+## Scripts (Windows 자동화)
+
+| 스크립트 | 설명 |
+|----------|------|
+| `setup-daemon.ps1` | 초기 Wake timer 설정 (관리자 1회) |
+| `test-wake-only.ps1` | Wake timer 테스트 |
+| `setup-autologin.bat` | Windows 자동 로그인 설정 |
+| `set-autologin.ps1` | 자동 로그인 비밀번호 저장 |
+
 ## 향후 계획
 
-- [ ] 적응형 자동 스캔 (예수금 기반 유니버스 자동 선택)
-- [ ] 시그널 품질 평가 및 확대 스캔
-- [ ] 완전 자동화 모드 (`--auto` 플래그)
+- [x] 적응형 자동 스캔 (예수금 기반 유니버스 자동 선택)
+- [x] 시그널 품질 평가 및 확대 스캔
+- [x] 완전 자동화 모드 (daemon)
+- [x] 수수료 계산 및 최소 기대수익률 필터
+- [ ] 모니터 자동 켜기 (wake 후)
+- [ ] 멀티 전략 동시 실행
 
 ## 라이선스
 

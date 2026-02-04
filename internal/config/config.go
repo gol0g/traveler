@@ -13,8 +13,20 @@ type Config struct {
 	API     APIConfig     `yaml:"api"`
 	KIS     KISConfig     `yaml:"kis"`
 	Trader  TraderConfig  `yaml:"trader"`
+	Daemon  DaemonConfig  `yaml:"daemon"`
 	Scanner ScannerConfig `yaml:"scanner"`
 	Pattern PatternConfig `yaml:"pattern"`
+}
+
+// DaemonConfig holds daemon mode settings
+type DaemonConfig struct {
+	DailyTargetPct  float64 `yaml:"daily_target_pct"`   // 일일 목표 수익률 (예: 1.0 = 1%)
+	DailyLossLimit  float64 `yaml:"daily_loss_limit"`   // 일일 최대 손실 (예: -2.0 = -2%)
+	MaxTrades       int     `yaml:"max_trades"`         // 일일 최대 거래 횟수
+	ScanIntervalMin int     `yaml:"scan_interval_min"`  // 스캔 주기 (분)
+	SleepOnExit     bool    `yaml:"sleep_on_exit"`      // 종료시 PC 절전
+	WaitForMarket   bool    `yaml:"wait_for_market"`    // 마켓 열릴 때까지 대기
+	MaxWaitHours    int     `yaml:"max_wait_hours"`     // 최대 대기 시간 (시간)
 }
 
 // KISConfig holds KIS API settings
@@ -85,6 +97,15 @@ func DefaultConfig() *Config {
 			MaxPositionPct:  0.20,
 			RiskPerTrade:    0.01,
 			MonitorInterval: 30,
+		},
+		Daemon: DaemonConfig{
+			DailyTargetPct:  1.0,
+			DailyLossLimit:  -2.0,
+			MaxTrades:       10,
+			ScanIntervalMin: 30,
+			SleepOnExit:     true,
+			WaitForMarket:   true,
+			MaxWaitHours:    2,
 		},
 		Scanner: ScannerConfig{
 			Workers: 10,

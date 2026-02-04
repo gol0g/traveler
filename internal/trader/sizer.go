@@ -8,21 +8,25 @@ import (
 
 // SizerConfig 포지션 사이징 설정
 type SizerConfig struct {
-	TotalCapital    float64 // 총 자본
-	RiskPerTrade    float64 // 거래당 리스크 비율 (예: 0.01 = 1%)
-	MaxPositionPct  float64 // 종목당 최대 비율 (예: 0.2 = 20%)
-	MaxPositions    int     // 최대 동시 포지션
-	MinRiskReward   float64 // 최소 R/R (이하면 스킵)
+	TotalCapital      float64 // 총 자본
+	RiskPerTrade      float64 // 거래당 리스크 비율 (예: 0.01 = 1%)
+	MaxPositionPct    float64 // 종목당 최대 비율 (예: 0.2 = 20%)
+	MaxPositions      int     // 최대 동시 포지션
+	MinRiskReward     float64 // 최소 R/R (이하면 스킵)
+	MinExpectedReturn float64 // 최소 기대수익률 (수수료 커버용, 예: 0.01 = 1%)
+	CommissionRate    float64 // 수수료율 (왕복, 예: 0.005 = 0.5%)
 }
 
 // DefaultSizerConfig 기본 설정
 func DefaultSizerConfig(capital float64) SizerConfig {
 	return SizerConfig{
-		TotalCapital:   capital,
-		RiskPerTrade:   0.01,  // 1%
-		MaxPositionPct: 0.20,  // 20%
-		MaxPositions:   5,
-		MinRiskReward:  1.5,
+		TotalCapital:      capital,
+		RiskPerTrade:      0.01,   // 1%
+		MaxPositionPct:    0.20,   // 20%
+		MaxPositions:      5,
+		MinRiskReward:     1.5,
+		MinExpectedReturn: 0.01,   // 1% (수수료 0.5% + 마진 0.5%)
+		CommissionRate:    0.005,  // 0.5% (매수 0.25% + 매도 0.25%)
 	}
 }
 
@@ -88,7 +92,15 @@ func (p *PositionSizer) CalculateSize(sig *strategy.Signal) SizingResult {
 		return result
 	}
 
-	// 3. 가격이 최대 포지션 금액 초과 체크
+	// 3. 기대수익률 체크 (수수료 커버 확인)
+	expectedReturn := (g.Target1 - g.EntryPrice) / g.EntryPrice
+	if expectedReturn < p.config.MinExpectedReturn {
+		result.Skipped = true
+		result.SkipReason = "expected return too low (< commission)"
+		return result
+	}
+
+	// 4. 가격이 최대 포지션 금액 초과 체크
 	maxPositionValue := p.config.TotalCapital * p.config.MaxPositionPct
 	if g.EntryPrice > maxPositionValue {
 		result.Skipped = true
@@ -96,23 +108,23 @@ func (p *PositionSizer) CalculateSize(sig *strategy.Signal) SizingResult {
 		return result
 	}
 
-	// 4. 리스크 예산 계산
+	// 5. 리스크 예산 계산
 	riskBudget := p.config.TotalCapital * p.config.RiskPerTrade
 
-	// 5. Stop-distance 기반 수량 계산 (핵심!)
+	// 6. Stop-distance 기반 수량 계산 (핵심!)
 	// qty = floor(riskBudget / stopDistance)
 	qtyByRisk := int(math.Floor(riskBudget / stopDistance))
 
-	// 6. 최대 포지션 금액 기반 수량 제한
+	// 7. 최대 포지션 금액 기반 수량 제한
 	qtyByAllocation := int(math.Floor(maxPositionValue / g.EntryPrice))
 
-	// 7. 둘 중 작은 값 선택
+	// 8. 둘 중 작은 값 선택
 	qty := qtyByRisk
 	if qtyByAllocation < qty {
 		qty = qtyByAllocation
 	}
 
-	// 8. 최소 1주
+	// 9. 최소 1주
 	if qty < 1 {
 		qty = 1
 	}
@@ -201,19 +213,22 @@ func AdjustConfigForBalance(balance float64) SizerConfig {
 	switch {
 	case balance < 500:
 		// 소액: 보수적
-		cfg.RiskPerTrade = 0.02   // 2% (적은 금액이라 비율 높여도 절대금액 작음)
+		cfg.RiskPerTrade = 0.02      // 2% (적은 금액이라 비율 높여도 절대금액 작음)
 		cfg.MaxPositions = 3
 		cfg.MinRiskReward = 1.5
+		cfg.MinExpectedReturn = 0.015 // 1.5% (소액은 수수료 부담 큼)
 	case balance < 5000:
 		// 중간: 표준
-		cfg.RiskPerTrade = 0.01   // 1%
+		cfg.RiskPerTrade = 0.01      // 1%
 		cfg.MaxPositions = 5
 		cfg.MinRiskReward = 1.5
+		cfg.MinExpectedReturn = 0.01  // 1%
 	default:
 		// 고액: 약간 보수적
-		cfg.RiskPerTrade = 0.01   // 1%
+		cfg.RiskPerTrade = 0.01      // 1%
 		cfg.MaxPositions = 5
-		cfg.MinRiskReward = 2.0   // R/R 기준 높임
+		cfg.MinRiskReward = 2.0      // R/R 기준 높임
+		cfg.MinExpectedReturn = 0.01  // 1%
 	}
 
 	return cfg
