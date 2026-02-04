@@ -107,9 +107,9 @@ type pendingResponse struct {
 	Msg1    string `json:"msg1"`
 	Output  []struct {
 		ODNO             string `json:"odno"`             // 주문번호
-		OVRS_PDNO        string `json:"ovrs_pdno"`        // 종목코드
+		PDNO             string `json:"pdno"`             // 종목코드
 		SLL_BUY_DVSN_CD  string `json:"sll_buy_dvsn_cd"`  // 매도매수구분 ("01"=매도, "02"=매수)
-		ORD_QTY          string `json:"ord_qty"`          // 주문수량
+		FT_ORD_QTY       string `json:"ft_ord_qty"`       // 주문수량
 		NCCS_QTY         string `json:"nccs_qty"`         // 미체결수량
 		FT_ORD_UNPR3     string `json:"ft_ord_unpr3"`     // 주문단가
 		ORD_TMD          string `json:"ord_tmd"`          // 주문시각

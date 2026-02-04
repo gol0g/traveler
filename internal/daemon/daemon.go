@@ -266,14 +266,22 @@ func (d *Daemon) runMonitorCycle() {
 	}
 
 	// 미체결 주문 조회 (예약금은 손실이 아님)
-	pendingOrders, _ := d.broker.GetPendingOrders(d.ctx)
+	pendingOrders, pendingErr := d.broker.GetPendingOrders(d.ctx)
+	if pendingErr != nil {
+		log.Printf("[DAEMON] GetPendingOrders error: %v", pendingErr)
+	}
 	var pendingValue float64
 	for _, order := range pendingOrders {
+		log.Printf("[DAEMON] Pending order: %s %s x%d @ $%.2f (filled: %d)",
+			order.Side, order.Symbol, order.Quantity, order.Price, order.FilledQty)
 		if order.Side == broker.OrderSideBuy {
 			// 미체결 수량 * 주문가 = 예약 금액
 			unfilledQty := order.Quantity - order.FilledQty
 			pendingValue += float64(unfilledQty) * order.Price
 		}
+	}
+	if pendingValue > 0 {
+		log.Printf("[DAEMON] Total pending order value: $%.2f", pendingValue)
 	}
 
 	// 총 자산 = 현금 + 보유 주식 + 미체결 주문 예약금

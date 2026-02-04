@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -381,12 +382,17 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, e
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
+	// Debug: log raw response for pending orders
+	log.Printf("[KIS] GetPendingOrders raw response: %s", string(respBody))
+
 	if resp.RtCd != "0" {
 		return nil, fmt.Errorf("pending query failed: [%s] %s", resp.MsgCd, resp.Msg1)
 	}
 
 	orders := make([]broker.PendingOrder, 0, len(resp.Output))
 	for _, o := range resp.Output {
+		log.Printf("[KIS] Pending order raw: ODNO=%s, PDNO=%s, QTY=%s, NCCS=%s, PRICE=%s",
+			o.ODNO, o.PDNO, o.FT_ORD_QTY, o.NCCS_QTY, o.FT_ORD_UNPR3)
 		side := broker.OrderSideBuy
 		if o.SLL_BUY_DVSN_CD == "01" {
 			side = broker.OrderSideSell
@@ -394,11 +400,11 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, e
 
 		orders = append(orders, broker.PendingOrder{
 			OrderID:   o.ODNO,
-			Symbol:    o.OVRS_PDNO,
+			Symbol:    o.PDNO,
 			Side:      side,
 			Type:      broker.OrderTypeLimit,
-			Quantity:  int(parseFloat(o.ORD_QTY)),
-			FilledQty: int(parseFloat(o.ORD_QTY) - parseFloat(o.NCCS_QTY)),
+			Quantity:  int(parseFloat(o.FT_ORD_QTY)),
+			FilledQty: int(parseFloat(o.FT_ORD_QTY) - parseFloat(o.NCCS_QTY)),
 			Price:     parseFloat(o.FT_ORD_UNPR3),
 			Status:    "pending",
 		})
