@@ -8,15 +8,16 @@ type Credentials struct {
 }
 
 // 해외주식 거래 ID (실전투자)
+// T로 시작 = 해외주식, J로 시작 = 국내주식
 const (
-	TrIDBuyReal       = "JTTT1002U" // 해외주식 매수
-	TrIDSellReal      = "JTTT1006U" // 해외주식 매도
-	TrIDCancelReal    = "JTTT1004U" // 해외주식 정정/취소
-	TrIDBalanceReal   = "JTTT3012R" // 해외주식 잔고조회
-	TrIDPendingReal   = "JTTT3018R" // 미체결 조회
-	TrIDOrderReal     = "JTTT3001R" // 주문내역 조회
+	TrIDBuyReal       = "TTTT1002U" // 해외주식 매수 (미국)
+	TrIDSellReal      = "TTTT1006U" // 해외주식 매도 (미국)
+	TrIDCancelReal    = "TTTT1004U" // 해외주식 정정/취소
+	TrIDBalanceReal   = "TTTS3012R" // 해외주식 잔고조회
+	TrIDPendingReal   = "TTTS3018R" // 미체결 조회
+	TrIDOrderReal     = "TTTS3001R" // 주문내역 조회
 	TrIDPriceReal     = "HHDFS00000300" // 해외주식 현재가
-	TrIDBuyingPower   = "JTTT3007R" // 해외주식 매수가능금액조회
+	TrIDBuyingPower   = "TTTS3007R" // 해외주식 매수가능금액조회
 )
 
 // 거래소 코드
