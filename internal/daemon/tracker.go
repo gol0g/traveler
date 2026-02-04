@@ -38,8 +38,8 @@ type TradeLog struct {
 	Reason      string    `json:"reason,omitempty"` // "signal", "stop_loss", "take_profit", "manual"
 }
 
-// CommissionRate 수수료율 (KIS 해외주식 기본 0.25%)
-const CommissionRate = 0.0025
+// DefaultCommissionRate 기본 수수료율 (config에서 덮어쓸 수 있음)
+var DefaultCommissionRate = 0.0025 // 0.25%
 
 // DailyState 일일 상태
 type DailyState struct {
@@ -131,7 +131,7 @@ func (t *DailyTracker) RecordTrade(log TradeLog) error {
 
 	// 수수료 계산 (설정 안 됐으면 자동 계산)
 	if log.Commission == 0 {
-		log.Commission = log.Amount * CommissionRate
+		log.Commission = log.Amount * DefaultCommissionRate
 	}
 
 	t.state.Trades = append(t.state.Trades, log)

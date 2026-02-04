@@ -65,15 +65,15 @@ func GetMarketStatus(schedule MarketSchedule) MarketStatus {
 	if weekday == time.Saturday || weekday == time.Sunday {
 		status.IsOpen = false
 		status.Reason = "weekend"
+		status.TimeToOpen = timeToNextTradingDay(now, schedule)
+		return status
+	}
 
-		// 다음 월요일까지 시간
-		daysUntilMonday := (8 - int(weekday)) % 7
-		if daysUntilMonday == 0 {
-			daysUntilMonday = 7
-		}
-		nextMonday := today.AddDate(0, 0, daysUntilMonday)
-		nextOpen := nextMonday.Add(time.Duration(schedule.OpenHour)*time.Hour + time.Duration(schedule.OpenMin)*time.Minute)
-		status.TimeToOpen = nextOpen.Sub(now)
+	// 휴장일 체크
+	if IsUSHoliday(now) {
+		status.IsOpen = false
+		status.Reason = "holiday"
+		status.TimeToOpen = timeToNextTradingDay(now, schedule)
 		return status
 	}
 
@@ -91,17 +91,7 @@ func GetMarketStatus(schedule MarketSchedule) MarketStatus {
 		// 애프터마켓 (장 종료 후)
 		status.IsOpen = false
 		status.Reason = "after-hours"
-
-		// 다음 거래일 개장까지
-		nextDay := today.AddDate(0, 0, 1)
-		if nextDay.Weekday() == time.Saturday {
-			nextDay = nextDay.AddDate(0, 0, 2) // 월요일로
-		} else if nextDay.Weekday() == time.Sunday {
-			nextDay = nextDay.AddDate(0, 0, 1)
-		}
-		nextOpen := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
-			schedule.OpenHour, schedule.OpenMin, 0, 0, loc)
-		status.TimeToOpen = nextOpen.Sub(now)
+		status.TimeToOpen = timeToNextTradingDay(now, schedule)
 	} else {
 		// 정규장
 		status.IsOpen = true
@@ -202,6 +192,26 @@ var usHolidays2026 = []string{
 	"2026-09-07", // Labor Day
 	"2026-11-26", // Thanksgiving
 	"2026-12-25", // Christmas
+}
+
+// timeToNextTradingDay 다음 거래일 개장까지 시간 계산 (주말/휴장일 스킵)
+func timeToNextTradingDay(now time.Time, schedule MarketSchedule) time.Duration {
+	loc := GetETLocation()
+	nextDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+
+	// 최대 10일까지 탐색 (연휴 대비)
+	for i := 0; i < 10; i++ {
+		weekday := nextDay.Weekday()
+		if weekday != time.Saturday && weekday != time.Sunday && !IsUSHoliday(nextDay) {
+			// 거래일 발견
+			nextOpen := nextDay.Add(time.Duration(schedule.OpenHour)*time.Hour + time.Duration(schedule.OpenMin)*time.Minute)
+			return nextOpen.Sub(now)
+		}
+		nextDay = nextDay.AddDate(0, 0, 1)
+	}
+
+	// 10일 이내 거래일 없음 (비정상)
+	return 24 * time.Hour
 }
 
 // IsUSHoliday 미국 공휴일 체크

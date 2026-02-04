@@ -20,13 +20,14 @@ type Config struct {
 
 // DaemonConfig holds daemon mode settings
 type DaemonConfig struct {
-	DailyTargetPct  float64 `yaml:"daily_target_pct"`   // 일일 목표 수익률 (예: 1.0 = 1%)
-	DailyLossLimit  float64 `yaml:"daily_loss_limit"`   // 일일 최대 손실 (예: -2.0 = -2%)
-	MaxTrades       int     `yaml:"max_trades"`         // 일일 최대 거래 횟수
-	ScanIntervalMin int     `yaml:"scan_interval_min"`  // 스캔 주기 (분)
-	SleepOnExit     bool    `yaml:"sleep_on_exit"`      // 종료시 PC 절전
-	WaitForMarket   bool    `yaml:"wait_for_market"`    // 마켓 열릴 때까지 대기
-	MaxWaitHours    int     `yaml:"max_wait_hours"`     // 최대 대기 시간 (시간)
+	DailyTargetPct       float64 `yaml:"daily_target_pct"`        // 일일 목표 수익률 (예: 1.0 = 1%)
+	DailyLossLimit       float64 `yaml:"daily_loss_limit"`        // 일일 최대 손실 (예: -2.0 = -2%)
+	MaxTrades            int     `yaml:"max_trades"`              // 일일 최대 거래 횟수
+	ScanIntervalMin      int     `yaml:"scan_interval_min"`       // 스캔 주기 (분)
+	SleepOnExit          bool    `yaml:"sleep_on_exit"`           // 종료시 PC 절전
+	WaitForMarket        bool    `yaml:"wait_for_market"`         // 마켓 열릴 때까지 대기
+	MaxWaitHours         int     `yaml:"max_wait_hours"`          // 최대 대기 시간 (시간)
+	ClosePositionsOnExit bool    `yaml:"close_positions_on_exit"` // 종료시 포지션 전량 청산 여부
 }
 
 // KISConfig holds KIS API settings
@@ -38,11 +39,13 @@ type KISConfig struct {
 
 // TraderConfig holds auto-trading settings
 type TraderConfig struct {
-	DryRun          bool    `yaml:"dry_run"`
-	MaxPositions    int     `yaml:"max_positions"`
-	MaxPositionPct  float64 `yaml:"max_position_pct"`
-	RiskPerTrade    float64 `yaml:"risk_per_trade"`
-	MonitorInterval int     `yaml:"monitor_interval_sec"`
+	DryRun            bool    `yaml:"dry_run"`
+	MaxPositions      int     `yaml:"max_positions"`
+	MaxPositionPct    float64 `yaml:"max_position_pct"`
+	RiskPerTrade      float64 `yaml:"risk_per_trade"`
+	MonitorInterval   int     `yaml:"monitor_interval_sec"`
+	CommissionRate    float64 `yaml:"commission_rate"`     // 수수료율 (편도, 예: 0.0025 = 0.25%)
+	MinExpectedReturn float64 `yaml:"min_expected_return"` // 최소 기대수익률 (예: 0.01 = 1%)
 }
 
 // APIConfig holds API provider configurations
@@ -92,20 +95,23 @@ func DefaultConfig() *Config {
 			AccountNo: os.Getenv("KIS_ACCOUNT_NO"),
 		},
 		Trader: TraderConfig{
-			DryRun:          true,
-			MaxPositions:    5,
-			MaxPositionPct:  0.20,
-			RiskPerTrade:    0.01,
-			MonitorInterval: 30,
+			DryRun:            true,
+			MaxPositions:      5,
+			MaxPositionPct:    0.20,
+			RiskPerTrade:      0.01,
+			MonitorInterval:   30,
+			CommissionRate:    0.0025, // 0.25% (KIS 해외주식 기본)
+			MinExpectedReturn: 0.01,   // 1% (수수료 0.5% + 마진 0.5%)
 		},
 		Daemon: DaemonConfig{
-			DailyTargetPct:  1.0,
-			DailyLossLimit:  -2.0,
-			MaxTrades:       10,
-			ScanIntervalMin: 30,
-			SleepOnExit:     true,
-			WaitForMarket:   true,
-			MaxWaitHours:    2,
+			DailyTargetPct:       1.0,
+			DailyLossLimit:       -2.0,
+			MaxTrades:            10,
+			ScanIntervalMin:      30,
+			SleepOnExit:          true,
+			WaitForMarket:        true,
+			MaxWaitHours:         2,
+			ClosePositionsOnExit: false, // 기본: 포지션 유지 (다음 날 계속 모니터링)
 		},
 		Scanner: ScannerConfig{
 			Workers: 10,
