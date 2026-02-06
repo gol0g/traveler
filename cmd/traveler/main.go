@@ -67,21 +67,23 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "traveler",
 		Short: "Stock pattern scanner with multiple strategies",
-		Long: `Traveler scans US stocks (NYSE/NASDAQ) using various trading strategies:
+		Long: `Traveler scans US stocks (NYSE/NASDAQ) using multiple trading strategies:
 
 Strategies:
-  morning-dip  - Detect stocks that dip in morning and recover by close (counter-trend)
-  pullback     - Detect uptrending stocks pulling back to MA20 (trend-following)
+  pullback        - Buy uptrending stocks pulling back to MA20 (trend-following)
+  mean-reversion  - Buy oversold stocks bouncing off Bollinger lower band (counter-trend)
+  breakout        - Buy 20-day high breakouts with volume confirmation (momentum)
+  all             - Run all strategies and keep best signal per stock
 
 Examples:
-  traveler --strategy morning-dip --days 3
-  traveler --strategy pullback --symbols AAPL,MSFT,GOOGL`,
+  traveler --strategy pullback --symbols AAPL,MSFT,GOOGL
+  traveler --strategy all --universe nasdaq100 --capital 5000`,
 		RunE: run,
 	}
 
 	// Flags
 	rootCmd.Flags().StringVar(&cfgFile, "config", "config.yaml", "config file path")
-	rootCmd.Flags().StringVar(&strategyName, "strategy", "morning-dip", "strategy: morning-dip, pullback")
+	rootCmd.Flags().StringVar(&strategyName, "strategy", "pullback", "strategy: pullback, mean-reversion, breakout, all")
 	rootCmd.Flags().IntVar(&days, "days", 1, "minimum consecutive days with pattern (morning-dip)")
 	rootCmd.Flags().IntVar(&workers, "workers", 10, "number of parallel workers")
 	rootCmd.Flags().Float64Var(&dropPct, "drop", -1.0, "minimum morning drop percentage (negative value)")
@@ -237,7 +239,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Adaptive mode: auto-select universe based on balance
-	if adaptiveMode && strategyName == "pullback" {
+	if adaptiveMode {
 		return runAdaptiveScan(ctx, fallbackProvider, cfg, loader)
 	}
 
@@ -247,12 +249,12 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Route to appropriate strategy
 	switch strategyName {
-	case "pullback":
-		return runPullbackStrategy(ctx, stocks, fallbackProvider, cfg)
-	case "morning-dip":
-		fallthrough
+	case "all":
+		return runAllStrategies(ctx, stocks, fallbackProvider, cfg)
+	case "pullback", "mean-reversion", "breakout":
+		return runSingleStrategy(ctx, strategyName, stocks, fallbackProvider, cfg)
 	default:
-		return runMorningDipStrategy(ctx, stocks, fallbackProvider, cfg)
+		return runSingleStrategy(ctx, "pullback", stocks, fallbackProvider, cfg)
 	}
 }
 
@@ -476,6 +478,163 @@ func runPullbackStrategy(ctx context.Context, stocks []model.Stock, fallbackProv
 	return nil
 }
 
+// runSingleStrategy runs a single named strategy on stocks
+func runSingleStrategy(ctx context.Context, name string, stocks []model.Stock, fallbackProvider *provider.FallbackProvider, cfg *config.Config) error {
+	if name == "pullback" && runBacktest && len(stocks) > 0 {
+		return runPullbackBacktest(ctx, stocks[0].Symbol, fallbackProvider)
+	}
+
+	strat, err := strategy.Get(name, fallbackProvider)
+	if err != nil {
+		return fmt.Errorf("strategy not found: %w", err)
+	}
+
+	fmt.Printf("Scanning %d stocks with %s strategy...\n", len(stocks), name)
+	fmt.Printf("Account: %s\n\n", formatUSD(accountBalance))
+
+	bar := progressbar.NewOptions(len(stocks),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionSetDescription("Scanning"),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[green]█[reset]",
+			SaucerHead:    "[green]█[reset]",
+			SaucerPadding: "░",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	var signals []strategy.Signal
+	startTime := time.Now()
+
+	for i, stock := range stocks {
+		select {
+		case <-ctx.Done():
+			bar.Finish()
+			fmt.Println("\nScan interrupted")
+			break
+		default:
+		}
+
+		signal, err := strat.Analyze(ctx, stock)
+		if err == nil && signal != nil {
+			signals = append(signals, *signal)
+		}
+		bar.Set(i + 1)
+	}
+
+	bar.Finish()
+	fmt.Println()
+
+	if len(signals) > 0 {
+		sort.Slice(signals, func(i, j int) bool {
+			return signals[i].Probability > signals[j].Probability
+		})
+		sizerCfg := trader.AdjustConfigForBalance(accountBalance)
+		sizer := trader.NewPositionSizer(sizerCfg)
+		signals = sizer.ApplyToSignals(signals)
+	}
+
+	scanTime := time.Since(startTime)
+
+	if format == "json" {
+		return outputSignalsJSON(signals, len(stocks), scanTime)
+	}
+
+	if err := outputSignalsTable(signals, len(stocks), scanTime, accountBalance); err != nil {
+		return err
+	}
+
+	if autoTrade && len(signals) > 0 {
+		return executeAutoTrade(ctx, signals, cfg)
+	}
+
+	return nil
+}
+
+// runAllStrategies runs all registered strategies on each stock, keeps best signal per stock
+func runAllStrategies(ctx context.Context, stocks []model.Stock, fallbackProvider *provider.FallbackProvider, cfg *config.Config) error {
+	strategies := strategy.GetAll(fallbackProvider)
+	stratNames := strategy.List()
+
+	fmt.Printf("Scanning %d stocks with %d strategies (%v)...\n", len(stocks), len(strategies), stratNames)
+	fmt.Printf("Account: %s\n\n", formatUSD(accountBalance))
+
+	bar := progressbar.NewOptions(len(stocks),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionSetDescription("Multi-scan"),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[green]█[reset]",
+			SaucerHead:    "[green]█[reset]",
+			SaucerPadding: "░",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	var signals []strategy.Signal
+	startTime := time.Now()
+
+	for i, stock := range stocks {
+		select {
+		case <-ctx.Done():
+			bar.Finish()
+			fmt.Println("\nScan interrupted")
+			break
+		default:
+		}
+
+		// Run all strategies, keep best signal per stock
+		var best *strategy.Signal
+		for _, strat := range strategies {
+			sig, err := strat.Analyze(ctx, stock)
+			if err == nil && sig != nil {
+				if best == nil || sig.Strength > best.Strength {
+					best = sig
+				}
+			}
+		}
+		if best != nil {
+			signals = append(signals, *best)
+		}
+		bar.Set(i + 1)
+	}
+
+	bar.Finish()
+	fmt.Println()
+
+	if len(signals) > 0 {
+		sort.Slice(signals, func(i, j int) bool {
+			return signals[i].Probability > signals[j].Probability
+		})
+		sizerCfg := trader.AdjustConfigForBalance(accountBalance)
+		sizer := trader.NewPositionSizer(sizerCfg)
+		signals = sizer.ApplyToSignals(signals)
+	}
+
+	scanTime := time.Since(startTime)
+
+	if format == "json" {
+		return outputSignalsJSON(signals, len(stocks), scanTime)
+	}
+
+	if err := outputSignalsTable(signals, len(stocks), scanTime, accountBalance); err != nil {
+		return err
+	}
+
+	if autoTrade && len(signals) > 0 {
+		return executeAutoTrade(ctx, signals, cfg)
+	}
+
+	return nil
+}
+
 // adaptiveStockLoader implements trader.StockLoader
 type adaptiveStockLoader struct {
 	loader *symbols.Loader
@@ -495,11 +654,8 @@ func runAdaptiveScan(ctx context.Context, fallbackProvider *provider.FallbackPro
 	fmt.Println("=" + strings.Repeat("=", 59))
 	fmt.Printf("\n Account Balance: %s\n", formatUSD(accountBalance))
 
-	// Get strategy from registry
-	strat, err := strategy.Get("pullback", fallbackProvider)
-	if err != nil {
-		return fmt.Errorf("strategy not found: %w", err)
-	}
+	// 모든 전략 가져오기
+	strategies := strategy.GetAll(fallbackProvider)
 
 	// Create sizer config based on balance
 	sizerCfg := trader.AdjustConfigForBalance(accountBalance)
@@ -550,13 +706,18 @@ func runAdaptiveScan(ctx context.Context, fallbackProvider *provider.FallbackPro
 			default:
 			}
 
-			signal, err := strat.Analyze(ctx, stock)
-			if err == nil && signal != nil {
-				candles, candleErr := fallbackProvider.GetDailyCandles(ctx, stock.Symbol, 100)
-				if candleErr == nil {
-					signal.Candles = candles
+			// 모든 전략 실행, 가장 강한 신호 유지
+			var best *strategy.Signal
+			for _, strat := range strategies {
+				sig, err := strat.Analyze(ctx, stock)
+				if err == nil && sig != nil {
+					if best == nil || sig.Strength > best.Strength {
+						best = sig
+					}
 				}
-				signals = append(signals, *signal)
+			}
+			if best != nil {
+				signals = append(signals, *best)
 			}
 			bar.Set(i + 1)
 		}
@@ -828,7 +989,7 @@ func outputPortfolioBacktest(result *backtest.PortfolioBacktestResult) {
 
 func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime time.Duration, capital float64) error {
 	if len(signals) == 0 {
-		fmt.Println("No pullback opportunities found.")
+		fmt.Println("No trading opportunities found.")
 		fmt.Printf("Scanned %d stocks in %s\n", totalScanned, scanTime.Round(time.Second))
 		return nil
 	}

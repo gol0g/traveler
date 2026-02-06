@@ -35,11 +35,12 @@ func DefaultConfig() Config {
 
 // AutoTrader 자동 매매 오케스트레이터
 type AutoTrader struct {
-	config   Config
-	broker   broker.Broker
-	executor *Executor
-	monitor  *Monitor
-	risk     *RiskManager
+	config    Config
+	broker    broker.Broker
+	executor  *Executor
+	monitor   *Monitor
+	risk      *RiskManager
+	planStore *PlanStore
 
 	mu         sync.RWMutex
 	isRunning  bool
@@ -48,15 +49,21 @@ type AutoTrader struct {
 
 // NewAutoTrader 생성자
 func NewAutoTrader(cfg Config, b broker.Broker, marketOrder bool) *AutoTrader {
+	return NewAutoTraderWithPlanStore(cfg, b, marketOrder, nil)
+}
+
+// NewAutoTraderWithPlanStore PlanStore 포함 생성자
+func NewAutoTraderWithPlanStore(cfg Config, b broker.Broker, marketOrder bool, ps *PlanStore) *AutoTrader {
 	executor := NewExecutor(b, cfg, marketOrder)
 
 	return &AutoTrader{
-		config:   cfg,
-		broker:   b,
-		executor: executor,
-		monitor:  NewMonitor(b, executor, cfg),
-		risk:     NewRiskManager(cfg),
-		stopChan: make(chan struct{}),
+		config:    cfg,
+		broker:    b,
+		executor:  executor,
+		monitor:   NewMonitor(b, executor, cfg, ps),
+		risk:      NewRiskManager(cfg),
+		planStore: ps,
+		stopChan:  make(chan struct{}),
 	}
 }
 
@@ -104,16 +111,45 @@ func (t *AutoTrader) ExecuteSignals(ctx context.Context, signals []strategy.Sign
 			log.Printf("[EXECUTED] %s: BUY %d shares @ $%.2f",
 				sig.Stock.Symbol, result.Order.Quantity, result.Order.LimitPrice)
 
-			// 모니터링 등록
+			// 모니터링 등록 (전략 정보 포함)
 			if sig.Guide != nil {
-				t.monitor.RegisterPosition(
+				maxDays := GetMaxHoldDays(sig.Strategy)
+				t.monitor.RegisterPositionWithPlan(
 					sig.Stock.Symbol,
 					sig.Guide.PositionSize,
 					sig.Guide.EntryPrice,
 					sig.Guide.StopLoss,
 					sig.Guide.Target1,
 					sig.Guide.Target2,
+					sig.Strategy,
+					maxDays,
+					time.Now(),
 				)
+
+				// PlanStore에 저장
+				if t.planStore != nil {
+					plan := &PositionPlan{
+						Symbol:      sig.Stock.Symbol,
+						Strategy:    sig.Strategy,
+						EntryPrice:  sig.Guide.EntryPrice,
+						Quantity:    sig.Guide.PositionSize,
+						StopLoss:    sig.Guide.StopLoss,
+						Target1:     sig.Guide.Target1,
+						Target2:     sig.Guide.Target2,
+						Target1Hit:  false,
+						EntryTime:   time.Now(),
+						MaxHoldDays: maxDays,
+					}
+
+					// Breakout: store breakout level for invalidation check
+					if sig.Strategy == "breakout" {
+						if level, ok := sig.Details["highest_high_20"]; ok {
+							plan.BreakoutLevel = level
+						}
+					}
+
+					t.planStore.Save(plan)
+				}
 			}
 		} else {
 			log.Printf("[FAILED] %s: %s", sig.Stock.Symbol, result.Error)
@@ -182,6 +218,11 @@ func (t *AutoTrader) setRunning(running bool) {
 // GetMonitor Monitor 인스턴스 반환
 func (t *AutoTrader) GetMonitor() *Monitor {
 	return t.monitor
+}
+
+// GetPlanStore PlanStore 인스턴스 반환
+func (t *AutoTrader) GetPlanStore() *PlanStore {
+	return t.planStore
 }
 
 // GetConfig 설정 반환

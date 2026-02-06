@@ -2,6 +2,7 @@ package trader
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -11,54 +12,72 @@ import (
 
 // ActivePosition 활성 포지션 (진입 정보 포함)
 type ActivePosition struct {
-	Symbol     string
-	Quantity   int
-	EntryPrice float64
-	StopLoss   float64
-	Target1    float64
-	Target2    float64
-	EntryTime  time.Time
-	Target1Hit bool // Target1 도달 여부
+	Symbol      string
+	Quantity    int
+	EntryPrice  float64
+	StopLoss    float64
+	Target1     float64
+	Target2     float64
+	EntryTime   time.Time
+	Target1Hit  bool   // Target1 도달 여부
+	Strategy    string // 전략 이름
+	MaxHoldDays int    // 최대 보유 거래일
 }
 
 // Monitor 포지션 모니터링
 type Monitor struct {
-	broker   broker.Broker
-	executor *Executor
-	config   Config
+	broker    broker.Broker
+	executor  *Executor
+	config    Config
+	planStore *PlanStore
 
 	mu        sync.RWMutex
 	positions map[string]*ActivePosition
 }
 
 // NewMonitor 생성자
-func NewMonitor(b broker.Broker, executor *Executor, cfg Config) *Monitor {
+func NewMonitor(b broker.Broker, executor *Executor, cfg Config, planStore *PlanStore) *Monitor {
 	return &Monitor{
 		broker:    b,
 		executor:  executor,
 		config:    cfg,
+		planStore: planStore,
 		positions: make(map[string]*ActivePosition),
 	}
 }
 
 // RegisterPosition 포지션 등록 (진입시 호출)
 func (m *Monitor) RegisterPosition(symbol string, quantity int, entryPrice, stopLoss, target1, target2 float64) {
+	m.RegisterPositionWithPlan(symbol, quantity, entryPrice, stopLoss, target1, target2, "", 0, time.Time{})
+}
+
+// RegisterPositionWithPlan 전략 정보 포함 포지션 등록
+func (m *Monitor) RegisterPositionWithPlan(symbol string, quantity int, entryPrice, stopLoss, target1, target2 float64, strategy string, maxHoldDays int, entryTime time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.positions[symbol] = &ActivePosition{
-		Symbol:     symbol,
-		Quantity:   quantity,
-		EntryPrice: entryPrice,
-		StopLoss:   stopLoss,
-		Target1:    target1,
-		Target2:    target2,
-		EntryTime:  time.Now(),
-		Target1Hit: false,
+	if entryTime.IsZero() {
+		entryTime = time.Now()
+	}
+	if maxHoldDays == 0 && strategy != "" {
+		maxHoldDays = GetMaxHoldDays(strategy)
 	}
 
-	log.Printf("[MONITOR] Registered %s: entry=$%.2f, stop=$%.2f, T1=$%.2f, T2=$%.2f",
-		symbol, entryPrice, stopLoss, target1, target2)
+	m.positions[symbol] = &ActivePosition{
+		Symbol:      symbol,
+		Quantity:    quantity,
+		EntryPrice:  entryPrice,
+		StopLoss:    stopLoss,
+		Target1:     target1,
+		Target2:     target2,
+		EntryTime:   entryTime,
+		Target1Hit:  false,
+		Strategy:    strategy,
+		MaxHoldDays: maxHoldDays,
+	}
+
+	log.Printf("[MONITOR] Registered %s: strategy=%s, entry=$%.2f, stop=$%.2f, T1=$%.2f, T2=$%.2f, maxDays=%d",
+		symbol, strategy, entryPrice, stopLoss, target1, target2, maxHoldDays)
 }
 
 // UnregisterPosition 포지션 등록 해제
@@ -140,6 +159,26 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 					symbol, pos.StopLoss, pos.Quantity)
 			}
 			m.mu.Unlock()
+
+			// PlanStore 업데이트
+			if m.planStore != nil {
+				remaining := active.Quantity - halfQty
+				m.planStore.UpdateTarget1Hit(symbol, remaining, active.EntryPrice)
+			}
+			continue
+		}
+
+		// Time stop: 최대 보유일 초과
+		if active.MaxHoldDays > 0 && !active.EntryTime.IsZero() {
+			tradingDays := TradingDaysSince(active.EntryTime)
+			if tradingDays >= active.MaxHoldDays {
+				pnlPct := (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+				reason := fmt.Sprintf("time_stop_%dd (P&L: %.1f%%)", tradingDays, pnlPct)
+				log.Printf("[TIME STOP] %s held %d trading days (max %d), current=$%.2f, P&L=%.1f%% - closing",
+					symbol, tradingDays, active.MaxHoldDays, currentPrice, pnlPct)
+				m.executeSell(ctx, symbol, active.Quantity, reason)
+				continue
+			}
 		}
 	}
 }
@@ -153,7 +192,27 @@ func (m *Monitor) executeSell(ctx context.Context, symbol string, quantity int, 
 	}
 
 	m.UnregisterPosition(symbol)
+
+	// PlanStore에서 삭제
+	if m.planStore != nil {
+		m.planStore.Delete(symbol)
+	}
+
 	log.Printf("[MONITOR] Closed position %s (%s)", symbol, reason)
+}
+
+// ClosePosition 외부에서 호출 가능한 포지션 청산 (전략 무효화 등)
+func (m *Monitor) ClosePosition(ctx context.Context, symbol string, reason string) error {
+	m.mu.RLock()
+	active, ok := m.positions[symbol]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("position %s not found in monitor", symbol)
+	}
+
+	m.executeSell(ctx, symbol, active.Quantity, reason)
+	return nil
 }
 
 // SyncWithBroker 브로커 잔고와 동기화
@@ -176,6 +235,10 @@ func (m *Monitor) SyncWithBroker(ctx context.Context) error {
 		if !brokerSymbols[symbol] {
 			log.Printf("[MONITOR] Position %s no longer exists in broker, removing", symbol)
 			delete(m.positions, symbol)
+			// PlanStore에서도 삭제
+			if m.planStore != nil {
+				m.planStore.Delete(symbol)
+			}
 		}
 	}
 

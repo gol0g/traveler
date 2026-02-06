@@ -58,17 +58,29 @@ func MustGet(name string, p provider.Provider) Strategy {
 	return s
 }
 
+// GetAll returns instances of all registered strategies
+func GetAll(p provider.Provider) []Strategy {
+	registryLock.RLock()
+	defer registryLock.RUnlock()
+
+	strategies := make([]Strategy, 0, len(registry))
+	for _, factory := range registry {
+		strategies = append(strategies, factory(p))
+	}
+	return strategies
+}
+
 // init 기본 전략 등록
 func init() {
-	// Pullback 전략 등록
 	Register("pullback", func(p provider.Provider) Strategy {
 		return NewPullbackStrategy(DefaultPullbackConfig(), p)
 	})
-
-	// 추후 추가할 전략들:
-	// Register("breakout", NewBreakoutStrategy)
-	// Register("momentum", NewMomentumStrategy)
-	// Register("mean-reversion", NewMeanReversionStrategy)
+	Register("mean-reversion", func(p provider.Provider) Strategy {
+		return NewMeanReversionStrategy(DefaultMeanReversionConfig(), p)
+	})
+	Register("breakout", func(p provider.Provider) Strategy {
+		return NewBreakoutStrategy(DefaultBreakoutConfig(), p)
+	})
 }
 
 // StrategyInfo 전략 정보

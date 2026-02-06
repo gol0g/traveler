@@ -125,6 +125,44 @@ func CalculateIndicators(candles []model.Candle) *Indicators {
 	return ind
 }
 
+// CalculateHighestHigh returns the highest High in the previous N candles (excluding the latest)
+func CalculateHighestHigh(candles []model.Candle, period int) float64 {
+	if len(candles) < period+1 {
+		return 0
+	}
+	high := 0.0
+	for i := len(candles) - period - 1; i < len(candles)-1; i++ {
+		if candles[i].High > high {
+			high = candles[i].High
+		}
+	}
+	return high
+}
+
+// CalculateLowestLow returns the lowest Low in the previous N candles (excluding the latest)
+func CalculateLowestLow(candles []model.Candle, period int) float64 {
+	if len(candles) < period+1 {
+		return 0
+	}
+	low := candles[len(candles)-period-1].Low
+	for i := len(candles) - period - 1; i < len(candles)-1; i++ {
+		if candles[i].Low < low {
+			low = candles[i].Low
+		}
+	}
+	return low
+}
+
+// CalculatePriorBBWidth calculates Bollinger bandwidth ending 'offset' bars before the latest candle
+func CalculatePriorBBWidth(candles []model.Candle, period int, stdDev float64, offset int) float64 {
+	if len(candles) < period+offset {
+		return 0
+	}
+	subset := candles[:len(candles)-offset]
+	_, _, bandwidth := CalculateBollingerBands(subset, period, stdDev)
+	return bandwidth
+}
+
 // Helper function for square root
 func sqrt(x float64) float64 {
 	if x <= 0 {
