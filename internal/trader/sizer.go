@@ -212,9 +212,9 @@ func AdjustConfigForBalance(balance float64) SizerConfig {
 
 	switch {
 	case balance < 500:
-		// 소액: 보수적
+		// 소액: 적극적 (포지션 수 늘려서 기회 확보)
 		cfg.RiskPerTrade = 0.02      // 2% (적은 금액이라 비율 높여도 절대금액 작음)
-		cfg.MaxPositions = 3
+		cfg.MaxPositions = 5         // 3 → 5 (더 많은 기회 확보)
 		cfg.MinRiskReward = 1.5
 		cfg.MinExpectedReturn = 0.015 // 1.5% (소액은 수수료 부담 큼)
 	case balance < 5000:

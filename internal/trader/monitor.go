@@ -97,6 +97,12 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			continue
 		}
 
+		// 현재가 0이면 조회 실패 - 스킵
+		if currentPrice <= 0 {
+			log.Printf("[MONITOR] Invalid price for %s: $%.2f, skipping", symbol, currentPrice)
+			continue
+		}
+
 		// 손절 체크
 		if currentPrice <= active.StopLoss {
 			log.Printf("[STOP LOSS] %s hit stop at $%.2f (current: $%.2f)",

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -249,7 +248,8 @@ func (c *Client) GetBalance(ctx context.Context) (*broker.AccountBalance, error)
 	}
 
 	// Query parameters - 해외주식 체결기준현재잔고
-	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&OVRS_EXCG_CD=NASD&TR_CRCY_CD=USD&CTX_AREA_FK200=&CTX_AREA_NK200=",
+	// OVRS_EXCG_CD를 빈 값으로 설정하면 전체 거래소 조회
+	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&OVRS_EXCG_CD=&TR_CRCY_CD=USD&CTX_AREA_FK200=&CTX_AREA_NK200=",
 		cano, acnt)
 
 	respBody, err := c.doRequest(ctx, "GET", "/uapi/overseas-stock/v1/trading/inquire-present-balance"+params, TrIDBalanceReal, nil)
@@ -258,7 +258,7 @@ func (c *Client) GetBalance(ctx context.Context) (*broker.AccountBalance, error)
 	}
 
 	// 디버그: raw 응답 출력 (필요시 주석 해제)
-	// fmt.Printf("[DEBUG] Balance API Response: %s\n", string(respBody))
+	// log.Printf("[KIS] GetBalance raw response: %s", string(respBody))
 
 	var resp balanceResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
@@ -275,14 +275,14 @@ func (c *Client) GetBalance(ctx context.Context) (*broker.AccountBalance, error)
 	}
 
 	for _, p := range resp.Output1 {
-		qty := parseFloat(p.CBLC_QTY13)
+		qty := parseFloat(p.OVRS_CBLC_QTY)
 		if qty <= 0 {
 			continue
 		}
 
 		avgCost := parseFloat(p.PCHS_AVG_PRIC)
 		marketValue := parseFloat(p.OVRS_STCK_EVLU_AMT)
-		unrealizedPnL := parseFloat(p.EVLU_PFLS_AMT)
+		unrealizedPnL := parseFloat(p.FRCR_EVLU_PFLS_AMT)
 		currentPrice := parseFloat(p.NOW_PRIC2)
 
 		var unrealizedPct float64
@@ -303,21 +303,21 @@ func (c *Client) GetBalance(ctx context.Context) (*broker.AccountBalance, error)
 		balance.Positions = append(balance.Positions, pos)
 	}
 
-	// 총 평가금액 (보유 주식)
-	balance.TotalEquity = parseFloat(resp.Output2.FRCR_EVLU_AMT2)
+	// 총 평가금액 (보유 주식) - 각 포지션의 평가금액 합계
+	var totalPositionValue float64
+	for _, pos := range balance.Positions {
+		totalPositionValue += pos.MarketValue
+	}
 
 	// 매수가능금액(외화예수금) 조회
 	buyingPower, err := c.getBuyingPower(ctx)
 	if err == nil && buyingPower > 0 {
 		balance.BuyingPower = buyingPower
 		balance.CashBalance = buyingPower
-		// 총 자산 = 보유 주식 평가금액 + 현금
-		if balance.TotalEquity == 0 {
-			balance.TotalEquity = buyingPower
-		} else {
-			balance.TotalEquity += buyingPower
-		}
 	}
+
+	// 총 자산 = 보유 주식 평가금액 + 현금
+	balance.TotalEquity = totalPositionValue + balance.CashBalance
 
 	return balance, nil
 }
@@ -369,7 +369,8 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, e
 		return nil, err
 	}
 
-	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&OVRS_EXCG_CD=NASD&SORT_SQN=DS&CTX_AREA_FK200=&CTX_AREA_NK200=",
+	// OVRS_EXCG_CD를 빈 값으로 설정하면 전체 거래소 조회
+	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&OVRS_EXCG_CD=&SORT_SQN=DS&CTX_AREA_FK200=&CTX_AREA_NK200=",
 		cano, acnt)
 
 	respBody, err := c.doRequest(ctx, "GET", "/uapi/overseas-stock/v1/trading/inquire-nccs"+params, TrIDPendingReal, nil)
@@ -382,17 +383,12 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, e
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	// Debug: log raw response for pending orders
-	log.Printf("[KIS] GetPendingOrders raw response: %s", string(respBody))
-
 	if resp.RtCd != "0" {
 		return nil, fmt.Errorf("pending query failed: [%s] %s", resp.MsgCd, resp.Msg1)
 	}
 
 	orders := make([]broker.PendingOrder, 0, len(resp.Output))
 	for _, o := range resp.Output {
-		log.Printf("[KIS] Pending order raw: ODNO=%s, PDNO=%s, QTY=%s, NCCS=%s, PRICE=%s",
-			o.ODNO, o.PDNO, o.FT_ORD_QTY, o.NCCS_QTY, o.FT_ORD_UNPR3)
 		side := broker.OrderSideBuy
 		if o.SLL_BUY_DVSN_CD == "01" {
 			side = broker.OrderSideSell
@@ -413,10 +409,32 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, e
 	return orders, nil
 }
 
-// GetQuote 현재가 조회
+// GetQuote 현재가 조회 (자동 거래소 탐지)
 func (c *Client) GetQuote(ctx context.Context, symbol string) (float64, error) {
+	// 먼저 추측 기반으로 시도
 	exchange := c.detectExchange(symbol)
+	price, err := c.GetQuoteWithExchange(ctx, symbol, exchange)
+	if err == nil && price > 0 {
+		return price, nil
+	}
 
+	// 실패시 모든 거래소 시도
+	exchanges := []string{ExchangeNASDAQ, ExchangeNYSE, ExchangeAMEX}
+	for _, excd := range exchanges {
+		if excd == exchange {
+			continue // 이미 시도함
+		}
+		price, err := c.GetQuoteWithExchange(ctx, symbol, excd)
+		if err == nil && price > 0 {
+			return price, nil
+		}
+	}
+
+	return 0, fmt.Errorf("could not get quote for %s from any exchange", symbol)
+}
+
+// GetQuoteWithExchange 거래소 지정 현재가 조회
+func (c *Client) GetQuoteWithExchange(ctx context.Context, symbol, exchange string) (float64, error) {
 	params := fmt.Sprintf("?AUTH=&EXCD=%s&SYMB=%s", exchange, symbol)
 
 	respBody, err := c.doRequest(ctx, "GET", "/uapi/overseas-price/v1/quotations/price"+params, TrIDPriceReal, nil)

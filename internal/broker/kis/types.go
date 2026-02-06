@@ -20,11 +20,11 @@ const (
 	TrIDBuyingPower   = "TTTS3007R" // 해외주식 매수가능금액조회
 )
 
-// 거래소 코드
+// 거래소 코드 (KIS API용)
 const (
-	ExchangeNYSE   = "NYSE" // 뉴욕
-	ExchangeNASDAQ = "NASD" // 나스닥
-	ExchangeAMEX   = "AMEX" // 아멕스
+	ExchangeNYSE   = "NYS" // 뉴욕
+	ExchangeNASDAQ = "NAS" // 나스닥
+	ExchangeAMEX   = "AMS" // 아멕스
 )
 
 // tokenRequest 토큰 발급 요청
@@ -83,13 +83,13 @@ type balanceResponse struct {
 	MsgCd   string `json:"msg_cd"`
 	Msg1    string `json:"msg1"`
 	Output1 []struct {
-		OVRS_PDNO        string `json:"ovrs_pdno"`         // 종목코드
-		OVRS_ITEM_NAME   string `json:"ovrs_item_name"`    // 종목명
-		CBLC_QTY13       string `json:"cblc_qty13"`        // 보유수량
-		PCHS_AVG_PRIC    string `json:"pchs_avg_pric"`     // 평균매입가
-		OVRS_STCK_EVLU_AMT string `json:"ovrs_stck_evlu_amt"` // 평가금액
-		EVLU_PFLS_AMT    string `json:"evlu_pfls_amt"`     // 평가손익
-		NOW_PRIC2        string `json:"now_pric2"`         // 현재가
+		OVRS_PDNO          string `json:"ovrs_pdno"`           // 종목코드
+		OVRS_ITEM_NAME     string `json:"ovrs_item_name"`      // 종목명
+		OVRS_CBLC_QTY      string `json:"ovrs_cblc_qty"`       // 보유수량
+		PCHS_AVG_PRIC      string `json:"pchs_avg_pric"`       // 평균매입가
+		OVRS_STCK_EVLU_AMT string `json:"ovrs_stck_evlu_amt"`  // 평가금액
+		FRCR_EVLU_PFLS_AMT string `json:"frcr_evlu_pfls_amt"`  // 평가손익
+		NOW_PRIC2          string `json:"now_pric2"`           // 현재가
 	} `json:"output1"`
 	Output2 struct {
 		FRCR_PCHS_AMT1    string `json:"frcr_pchs_amt1"`    // 외화매수금액

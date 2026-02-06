@@ -141,7 +141,7 @@ func (d *Daemon) Run() error {
 	}
 	d.autoTrader = trader.NewAutoTrader(traderCfg, d.broker, false)
 
-	// 6. 기존 포지션 확인
+	// 6. 기존 포지션 확인 및 모니터 등록
 	positions, err := d.broker.GetPositions(d.ctx)
 	if err != nil {
 		log.Printf("[DAEMON] Failed to get positions: %v", err)
@@ -150,6 +150,14 @@ func (d *Daemon) Run() error {
 		for _, p := range positions {
 			log.Printf("  - %s: %d shares @ $%.2f (P&L: $%.2f)",
 				p.Symbol, p.Quantity, p.AvgCost, p.UnrealizedPnL)
+
+			// 기존 포지션을 모니터에 등록 (평균단가 기준 손절/익절 설정)
+			stopLoss := p.AvgCost * 0.98    // -2% 손절
+			target1 := p.AvgCost * 1.02     // +2% 1차 익절
+			target2 := p.AvgCost * 1.04     // +4% 2차 익절
+			d.autoTrader.GetMonitor().RegisterPosition(
+				p.Symbol, p.Quantity, p.AvgCost, stopLoss, target1, target2,
+			)
 		}
 	}
 
@@ -247,6 +255,11 @@ func (d *Daemon) runScanCycle() {
 
 // runMonitorCycle 모니터링 사이클
 func (d *Daemon) runMonitorCycle() {
+	// 개별 종목 손절/익절 체크
+	if d.autoTrader != nil {
+		d.autoTrader.GetMonitor().CheckPositions(d.ctx)
+	}
+
 	// 현재 포지션 조회
 	positions, err := d.broker.GetPositions(d.ctx)
 	if err != nil {
@@ -266,22 +279,13 @@ func (d *Daemon) runMonitorCycle() {
 	}
 
 	// 미체결 주문 조회 (예약금은 손실이 아님)
-	pendingOrders, pendingErr := d.broker.GetPendingOrders(d.ctx)
-	if pendingErr != nil {
-		log.Printf("[DAEMON] GetPendingOrders error: %v", pendingErr)
-	}
+	pendingOrders, _ := d.broker.GetPendingOrders(d.ctx)
 	var pendingValue float64
 	for _, order := range pendingOrders {
-		log.Printf("[DAEMON] Pending order: %s %s x%d @ $%.2f (filled: %d)",
-			order.Side, order.Symbol, order.Quantity, order.Price, order.FilledQty)
 		if order.Side == broker.OrderSideBuy {
-			// 미체결 수량 * 주문가 = 예약 금액
 			unfilledQty := order.Quantity - order.FilledQty
 			pendingValue += float64(unfilledQty) * order.Price
 		}
-	}
-	if pendingValue > 0 {
-		log.Printf("[DAEMON] Total pending order value: $%.2f", pendingValue)
 	}
 
 	// 총 자산 = 현금 + 보유 주식 + 미체결 주문 예약금
@@ -293,8 +297,6 @@ func (d *Daemon) runMonitorCycle() {
 
 	// 트래커 업데이트
 	d.tracker.UpdatePnL(realizedPnL, unrealizedPnL, totalEquity)
-
-	// 손절/익절 체크 (autoTrader.monitor가 처리)
 }
 
 // adaptiveScan 적응형 스캔
@@ -308,7 +310,11 @@ func (d *Daemon) adaptiveScan() ([]strategy.Signal, error) {
 	// 스캔 함수
 	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
 		var signals []strategy.Signal
-		for _, stock := range stocks {
+		total := len(stocks)
+		for i, stock := range stocks {
+			if (i+1)%20 == 0 || i == total-1 {
+				log.Printf("[DAEMON] Scan progress: %d/%d", i+1, total)
+			}
 			sig, err := strat.Analyze(ctx, stock)
 			if err == nil && sig != nil {
 				signals = append(signals, *sig)
@@ -319,6 +325,7 @@ func (d *Daemon) adaptiveScan() ([]strategy.Signal, error) {
 
 	// 적응형 스캐너
 	adaptiveCfg := trader.DefaultAdaptiveConfig()
+	adaptiveCfg.Verbose = true
 	scanner := trader.NewAdaptiveScanner(adaptiveCfg, d.config.Sizer, scanFunc)
 
 	// 스캔 실행

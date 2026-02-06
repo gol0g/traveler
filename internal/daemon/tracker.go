@@ -186,12 +186,7 @@ func (t *DailyTracker) CheckTargets() TargetCheckResult {
 		result.Reason = fmt.Sprintf("target reached: %.2f%% >= %.2f%%", t.state.TotalPnLPct, t.config.TargetPct)
 	}
 
-	// 최대 손실 도달
-	if t.state.TotalPnLPct <= t.config.LossLimitPct {
-		result.LossLimitHit = true
-		result.ShouldStop = true
-		result.Reason = fmt.Sprintf("loss limit hit: %.2f%% <= %.2f%%", t.state.TotalPnLPct, t.config.LossLimitPct)
-	}
+	// 일일 손실한도 제거됨 - 개별 종목 손절로 리스크 관리
 
 	// 최대 거래 횟수
 	if t.state.TradeCount >= t.config.MaxTrades {
