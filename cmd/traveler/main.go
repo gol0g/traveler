@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -61,6 +64,8 @@ var (
 	dailyTargetPct  float64 // 일일 목표 수익률
 	dailyLossLimit  float64 // 일일 최대 손실
 	sleepOnExit     bool    // 종료시 PC 절전
+	dataDir         string  // 데이터 디렉토리 (plans, logs, reports)
+	marketFlag      string  // 시장: us, kr
 )
 
 func main() {
@@ -110,6 +115,8 @@ Examples:
 	rootCmd.Flags().Float64Var(&dailyTargetPct, "daily-target", 1.0, "daily target profit percentage")
 	rootCmd.Flags().Float64Var(&dailyLossLimit, "daily-loss-limit", -2.0, "daily loss limit percentage")
 	rootCmd.Flags().BoolVar(&sleepOnExit, "sleep-on-exit", true, "sleep PC when daemon exits")
+	rootCmd.Flags().StringVar(&dataDir, "data-dir", "", "data directory for plans, logs, reports (default: ~/.traveler)")
+	rootCmd.Flags().StringVar(&marketFlag, "market", "us", "market: us, kr")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -258,33 +265,97 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// resolveDataDir returns the data directory path.
+// Priority: --data-dir flag > ~/. traveler > <exe-dir>/.traveler
+func resolveDataDir() string {
+	if dataDir != "" {
+		return dataDir
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".traveler")
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), ".traveler")
+	}
+	return ".traveler"
+}
+
+// setupLogging configures log output to both stdout and a log file
+func setupLogging(dir string) (*os.File, error) {
+	os.MkdirAll(dir, 0755)
+	logPath := filepath.Join(dir, "daemon.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	mw := io.MultiWriter(os.Stdout, f)
+	log.SetOutput(mw)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	return f, nil
+}
+
 func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
+	isKR := marketFlag == "kr"
+	marketLabel := "US"
+	if isKR {
+		marketLabel = "KR"
+	}
+
 	fmt.Println("=" + strings.Repeat("=", 59))
-	fmt.Println(" TRAVELER DAEMON MODE - Automated Trading")
+	fmt.Printf(" TRAVELER DAEMON MODE - Automated Trading (%s)\n", marketLabel)
 	fmt.Println("=" + strings.Repeat("=", 59))
 	fmt.Println()
 
-	// KIS API 필수
-	if cfg.KIS.AppKey == "" {
-		return fmt.Errorf("KIS API credentials required for daemon mode")
+	var broker *kis.Client
+	var daemonProvider provider.Provider = p
+
+	if isKR {
+		// 국내 시장 모드
+		if cfg.KIS.Domestic.AppKey == "" {
+			return fmt.Errorf("KIS domestic credentials required for KR daemon mode")
+		}
+		krCreds := kis.Credentials{
+			AppKey:    cfg.KIS.Domestic.AppKey,
+			AppSecret: cfg.KIS.Domestic.AppSecret,
+			AccountNo: cfg.KIS.Domestic.AccountNo,
+		}
+		broker = kis.NewDomesticClient(krCreds)
+		daemonProvider = provider.NewKISProvider(krCreds)
+	} else {
+		// 해외 시장 모드
+		if cfg.KIS.AppKey == "" {
+			return fmt.Errorf("KIS API credentials required for daemon mode")
+		}
+		creds := kis.Credentials{
+			AppKey:    cfg.KIS.AppKey,
+			AppSecret: cfg.KIS.AppSecret,
+			AccountNo: cfg.KIS.AccountNo,
+		}
+		broker = kis.NewClient(creds)
 	}
 
-	// KIS 브로커 생성
-	creds := kis.Credentials{
-		AppKey:    cfg.KIS.AppKey,
-		AppSecret: cfg.KIS.AppSecret,
-		AccountNo: cfg.KIS.AccountNo,
-	}
-	broker := kis.NewClient(creds)
 	if !broker.IsReady() {
 		return fmt.Errorf("KIS broker not ready")
 	}
+	_ = daemonProvider // used below
+
+	// DataDir 해결 및 로그 파일 설정
+	resolvedDir := resolveDataDir()
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	log.Printf("[DAEMON] Data directory: %s", resolvedDir)
 
 	// 데몬 설정
 	daemonCfg := daemon.DefaultConfig()
 	daemonCfg.Daily.TargetPct = dailyTargetPct
 	daemonCfg.Daily.LossLimitPct = dailyLossLimit
 	daemonCfg.SleepOnExit = sleepOnExit
+	daemonCfg.DataDir = resolvedDir
 
 	fmt.Printf(" Daily Target:    %.1f%%\n", dailyTargetPct)
 	fmt.Printf(" Daily Loss Limit: %.1f%%\n", dailyLossLimit)
@@ -292,7 +363,10 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	fmt.Println()
 
 	// 데몬 생성 및 실행
-	d := daemon.NewDaemon(daemonCfg, broker, p)
+	if isKR {
+		daemonCfg.Market = "kr"
+	}
+	d := daemon.NewDaemon(daemonCfg, broker, daemonProvider)
 
 	// 시그널 핸들링
 	sigChan := make(chan os.Signal, 1)
@@ -316,7 +390,37 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	server := web.NewServer(cfg, p, accountBalance, universe)
+	// Create KIS broker if credentials available
+	var kisBroker *kis.Client
+	if cfg.KIS.AppKey != "" {
+		creds := kis.Credentials{
+			AppKey:    cfg.KIS.AppKey,
+			AppSecret: cfg.KIS.AppSecret,
+			AccountNo: cfg.KIS.AccountNo,
+		}
+		client := kis.NewClient(creds)
+		if client.IsReady() {
+			kisBroker = client
+			fmt.Println("KIS broker connected for position monitoring")
+		}
+	}
+
+	server := web.NewServer(cfg, p, accountBalance, universe, kisBroker, resolveDataDir())
+
+	// Create Korean market broker/provider if domestic credentials available
+	if cfg.KIS.Domestic.AppKey != "" {
+		krCreds := kis.Credentials{
+			AppKey:    cfg.KIS.Domestic.AppKey,
+			AppSecret: cfg.KIS.Domestic.AppSecret,
+			AccountNo: cfg.KIS.Domestic.AccountNo,
+		}
+		krBroker := kis.NewDomesticClient(krCreds)
+		krProvider := provider.NewKISProvider(krCreds)
+		if krBroker.IsReady() {
+			server.SetKoreanMarket(krBroker, krProvider)
+			fmt.Println("KIS Korean domestic broker connected")
+		}
+	}
 
 	go func() {
 		<-sigChan

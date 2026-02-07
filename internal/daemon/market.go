@@ -145,13 +145,151 @@ func FormatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm", minutes)
 }
 
-// GetKSTTime 현재 한국 시간
-func GetKSTTime() time.Time {
+// GetKSTLocation 한국 시간 로케이션
+func GetKSTLocation() *time.Location {
 	loc, err := time.LoadLocation("Asia/Seoul")
 	if err != nil {
 		loc = time.FixedZone("KST", 9*60*60)
 	}
-	return time.Now().In(loc)
+	return loc
+}
+
+// GetKSTTime 현재 한국 시간
+func GetKSTTime() time.Time {
+	return time.Now().In(GetKSTLocation())
+}
+
+// KRMarketSchedule 한국 주식시장 정규장 시간
+func KRMarketSchedule() MarketSchedule {
+	return MarketSchedule{
+		OpenHour:  9,
+		OpenMin:   0,
+		CloseHour: 15,
+		CloseMin:  30,
+	}
+}
+
+// GetKRMarketStatus 한국 마켓 상태 확인 (KST 기준)
+func GetKRMarketStatus(schedule MarketSchedule) MarketStatus {
+	loc := GetKSTLocation()
+	now := time.Now().In(loc)
+
+	status := MarketStatus{
+		CurrentTimeET: now, // KST로 사용 (필드명은 ET이지만)
+	}
+
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	status.OpenTime = today.Add(time.Duration(schedule.OpenHour)*time.Hour + time.Duration(schedule.OpenMin)*time.Minute)
+	status.CloseTime = today.Add(time.Duration(schedule.CloseHour)*time.Hour + time.Duration(schedule.CloseMin)*time.Minute)
+
+	weekday := now.Weekday()
+	if weekday == time.Saturday || weekday == time.Sunday {
+		status.IsOpen = false
+		status.Reason = "weekend"
+		status.TimeToOpen = timeToNextKRTradingDay(now, schedule)
+		return status
+	}
+
+	if IsKRHoliday(now) {
+		status.IsOpen = false
+		status.Reason = "holiday"
+		status.TimeToOpen = timeToNextKRTradingDay(now, schedule)
+		return status
+	}
+
+	currentMinutes := now.Hour()*60 + now.Minute()
+	openMinutes := schedule.OpenHour*60 + schedule.OpenMin
+	closeMinutes := schedule.CloseHour*60 + schedule.CloseMin
+
+	if currentMinutes < openMinutes {
+		status.IsOpen = false
+		status.Reason = "pre-market"
+		status.TimeToOpen = status.OpenTime.Sub(now)
+	} else if currentMinutes >= closeMinutes {
+		status.IsOpen = false
+		status.Reason = "after-hours"
+		status.TimeToOpen = timeToNextKRTradingDay(now, schedule)
+	} else {
+		status.IsOpen = true
+		status.Reason = "open"
+		status.TimeToClose = status.CloseTime.Sub(now)
+	}
+
+	return status
+}
+
+// timeToNextKRTradingDay 다음 한국 거래일 개장까지 시간
+func timeToNextKRTradingDay(now time.Time, schedule MarketSchedule) time.Duration {
+	loc := GetKSTLocation()
+	nextDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+
+	for i := 0; i < 10; i++ {
+		weekday := nextDay.Weekday()
+		if weekday != time.Saturday && weekday != time.Sunday && !IsKRHoliday(nextDay) {
+			nextOpen := nextDay.Add(time.Duration(schedule.OpenHour)*time.Hour + time.Duration(schedule.OpenMin)*time.Minute)
+			return nextOpen.Sub(now)
+		}
+		nextDay = nextDay.AddDate(0, 0, 1)
+	}
+
+	return 24 * time.Hour
+}
+
+// IsKRHoliday 한국 공휴일 체크
+func IsKRHoliday(t time.Time) bool {
+	dateStr := t.Format("2006-01-02")
+	for _, h := range krHolidays2025 {
+		if h == dateStr {
+			return true
+		}
+	}
+	for _, h := range krHolidays2026 {
+		if h == dateStr {
+			return true
+		}
+	}
+	return false
+}
+
+// 한국 공휴일 (주식시장 휴장일)
+var krHolidays2025 = []string{
+	"2025-01-01", // 신정
+	"2025-01-28", // 설날 연휴
+	"2025-01-29", // 설날
+	"2025-01-30", // 설날 연휴
+	"2025-03-01", // 삼일절
+	"2025-03-03", // 삼일절 대체
+	"2025-05-05", // 어린이날
+	"2025-05-06", // 석가탄신일
+	"2025-06-06", // 현충일
+	"2025-08-15", // 광복절
+	"2025-10-03", // 개천절
+	"2025-10-05", // 추석 연휴
+	"2025-10-06", // 추석
+	"2025-10-07", // 추석 연휴
+	"2025-10-08", // 추석 대체
+	"2025-10-09", // 한글날
+	"2025-12-25", // 성탄절
+	"2025-12-31", // 연말 휴장
+}
+
+var krHolidays2026 = []string{
+	"2026-01-01", // 신정
+	"2026-02-16", // 설날 연휴
+	"2026-02-17", // 설날
+	"2026-02-18", // 설날 연휴
+	"2026-03-02", // 삼일절 대체
+	"2026-05-05", // 어린이날
+	"2026-05-24", // 석가탄신일 (음력 4/8)
+	"2026-06-06", // 현충일
+	"2026-08-17", // 광복절 대체
+	"2026-09-24", // 추석 연휴
+	"2026-09-25", // 추석
+	"2026-09-26", // 추석 연휴
+	"2026-10-03", // 개천절
+	"2026-10-09", // 한글날
+	"2026-12-25", // 성탄절
+	"2026-12-31", // 연말 휴장
 }
 
 // US 공휴일 체크 (간단 버전 - 주요 공휴일만)

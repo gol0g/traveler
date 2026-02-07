@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"traveler/internal/provider"
+	"traveler/internal/symbols"
 	"traveler/pkg/model"
 )
 
@@ -67,7 +68,8 @@ func (s *PullbackStrategy) Description() string {
 // Analyze analyzes a stock for pullback opportunity
 func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Signal, error) {
 	// Pre-filter: Ticker length (exclude OTC 5-letter tickers, warrants, etc.)
-	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength {
+	// Korean symbols are 6-digit numeric codes — skip this filter for them
+	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength && !symbols.IsKoreanSymbol(stock.Symbol) {
 		return nil, fmt.Errorf("ticker too long: %s (likely OTC/warrant)", stock.Symbol)
 	}
 

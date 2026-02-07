@@ -30,11 +30,22 @@ type DaemonConfig struct {
 	ClosePositionsOnExit bool    `yaml:"close_positions_on_exit"` // 종료시 포지션 전량 청산 여부
 }
 
-// KISConfig holds KIS API settings
-type KISConfig struct {
+// KISAccountConfig holds a single KIS account's credentials
+type KISAccountConfig struct {
 	AppKey    string `yaml:"app_key"`
 	AppSecret string `yaml:"app_secret"`
 	AccountNo string `yaml:"account_no"` // XXXXXXXX-XX 형식
+}
+
+// KISConfig holds KIS API settings
+type KISConfig struct {
+	// 해외 계좌 (기존 - 하위 호환)
+	AppKey    string `yaml:"app_key"`
+	AppSecret string `yaml:"app_secret"`
+	AccountNo string `yaml:"account_no"` // XXXXXXXX-XX 형식
+
+	// 국내 계좌 (별도 AppKey)
+	Domestic KISAccountConfig `yaml:"domestic"`
 }
 
 // TraderConfig holds auto-trading settings
@@ -159,6 +170,17 @@ func Load(path string) (*Config, error) {
 	}
 	if key := os.Getenv("KIS_ACCOUNT_NO"); key != "" {
 		cfg.KIS.AccountNo = key
+	}
+
+	// 국내 KIS 환경변수
+	if key := os.Getenv("KIS_KR_APP_KEY"); key != "" {
+		cfg.KIS.Domestic.AppKey = key
+	}
+	if key := os.Getenv("KIS_KR_APP_SECRET"); key != "" {
+		cfg.KIS.Domestic.AppSecret = key
+	}
+	if key := os.Getenv("KIS_KR_ACCOUNT_NO"); key != "" {
+		cfg.KIS.Domestic.AccountNo = key
 	}
 
 	return cfg, nil

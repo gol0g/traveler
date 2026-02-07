@@ -3,6 +3,8 @@ package kis
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,9 +39,11 @@ type TokenManager struct {
 
 // NewTokenManager 토큰 매니저 생성
 func NewTokenManager(creds Credentials) *TokenManager {
-	// 토큰 캐시 파일 경로 (홈 디렉토리/.kis_token.json)
+	// 토큰 캐시 파일 경로 (AppKey별 분리)
 	homeDir, _ := os.UserHomeDir()
-	cacheFile := filepath.Join(homeDir, ".kis_token.json")
+	hash := sha256.Sum256([]byte(creds.AppKey))
+	suffix := hex.EncodeToString(hash[:4])
+	cacheFile := filepath.Join(homeDir, fmt.Sprintf(".kis_token_%s.json", suffix))
 
 	tm := &TokenManager{
 		creds:     creds,

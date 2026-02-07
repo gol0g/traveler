@@ -20,6 +20,17 @@ const (
 	TrIDBuyingPower   = "TTTS3007R" // 해외주식 매수가능금액조회
 )
 
+// 국내주식 거래 ID (실전투자)
+const (
+	TrIDDomBuyReal     = "TTTC0802U"     // 국내 매수
+	TrIDDomSellReal    = "TTTC0801U"     // 국내 매도
+	TrIDDomBalanceReal = "TTTC8434R"     // 국내 잔고조회
+	TrIDDomPendingReal = "TTTC8036R"     // 국내 미체결조회
+	TrIDDomPriceReal   = "FHKST01010100" // 국내 현재가
+	TrIDDomCandleReal  = "FHKST03010100" // 국내 일봉
+	TrIDDomBuyPower    = "TTTC8908R"     // 국내 매수가능금액
+)
+
 // 거래소 코드 (KIS API용)
 const (
 	ExchangeNYSE   = "NYS" // 뉴욕
@@ -146,5 +157,116 @@ type buyingPowerResponse struct {
 		FRCR_ORD_PSBL_AMT1 string `json:"frcr_ord_psbl_amt1"` // (참고용)
 		MAX_ORD_PSBL_QTY   string `json:"max_ord_psbl_qty"`   // 최대주문가능수량
 		EXRT               string `json:"exrt"`               // 환율
+	} `json:"output"`
+}
+
+// ========== 국내주식 타입 ==========
+
+// Market 시장 구분
+type Market string
+
+const (
+	MarketOverseas Market = "overseas"
+	MarketDomestic Market = "domestic"
+)
+
+// domOrderRequest 국내 주문 요청
+type domOrderRequest struct {
+	CANO     string `json:"CANO"`         // 계좌번호 앞 8자리
+	ACNT     string `json:"ACNT_PRDT_CD"` // 계좌상품코드 (뒤 2자리)
+	PDNO     string `json:"PDNO"`         // 종목코드 (6자리)
+	ORD_DVSN string `json:"ORD_DVSN"`     // "00"=지정가, "01"=시장가
+	ORD_QTY  string `json:"ORD_QTY"`      // 주문수량
+	ORD_UNPR string `json:"ORD_UNPR"`     // 주문단가 (정수, 시장가=0)
+}
+
+// domBalanceResponse 국내 잔고조회 응답 (TTTC8434R)
+type domBalanceResponse struct {
+	RtCd    string `json:"rt_cd"`
+	MsgCd   string `json:"msg_cd"`
+	Msg1    string `json:"msg1"`
+	Output1 []struct {
+		PDNO           string `json:"pdno"`            // 종목코드
+		PRDT_NAME      string `json:"prdt_name"`       // 종목명
+		HLDG_QTY       string `json:"hldg_qty"`        // 보유수량
+		PCHS_AVG_PRIC  string `json:"pchs_avg_pric"`   // 매입평균가
+		PRPR           string `json:"prpr"`             // 현재가
+		EVLU_AMT       string `json:"evlu_amt"`         // 평가금액
+		EVLU_PFLS_AMT  string `json:"evlu_pfls_amt"`    // 평가손익
+		EVLU_PFLS_RT   string `json:"evlu_pfls_rt"`     // 평가수익률
+		EVLU_ERNG_RT   string `json:"evlu_erng_rt"`     // 평가수익률(%)
+	} `json:"output1"`
+	Output2 []struct {
+		DNCA_TOT_AMT      string `json:"dnca_tot_amt"`       // 예수금총금액
+		NXDY_EXCC_AMT     string `json:"nxdy_excc_amt"`      // 익일정산금액
+		PRVS_RCDL_EXCC_AMT string `json:"prvs_rcdl_excc_amt"` // D+2 예수금
+		SCTS_EVLU_AMT     string `json:"scts_evlu_amt"`       // 유가평가금액
+		TOT_EVLU_AMT      string `json:"tot_evlu_amt"`        // 총평가금액
+		BFDY_TOT_ASST_EVLU_AMT string `json:"bfdy_tot_asst_evlu_amt"` // 전일총자산평가
+		PCHS_AMT_SMTL_AMT string `json:"pchs_amt_smtl_amt"`  // 매입금액합계
+		EVLU_AMT_SMTL_AMT string `json:"evlu_amt_smtl_amt"`  // 평가금액합계
+		EVLU_PFLS_SMTL_AMT string `json:"evlu_pfls_smtl_amt"` // 평가손익합계
+	} `json:"output2"`
+}
+
+// domPriceResponse 국내 현재가 응답 (FHKST01010100)
+type domPriceResponse struct {
+	RtCd   string `json:"rt_cd"`
+	MsgCd  string `json:"msg_cd"`
+	Msg1   string `json:"msg1"`
+	Output struct {
+		STCK_PRPR  string `json:"stck_prpr"`   // 현재가
+		PRDY_VRSS string `json:"prdy_vrss"`    // 전일대비
+		PRDY_CTRT string `json:"prdy_ctrt"`    // 전일대비율
+		STCK_OPRC string `json:"stck_oprc"`    // 시가
+		STCK_HGPR string `json:"stck_hgpr"`    // 고가
+		STCK_LWPR string `json:"stck_lwpr"`    // 저가
+		ACML_VOL  string `json:"acml_vol"`     // 누적거래량
+		HTS_KOR_ISNM string `json:"hts_kor_isnm"` // 종목명
+	} `json:"output"`
+}
+
+// domPendingResponse 국내 미체결 조회 응답 (TTTC8036R)
+type domPendingResponse struct {
+	RtCd   string `json:"rt_cd"`
+	MsgCd  string `json:"msg_cd"`
+	Msg1   string `json:"msg1"`
+	Output []struct {
+		ODNO          string `json:"odno"`           // 주문번호
+		PDNO          string `json:"pdno"`           // 종목코드
+		SLL_BUY_DVSN_CD string `json:"sll_buy_dvsn_cd"` // "01"=매도, "02"=매수
+		ORD_QTY       string `json:"ord_qty"`        // 주문수량
+		RMNN_QTY      string `json:"rmnn_qty"`       // 잔여수량
+		ORD_UNPR      string `json:"ord_unpr"`       // 주문단가
+		ORD_TMD       string `json:"ord_tmd"`        // 주문시각
+		PRDT_NAME     string `json:"prdt_name"`      // 종목명
+	} `json:"output"`
+}
+
+// domCandleResponse 국내 일봉 응답 (FHKST03010100)
+type domCandleResponse struct {
+	RtCd   string `json:"rt_cd"`
+	MsgCd  string `json:"msg_cd"`
+	Msg1   string `json:"msg1"`
+	Output2 []struct {
+		STCK_BSOP_DATE string `json:"stck_bsop_date"` // 영업일자 (YYYYMMDD)
+		STCK_OPRC      string `json:"stck_oprc"`       // 시가
+		STCK_HGPR      string `json:"stck_hgpr"`       // 고가
+		STCK_LWPR      string `json:"stck_lwpr"`       // 저가
+		STCK_CLPR      string `json:"stck_clpr"`       // 종가
+		ACML_VOL       string `json:"acml_vol"`        // 누적거래량
+	} `json:"output2"`
+}
+
+// domBuyPowerResponse 국내 매수가능금액 응답 (TTTC8908R)
+type domBuyPowerResponse struct {
+	RtCd   string `json:"rt_cd"`
+	MsgCd  string `json:"msg_cd"`
+	Msg1   string `json:"msg1"`
+	Output struct {
+		ORD_PSBL_CASH string `json:"ord_psbl_cash"` // 주문가능현금
+		ORD_PSBL_SBST string `json:"ord_psbl_sbst"` // 주문가능대용
+		RUSE_PSBL_AMT string `json:"ruse_psbl_amt"` // 재사용가능금액
+		NRCVB_BUY_AMT string `json:"nrcvb_buy_amt"` // 미수없는매수금액
 	} `json:"output"`
 }

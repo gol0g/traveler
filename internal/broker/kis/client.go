@@ -21,16 +21,34 @@ type Client struct {
 	creds      Credentials
 	httpClient *http.Client
 	limiter    *ratelimit.Limiter
+	market     Market
 }
 
-// NewClient KIS 클라이언트 생성
+// NewClient KIS 해외주식 클라이언트 생성
 func NewClient(creds Credentials) *Client {
 	return &Client{
 		tokenMgr:   NewTokenManager(creds),
 		creds:      creds,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
-		limiter:    ratelimit.NewLimiter("kis", 300), // 초당 5회 = 분당 300
+		limiter:    ratelimit.NewLimiter("kis", 300),
+		market:     MarketOverseas,
 	}
+}
+
+// NewDomesticClient KIS 국내주식 클라이언트 생성
+func NewDomesticClient(creds Credentials) *Client {
+	return &Client{
+		tokenMgr:   NewTokenManager(creds),
+		creds:      creds,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		limiter:    ratelimit.NewLimiter("kis-kr", 300),
+		market:     MarketDomestic,
+	}
+}
+
+// IsDomestic 국내 클라이언트 여부
+func (c *Client) IsDomestic() bool {
+	return c.market == MarketDomestic
 }
 
 // Name 브로커 이름
@@ -139,12 +157,19 @@ func (c *Client) detectExchange(symbol string) string {
 
 // PlaceOrder 주문 실행
 func (c *Client) PlaceOrder(ctx context.Context, order broker.Order) (*broker.OrderResult, error) {
+	if c.market == MarketDomestic {
+		return c.placeDomesticOrder(ctx, order)
+	}
+	return c.placeOverseasOrder(ctx, order)
+}
+
+// placeOverseasOrder 해외주식 주문
+func (c *Client) placeOverseasOrder(ctx context.Context, order broker.Order) (*broker.OrderResult, error) {
 	cano, acnt, err := c.getAccountParts()
 	if err != nil {
 		return nil, err
 	}
 
-	// 거래 ID 결정
 	var trID string
 	if order.Side == broker.OrderSideBuy {
 		trID = TrIDBuyReal
@@ -152,11 +177,10 @@ func (c *Client) PlaceOrder(ctx context.Context, order broker.Order) (*broker.Or
 		trID = TrIDSellReal
 	}
 
-	// 주문 구분
-	ordDvsn := "00" // 지정가
+	ordDvsn := "00"
 	price := fmt.Sprintf("%.2f", order.LimitPrice)
 	if order.Type == broker.OrderTypeMarket {
-		ordDvsn = "01" // 시장가
+		ordDvsn = "01"
 		price = "0"
 	}
 
@@ -174,6 +198,62 @@ func (c *Client) PlaceOrder(ctx context.Context, order broker.Order) (*broker.Or
 	}
 
 	respBody, err := c.doRequest(ctx, "POST", "/uapi/overseas-stock/v1/trading/order", trID, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp orderResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.RtCd != "0" {
+		return nil, fmt.Errorf("order failed: [%s] %s", resp.MsgCd, resp.Msg1)
+	}
+
+	return &broker.OrderResult{
+		OrderID:     resp.Output.ODNO,
+		Symbol:      order.Symbol,
+		Side:        order.Side,
+		Type:        order.Type,
+		Quantity:    order.Quantity,
+		Status:      "submitted",
+		Message:     resp.Msg1,
+		SubmittedAt: time.Now(),
+	}, nil
+}
+
+// placeDomesticOrder 국내주식 주문
+func (c *Client) placeDomesticOrder(ctx context.Context, order broker.Order) (*broker.OrderResult, error) {
+	cano, acnt, err := c.getAccountParts()
+	if err != nil {
+		return nil, err
+	}
+
+	var trID string
+	if order.Side == broker.OrderSideBuy {
+		trID = TrIDDomBuyReal
+	} else {
+		trID = TrIDDomSellReal
+	}
+
+	ordDvsn := "00" // 지정가
+	price := fmt.Sprintf("%d", int(order.LimitPrice))
+	if order.Type == broker.OrderTypeMarket {
+		ordDvsn = "01"
+		price = "0"
+	}
+
+	req := domOrderRequest{
+		CANO:     cano,
+		ACNT:     acnt,
+		PDNO:     order.Symbol,
+		ORD_DVSN: ordDvsn,
+		ORD_QTY:  fmt.Sprintf("%d", order.Quantity),
+		ORD_UNPR: price,
+	}
+
+	respBody, err := c.doRequest(ctx, "POST", "/uapi/domestic-stock/v1/trading/order-cash", trID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +322,14 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (*broker.OrderRes
 
 // GetBalance 계좌 잔고 조회
 func (c *Client) GetBalance(ctx context.Context) (*broker.AccountBalance, error) {
+	if c.market == MarketDomestic {
+		return c.getDomesticBalance(ctx)
+	}
+	return c.getOverseasBalance(ctx)
+}
+
+// getOverseasBalance 해외주식 잔고 조회
+func (c *Client) getOverseasBalance(ctx context.Context) (*broker.AccountBalance, error) {
 	cano, acnt, err := c.getAccountParts()
 	if err != nil {
 		return nil, err
@@ -364,6 +452,14 @@ func (c *Client) GetPositions(ctx context.Context) ([]broker.Position, error) {
 
 // GetPendingOrders 미체결 주문 조회
 func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, error) {
+	if c.market == MarketDomestic {
+		return c.getDomesticPendingOrders(ctx)
+	}
+	return c.getOverseasPendingOrders(ctx)
+}
+
+// getOverseasPendingOrders 해외주식 미체결 조회
+func (c *Client) getOverseasPendingOrders(ctx context.Context) ([]broker.PendingOrder, error) {
 	cano, acnt, err := c.getAccountParts()
 	if err != nil {
 		return nil, err
@@ -409,8 +505,16 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]broker.PendingOrder, e
 	return orders, nil
 }
 
-// GetQuote 현재가 조회 (자동 거래소 탐지)
+// GetQuote 현재가 조회
 func (c *Client) GetQuote(ctx context.Context, symbol string) (float64, error) {
+	if c.market == MarketDomestic {
+		return c.getDomesticQuote(ctx, symbol)
+	}
+	return c.getOverseasQuote(ctx, symbol)
+}
+
+// getOverseasQuote 해외주식 현재가 (자동 거래소 탐지)
+func (c *Client) getOverseasQuote(ctx context.Context, symbol string) (float64, error) {
 	// 먼저 추측 기반으로 시도
 	exchange := c.detectExchange(symbol)
 	price, err := c.GetQuoteWithExchange(ctx, symbol, exchange)
@@ -452,6 +556,184 @@ func (c *Client) GetQuoteWithExchange(ctx context.Context, symbol, exchange stri
 	}
 
 	return parseFloat(resp.Output.LAST), nil
+}
+
+// ========== 국내주식 메서드 ==========
+
+// getDomesticBalance 국내주식 잔고 조회
+func (c *Client) getDomesticBalance(ctx context.Context) (*broker.AccountBalance, error) {
+	cano, acnt, err := c.getAccountParts()
+	if err != nil {
+		return nil, err
+	}
+
+	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&AFHR_FLPR_YN=N&OFL_YN=&INQR_DVSN=02&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=01&CTX_AREA_FK100=&CTX_AREA_NK100=",
+		cano, acnt)
+
+	respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/trading/inquire-balance"+params, TrIDDomBalanceReal, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp domBalanceResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.RtCd != "0" {
+		return nil, fmt.Errorf("balance query failed: [%s] %s", resp.MsgCd, resp.Msg1)
+	}
+
+	balance := &broker.AccountBalance{
+		Currency:  "KRW",
+		Positions: make([]broker.Position, 0, len(resp.Output1)),
+	}
+
+	for _, p := range resp.Output1 {
+		qty := parseFloat(p.HLDG_QTY)
+		if qty <= 0 {
+			continue
+		}
+
+		avgCost := parseFloat(p.PCHS_AVG_PRIC)
+		currentPrice := parseFloat(p.PRPR)
+		marketValue := parseFloat(p.EVLU_AMT)
+		unrealizedPnL := parseFloat(p.EVLU_PFLS_AMT)
+		unrealizedPct := parseFloat(p.EVLU_PFLS_RT)
+
+		pos := broker.Position{
+			Symbol:        p.PDNO,
+			Name:          p.PRDT_NAME,
+			Quantity:      int(qty),
+			AvgCost:       avgCost,
+			CurrentPrice:  currentPrice,
+			MarketValue:   marketValue,
+			UnrealizedPnL: unrealizedPnL,
+			UnrealizedPct: unrealizedPct,
+		}
+		balance.Positions = append(balance.Positions, pos)
+	}
+
+	// Output2 합계 정보
+	if len(resp.Output2) > 0 {
+		summary := resp.Output2[0]
+		balance.CashBalance = parseFloat(summary.DNCA_TOT_AMT)
+		balance.BuyingPower = parseFloat(summary.DNCA_TOT_AMT)
+
+		totalStockValue := parseFloat(summary.SCTS_EVLU_AMT)
+		balance.TotalEquity = balance.CashBalance + totalStockValue
+	}
+
+	return balance, nil
+}
+
+// getDomesticPendingOrders 국내주식 미체결 조회
+func (c *Client) getDomesticPendingOrders(ctx context.Context) ([]broker.PendingOrder, error) {
+	cano, acnt, err := c.getAccountParts()
+	if err != nil {
+		return nil, err
+	}
+
+	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&INQR_DVSN_3=00&INQR_DVSN_1=&CTX_AREA_FK100=&CTX_AREA_NK100=",
+		cano, acnt)
+
+	respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"+params, TrIDDomPendingReal, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp domPendingResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.RtCd != "0" {
+		return nil, fmt.Errorf("pending query failed: [%s] %s", resp.MsgCd, resp.Msg1)
+	}
+
+	orders := make([]broker.PendingOrder, 0, len(resp.Output))
+	for _, o := range resp.Output {
+		side := broker.OrderSideBuy
+		if o.SLL_BUY_DVSN_CD == "01" {
+			side = broker.OrderSideSell
+		}
+
+		totalQty := int(parseFloat(o.ORD_QTY))
+		remainQty := int(parseFloat(o.RMNN_QTY))
+
+		orders = append(orders, broker.PendingOrder{
+			OrderID:   o.ODNO,
+			Symbol:    o.PDNO,
+			Side:      side,
+			Type:      broker.OrderTypeLimit,
+			Quantity:  totalQty,
+			FilledQty: totalQty - remainQty,
+			Price:     parseFloat(o.ORD_UNPR),
+			Status:    "pending",
+		})
+	}
+
+	return orders, nil
+}
+
+// getDomesticQuote 국내주식 현재가 조회
+func (c *Client) getDomesticQuote(ctx context.Context, symbol string) (float64, error) {
+	params := fmt.Sprintf("?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=%s", symbol)
+
+	respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/quotations/inquire-price"+params, TrIDDomPriceReal, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	var resp domPriceResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return 0, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.RtCd != "0" {
+		return 0, fmt.Errorf("quote query failed: [%s] %s", resp.MsgCd, resp.Msg1)
+	}
+
+	return parseFloat(resp.Output.STCK_PRPR), nil
+}
+
+// GetDailyCandles 국내주식 일봉 조회 (Provider용)
+func (c *Client) GetDailyCandles(ctx context.Context, symbol string, days int) ([]domCandleItem, error) {
+	if c.market != MarketDomestic {
+		return nil, fmt.Errorf("GetDailyCandles only available for domestic market")
+	}
+
+	endDate := time.Now().Format("20060102")
+	startDate := time.Now().AddDate(0, 0, -int(float64(days)*1.5)).Format("20060102")
+
+	params := fmt.Sprintf("?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=%s&FID_INPUT_DATE_1=%s&FID_INPUT_DATE_2=%s&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0",
+		symbol, startDate, endDate)
+
+	respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"+params, TrIDDomCandleReal, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp domCandleResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.RtCd != "0" {
+		return nil, fmt.Errorf("candle query failed: [%s] %s", resp.MsgCd, resp.Msg1)
+	}
+
+	return resp.Output2, nil
+}
+
+// domCandleItem 일봉 개별 항목 (외부 노출용 alias)
+type domCandleItem = struct {
+	STCK_BSOP_DATE string `json:"stck_bsop_date"`
+	STCK_OPRC      string `json:"stck_oprc"`
+	STCK_HGPR      string `json:"stck_hgpr"`
+	STCK_LWPR      string `json:"stck_lwpr"`
+	STCK_CLPR      string `json:"stck_clpr"`
+	ACML_VOL       string `json:"acml_vol"`
 }
 
 // parseFloat 문자열을 float64로 변환

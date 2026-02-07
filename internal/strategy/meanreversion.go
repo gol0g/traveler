@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"traveler/internal/provider"
+	"traveler/internal/symbols"
 	"traveler/pkg/model"
 )
 
@@ -63,8 +64,8 @@ func (s *MeanReversionStrategy) Description() string {
 
 // Analyze analyzes a stock for mean reversion opportunity
 func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) (*Signal, error) {
-	// Pre-filter: Ticker length
-	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength {
+	// Pre-filter: Ticker length (skip for Korean 6-digit symbols)
+	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength && !symbols.IsKoreanSymbol(stock.Symbol) {
 		return nil, fmt.Errorf("ticker too long: %s", stock.Symbol)
 	}
 

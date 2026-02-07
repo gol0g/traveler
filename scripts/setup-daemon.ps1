@@ -19,9 +19,10 @@ Unregister-ScheduledTask -TaskName "TravelerDaemon" -Confirm:$false -ErrorAction
 $defaultTime = "23:20"
 $exePath = "C:\Users\JungHyun\Desktop\traveler\traveler.exe"
 $workDir = "C:\Users\JungHyun\Desktop\traveler"
+$dataDir = "$env:USERPROFILE\.traveler"
 
 $trigger = New-ScheduledTaskTrigger -Daily -At $defaultTime
-$action = New-ScheduledTaskAction -Execute $exePath -Argument "--daemon" -WorkingDirectory $workDir
+$action = New-ScheduledTaskAction -Execute $exePath -Argument "--daemon --data-dir `"$dataDir`"" -WorkingDirectory $workDir
 $settings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
 
@@ -32,6 +33,7 @@ Write-Host "Task 'TravelerDaemon' registered!" -ForegroundColor Green
 Write-Host "  - Runs daily at $defaultTime (KST)"
 Write-Host "  - Wake from sleep: Yes"
 Write-Host "  - Run as: SYSTEM"
+Write-Host "  - Data dir: $dataDir"
 Write-Host ""
 
 # Verify

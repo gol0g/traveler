@@ -150,6 +150,18 @@ func (ps *PlanStore) UpdateConsecutiveDaysBelow(symbol string, days int) error {
 	return nil
 }
 
+// Reload re-reads plans from disk (for cross-process freshness)
+func (ps *PlanStore) Reload() error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	ps.plans = make(map[string]*PositionPlan)
+	if err := ps.load(); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // All returns all plans
 func (ps *PlanStore) All() map[string]*PositionPlan {
 	ps.mu.RLock()

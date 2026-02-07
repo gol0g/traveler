@@ -22,6 +22,7 @@ import (
 // Config 데몬 설정
 type Config struct {
 	// 마켓 설정
+	Market           string        // "us" or "kr"
 	WaitForMarket    bool          // 마켓 열릴 때까지 대기
 	MaxWaitTime      time.Duration // 최대 대기 시간
 
@@ -78,6 +79,19 @@ func NewDaemon(cfg Config, b broker.Broker, p provider.Provider) *Daemon {
 	}
 }
 
+// isKR 한국 시장 모드 여부
+func (d *Daemon) isKR() bool {
+	return d.config.Market == "kr"
+}
+
+// getMarketStatus 현재 시장에 맞는 마켓 상태 조회
+func (d *Daemon) getMarketStatus() MarketStatus {
+	if d.isKR() {
+		return GetKRMarketStatus(KRMarketSchedule())
+	}
+	return GetMarketStatus(DefaultMarketSchedule())
+}
+
 // Run 데몬 실행
 func (d *Daemon) Run() error {
 	log.Println("[DAEMON] Starting automated trading daemon...")
@@ -91,8 +105,12 @@ func (d *Daemon) Run() error {
 	}()
 
 	// 1. 마켓 상태 확인
-	status := GetMarketStatus(DefaultMarketSchedule())
-	log.Printf("[DAEMON] Market status: %s (ET: %s)", status.Reason, status.CurrentTimeET.Format("15:04"))
+	status := d.getMarketStatus()
+	tzLabel := "ET"
+	if d.isKR() {
+		tzLabel = "KST"
+	}
+	log.Printf("[DAEMON] Market status: %s (%s: %s)", status.Reason, tzLabel, status.CurrentTimeET.Format("15:04"))
 
 	if !status.IsOpen {
 		if d.config.WaitForMarket {
@@ -122,7 +140,11 @@ func (d *Daemon) Run() error {
 		log.Printf("[DAEMON] Failed to get balance: %v", err)
 		return d.shutdown("balance_error")
 	}
-	log.Printf("[DAEMON] Account balance: $%.2f", balance.TotalEquity)
+	if d.isKR() {
+		log.Printf("[DAEMON] Account balance: ₩%.0f", balance.TotalEquity)
+	} else {
+		log.Printf("[DAEMON] Account balance: $%.2f", balance.TotalEquity)
+	}
 
 	// 3. 일일 트래커 시작
 	if err := d.tracker.Start(balance.TotalEquity); err != nil {
@@ -130,7 +152,11 @@ func (d *Daemon) Run() error {
 	}
 
 	// 4. Sizer 설정 (잔고 기반)
-	d.config.Sizer = trader.AdjustConfigForBalance(balance.TotalEquity)
+	if d.isKR() {
+		d.config.Sizer = trader.AdjustConfigForKRBalance(balance.TotalEquity)
+	} else {
+		d.config.Sizer = trader.AdjustConfigForBalance(balance.TotalEquity)
+	}
 
 	// 5. PlanStore 초기화 (~/.traveler/ 고정 경로)
 	dataDir := d.config.DataDir
@@ -250,7 +276,7 @@ func (d *Daemon) runScanCycle() {
 	log.Println("[DAEMON] Running scan cycle...")
 
 	// 마켓 상태 재확인
-	status := GetMarketStatus(DefaultMarketSchedule())
+	status := d.getMarketStatus()
 	if !status.IsOpen {
 		log.Printf("[DAEMON] Market closed during scan cycle. Status: %s", status.Reason)
 		return
@@ -380,8 +406,15 @@ func (d *Daemon) adaptiveScan() ([]strategy.Signal, error) {
 	adaptiveCfg.Verbose = true
 	scanner := trader.NewAdaptiveScanner(adaptiveCfg, d.config.Sizer, scanFunc)
 
+	// KR 모드: 한국 유니버스 티어 사용
+	if d.isKR() {
+		scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+			return trader.GetKRUniverseTiers(balance)
+		})
+	}
+
 	// 스캔 실행
-	loader := &daemonStockLoader{provider: d.provider}
+	loader := &daemonStockLoader{provider: d.provider, korean: d.isKR()}
 	result, err := scanner.Scan(d.ctx, loader)
 	if err != nil {
 		return nil, err
@@ -395,7 +428,7 @@ func (d *Daemon) adaptiveScan() ([]strategy.Signal, error) {
 // checkStopConditions 종료 조건 체크
 func (d *Daemon) checkStopConditions() (bool, string) {
 	// 마켓 상태
-	status := GetMarketStatus(DefaultMarketSchedule())
+	status := d.getMarketStatus()
 	if !status.IsOpen && status.Reason == "after-hours" {
 		return true, "market_closed"
 	}
@@ -433,7 +466,7 @@ func (d *Daemon) shutdown(reason string) error {
 	// PC 절전
 	if d.config.SleepOnExit {
 		// 다음 시장 오픈 시간에 wake timer 등록
-		status := GetMarketStatus(DefaultMarketSchedule())
+		status := d.getMarketStatus()
 		if status.TimeToOpen > 0 {
 			wakeTime := time.Now().Add(status.TimeToOpen).Add(-10 * time.Minute) // 10분 전에 깨우기
 			if err := registerWakeTimer(wakeTime); err != nil {
@@ -521,6 +554,7 @@ func registerWakeTimer(wakeTime time.Time) error {
 // daemonStockLoader StockLoader 구현
 type daemonStockLoader struct {
 	provider provider.Provider
+	korean   bool
 }
 
 func (l *daemonStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe) ([]model.Stock, error) {
@@ -531,7 +565,11 @@ func (l *daemonStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe
 
 	stocks := make([]model.Stock, len(syms))
 	for i, sym := range syms {
-		stocks[i] = model.Stock{Symbol: sym, Name: sym}
+		name := sym
+		if l.korean {
+			name = symbols.GetKRSymbolName(sym)
+		}
+		stocks[i] = model.Stock{Symbol: sym, Name: name}
 	}
 	return stocks, nil
 }

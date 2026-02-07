@@ -110,6 +110,14 @@ func GetUniverseTiers(balance float64) []UniverseTier {
 			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 2},
 			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 2},
 		}
+	case balance < 25000:
+		// 중고액: 대형주 우선, 필요시 소형주로 확대
+		return []UniverseTier{
+			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 1},
+			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 1},
+			{Name: "midcap", Universe: symbols.UniverseMidCap, Priority: 2},
+			{Name: "russell", Universe: symbols.UniverseRussell, Priority: 2},
+		}
 	default:
 		// 고액: 전체 스캔
 		return []UniverseTier{
@@ -121,11 +129,15 @@ func GetUniverseTiers(balance float64) []UniverseTier {
 	}
 }
 
+// TierFunc 유니버스 티어 결정 함수
+type TierFunc func(balance float64) []UniverseTier
+
 // AdaptiveScanner 적응형 스캐너
 type AdaptiveScanner struct {
 	config      AdaptiveConfig
 	sizerConfig SizerConfig
 	scanFunc    ScanFunc
+	tierFunc    TierFunc // nil이면 기본 GetUniverseTiers 사용
 }
 
 // ScanFunc 스캔 함수 타입
@@ -138,6 +150,11 @@ func NewAdaptiveScanner(cfg AdaptiveConfig, sizerCfg SizerConfig, scanFunc ScanF
 		sizerConfig: sizerCfg,
 		scanFunc:    scanFunc,
 	}
+}
+
+// SetTierFunc 유니버스 티어 결정 함수 커스터마이즈 (한국 시장용)
+func (s *AdaptiveScanner) SetTierFunc(fn TierFunc) {
+	s.tierFunc = fn
 }
 
 // ScanResult 스캔 결과
@@ -159,7 +176,12 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 	balance := s.sizerConfig.TotalCapital
 	maxPrice := balance * s.sizerConfig.MaxPositionPct
 
-	tiers := GetUniverseTiers(balance)
+	var tiers []UniverseTier
+	if s.tierFunc != nil {
+		tiers = s.tierFunc(balance)
+	} else {
+		tiers = GetUniverseTiers(balance)
+	}
 	currentPriority := 1
 	var allSignals []strategy.Signal
 	scannedSymbols := make(map[string]bool)
@@ -265,6 +287,58 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 	})
 
 	return result, nil
+}
+
+// GetKRUniverseTiers 한국 시장 유니버스 티어 (KRW 기준)
+func GetKRUniverseTiers(balance float64) []UniverseTier {
+	switch {
+	case balance < 5000000: // 500만원 미만: KOSDAQ(저가주) 우선
+		return []UniverseTier{
+			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
+			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 2},
+		}
+	case balance < 50000000: // 5000만원 미만: KOSPI+KOSDAQ
+		return []UniverseTier{
+			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 1},
+			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
+			{Name: "kospi200", Universe: symbols.UniverseKospi200, Priority: 2},
+		}
+	default: // 고액: 전체
+		return []UniverseTier{
+			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 1},
+			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
+			{Name: "kospi200", Universe: symbols.UniverseKospi200, Priority: 1},
+		}
+	}
+}
+
+// AdjustConfigForKRBalance KRW 잔고 기반 Sizer 설정
+func AdjustConfigForKRBalance(balance float64) SizerConfig {
+	cfg := SizerConfig{
+		TotalCapital:   balance,
+		RiskPerTrade:   0.01,
+		MaxPositionPct: 0.20,
+		MaxPositions:   5,
+		MinRiskReward:  1.5,
+		CommissionRate: 0.005, // 국내 수수료 0.25% x 2 = 0.5%
+	}
+
+	switch {
+	case balance < 1000000: // 100만원 미만
+		cfg.RiskPerTrade = 0.02
+		cfg.MaxPositions = 3
+		cfg.MinRiskReward = 1.5
+	case balance < 10000000: // 1000만원 미만
+		cfg.RiskPerTrade = 0.015
+		cfg.MaxPositions = 5
+		cfg.MinRiskReward = 1.5
+	default:
+		cfg.RiskPerTrade = 0.01
+		cfg.MaxPositions = 5
+		cfg.MinRiskReward = 2.0
+	}
+
+	return cfg
 }
 
 // StockLoader 종목 로더 인터페이스

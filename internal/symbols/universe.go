@@ -4,12 +4,19 @@ package symbols
 type Universe string
 
 const (
+	// US 유니버스
 	UniverseTest      Universe = "test"      // 10 stocks for testing
 	UniverseDow30     Universe = "dow30"     // Dow Jones 30 blue chips
 	UniverseNasdaq100 Universe = "nasdaq100" // NASDAQ 100 tech giants
 	UniverseSP500     Universe = "sp500"     // S&P 500 top 100
 	UniverseMidCap    Universe = "midcap"    // S&P MidCap 400 top 100
 	UniverseRussell   Universe = "russell"   // Russell 2000 top 200
+
+	// KR 유니버스
+	UniverseKRTest   Universe = "kr-test"   // 10 한국 대형주
+	UniverseKospi30  Universe = "kospi30"   // KOSPI 시총 상위 30
+	UniverseKospi200 Universe = "kospi200"  // KOSPI 200 상위 100
+	UniverseKosdaq30 Universe = "kosdaq30"  // KOSDAQ 시총 상위 30
 )
 
 // UniverseInfo contains metadata about a universe
@@ -23,12 +30,18 @@ type UniverseInfo struct {
 // AvailableUniverses returns all available universes with metadata
 func AvailableUniverses() []UniverseInfo {
 	return []UniverseInfo{
+		// US
 		{UniverseTest, "Test", "10 large-cap stocks for quick testing", len(TestSymbols)},
 		{UniverseDow30, "Dow 30", "Dow Jones 30 blue-chip stocks", len(Dow30Symbols)},
 		{UniverseNasdaq100, "NASDAQ 100", "Top 100 NASDAQ tech stocks", len(Nasdaq100Symbols)},
 		{UniverseSP500, "S&P 500", "Top 100 S&P 500 by market cap", len(SP500Symbols)},
 		{UniverseMidCap, "MidCap 400", "Top 100 S&P MidCap 400", len(MidCap100Symbols)},
 		{UniverseRussell, "Russell 2000", "Top 200 Russell 2000 small-caps", len(Russell200Symbols)},
+		// KR
+		{UniverseKRTest, "KR Test", "10 한국 대형주 테스트", len(KRTestSymbols)},
+		{UniverseKospi30, "KOSPI 30", "KOSPI 시총 상위 30", len(Kospi30Symbols)},
+		{UniverseKospi200, "KOSPI 200", "KOSPI 200 상위 100", len(Kospi200Symbols)},
+		{UniverseKosdaq30, "KOSDAQ 30", "KOSDAQ 시총 상위 30", len(Kosdaq30Symbols)},
 	}
 }
 
@@ -47,9 +60,47 @@ func GetUniverse(u Universe) []string {
 		return MidCap100Symbols
 	case UniverseRussell:
 		return Russell200Symbols
+	case UniverseKRTest:
+		return KRTestSymbols
+	case UniverseKospi30:
+		return Kospi30Symbols
+	case UniverseKospi200:
+		return Kospi200Symbols
+	case UniverseKosdaq30:
+		return Kosdaq30Symbols
 	default:
 		return nil
 	}
+}
+
+// IsKoreanUniverse 한국 유니버스 여부
+func IsKoreanUniverse(u Universe) bool {
+	switch u {
+	case UniverseKRTest, UniverseKospi30, UniverseKospi200, UniverseKosdaq30:
+		return true
+	}
+	return false
+}
+
+// IsKoreanSymbol 6자리 숫자 코드 여부
+func IsKoreanSymbol(sym string) bool {
+	if len(sym) != 6 {
+		return false
+	}
+	for _, c := range sym {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// GetKRSymbolName 한국 종목명 조회
+func GetKRSymbolName(sym string) string {
+	if name, ok := KRSymbolNames[sym]; ok {
+		return name
+	}
+	return sym
 }
 
 // TestSymbols is a small set for quick testing

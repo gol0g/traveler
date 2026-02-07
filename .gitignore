@@ -31,3 +31,11 @@ report_*.json
 
 # Windows artifacts
 nul
+
+# Logs
+*.log
+web.log
+web_err.log
+
+# Scan result dumps
+kr_scan_result.json

@@ -49,6 +49,7 @@ type OrderResult struct {
 // Position 보유 포지션
 type Position struct {
 	Symbol        string
+	Name          string  // 종목명 (국내주식용)
 	Quantity      int
 	AvgCost       float64
 	CurrentPrice  float64
