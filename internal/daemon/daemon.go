@@ -468,8 +468,12 @@ func (d *Daemon) shutdown(reason string) error {
 		// 다음 시장 오픈 시간에 wake timer 등록
 		status := d.getMarketStatus()
 		if status.TimeToOpen > 0 {
+			taskName := "TravelerDaemon"
+			if d.isKR() {
+				taskName = "TravelerDaemonKR"
+			}
 			wakeTime := time.Now().Add(status.TimeToOpen).Add(-10 * time.Minute) // 10분 전에 깨우기
-			if err := registerWakeTimer(wakeTime); err != nil {
+			if err := registerWakeTimer(wakeTime, taskName); err != nil {
 				log.Printf("[DAEMON] Failed to register wake timer: %v", err)
 			} else {
 				log.Printf("[DAEMON] Wake timer set for %s", wakeTime.Format("2006-01-02 15:04:05"))
@@ -532,22 +536,22 @@ func sleepPC() {
 }
 
 // registerWakeTimer 다음 실행을 위한 wake timer 시간 업데이트
-func registerWakeTimer(wakeTime time.Time) error {
+func registerWakeTimer(wakeTime time.Time, taskName string) error {
 	if runtime.GOOS != "windows" {
 		return fmt.Errorf("wake timer only supported on Windows")
 	}
 
-	// schtasks /change로 기존 TravelerDaemon task의 시간만 변경
+	// schtasks /change로 기존 task의 시간만 변경
 	// 초기 설정은 setup-daemon.ps1로 관리자가 한 번만 실행
 	timeStr := wakeTime.Format("15:04")
 
-	cmd := exec.Command("schtasks", "/change", "/tn", "TravelerDaemon", "/st", timeStr)
+	cmd := exec.Command("schtasks", "/change", "/tn", taskName, "/st", timeStr)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to update wake timer: %v, output: %s", err, string(output))
 	}
 
-	log.Printf("[DAEMON] Wake timer updated: TravelerDaemon at %s", timeStr)
+	log.Printf("[DAEMON] Wake timer updated: %s at %s", taskName, timeStr)
 	return nil
 }
 
