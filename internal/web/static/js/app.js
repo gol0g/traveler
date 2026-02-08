@@ -7,37 +7,15 @@ class TravelerApp {
         this.capital = 50000;
         this.currentSignal = null;
         this.market = 'us'; // 'us' or 'kr'
-        this.settings = {
-            capital: 50000,
-            riskPct: 1,
-            maxPositions: 5
-        };
         this.positionsRefreshTimer = null;
         this.activeTab = 'scanner';
 
-        this.loadSettings();
         this.initEventListeners();
         this.initTabs();
         this.initMarketToggle();
 
         // Auto-load last scan result or attach to running scan
         this.loadLastResult();
-    }
-
-    loadSettings() {
-        const saved = localStorage.getItem('traveler_settings');
-        if (saved) {
-            try {
-                this.settings = JSON.parse(saved);
-                this.capital = this.settings.capital;
-            } catch (e) {
-                console.error('Failed to load settings:', e);
-            }
-        }
-    }
-
-    saveSettings() {
-        localStorage.setItem('traveler_settings', JSON.stringify(this.settings));
     }
 
     // ==================== TAB NAVIGATION ====================
@@ -475,11 +453,6 @@ class TravelerApp {
             this.capital = parseFloat(e.target.value) || 50000;
         });
 
-        // Settings modal
-        document.getElementById('settingsBtn').addEventListener('click', () => this.showSettingsModal());
-        document.getElementById('closeSettings').addEventListener('click', () => this.hideSettingsModal());
-        document.getElementById('saveSettings').addEventListener('click', () => this.applySettings());
-
         // Stock modal
         document.getElementById('closeModal').addEventListener('click', () => this.hideStockModal());
         document.getElementById('excludeBtn').addEventListener('click', () => this.excludeCurrentStock());
@@ -490,16 +463,12 @@ class TravelerApp {
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 this.hideStockModal();
-                this.hideSettingsModal();
             }
         });
 
         // Click outside modal to close
         document.getElementById('stockModal').addEventListener('click', (e) => {
             if (e.target.id === 'stockModal') this.hideStockModal();
-        });
-        document.getElementById('settingsModal').addEventListener('click', (e) => {
-            if (e.target.id === 'settingsModal') this.hideSettingsModal();
         });
     }
 
@@ -606,7 +575,7 @@ class TravelerApp {
                 if (this.capital < 500) {
                     riskPct = 2; maxPosPct = 0.30;
                 } else {
-                    riskPct = this.settings.riskPct || 1; maxPosPct = 0.20;
+                    riskPct = 1; maxPosPct = 0.20;
                 }
             }
             const riskBudget = this.capital * (riskPct / 100); // per trade, not per position
@@ -792,33 +761,6 @@ class TravelerApp {
 
         this.hideStockModal();
         this.recalculate();
-    }
-
-    showSettingsModal() {
-        document.getElementById('settingsCapital').value = this.settings.capital;
-        document.getElementById('settingsRisk').value = this.settings.riskPct;
-        document.getElementById('settingsMaxPos').value = this.settings.maxPositions;
-        document.getElementById('settingsModal').classList.remove('hidden');
-    }
-
-    hideSettingsModal() {
-        document.getElementById('settingsModal').classList.add('hidden');
-    }
-
-    applySettings() {
-        this.settings.capital = parseFloat(document.getElementById('settingsCapital').value) || 50000;
-        this.settings.riskPct = parseFloat(document.getElementById('settingsRisk').value) || 1;
-        this.settings.maxPositions = parseInt(document.getElementById('settingsMaxPos').value) || 5;
-
-        this.capital = this.settings.capital;
-        document.getElementById('capitalInput').value = this.capital;
-
-        this.saveSettings();
-        this.hideSettingsModal();
-
-        if (this.signals.length > 0) {
-            this.recalculate();
-        }
     }
 
     async runScan() {

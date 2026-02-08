@@ -7,7 +7,7 @@
     <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/css/style.css?v=7">
+    <link rel="stylesheet" href="/css/style.css?v=8">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Header -->
@@ -20,9 +20,6 @@
                     <button class="market-btn active px-3 py-1 rounded-md text-sm font-medium transition-colors" data-market="us">US</button>
                     <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="kr">KR</button>
                 </div>
-                <button id="settingsBtn" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">
-                    Settings
-                </button>
             </div>
         </div>
         <!-- Tab Navigation -->
@@ -363,34 +360,7 @@
         </div>
     </div>
 
-    <!-- Settings Modal -->
-    <div id="settingsModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
-        <div class="bg-gray-800 rounded-xl max-w-md w-full">
-            <div class="p-4 border-b border-gray-700 flex items-center justify-between">
-                <h2 class="text-xl font-bold">Settings</h2>
-                <button id="closeSettings" class="text-gray-400 hover:text-white text-2xl">&times;</button>
-            </div>
-            <div class="p-4 space-y-4">
-                <div>
-                    <label class="block text-gray-400 text-sm mb-1">Default Capital (USD)</label>
-                    <input type="number" id="settingsCapital" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white" value="50000">
-                </div>
-                <div>
-                    <label class="block text-gray-400 text-sm mb-1">Risk per Trade (%)</label>
-                    <input type="number" id="settingsRisk" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white" value="1" step="0.1">
-                </div>
-                <div>
-                    <label class="block text-gray-400 text-sm mb-1">Max Positions</label>
-                    <input type="number" id="settingsMaxPos" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white" value="5">
-                </div>
-                <button id="saveSettings" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-medium transition-colors">
-                    Save Settings
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script src="/js/chart.js?v=7"></script>
-    <script src="/js/app.js?v=7"></script>
+    <script src="/js/chart.js?v=8"></script>
+    <script src="/js/app.js?v=8"></script>
 </body>
 </html>

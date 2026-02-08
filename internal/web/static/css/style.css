@@ -42,11 +42,11 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Modal transition */
-#stockModal, #settingsModal {
+#stockModal {
     transition: opacity 0.2s ease-out;
 }
 
-#stockModal.show, #settingsModal.show {
+#stockModal.show {
     opacity: 1;
 }
 
