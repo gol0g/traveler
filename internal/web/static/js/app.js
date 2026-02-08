@@ -108,6 +108,7 @@ class TravelerApp {
         // Update panels
         document.getElementById('panelScanner').classList.toggle('hidden', tab !== 'scanner');
         document.getElementById('panelPositions').classList.toggle('hidden', tab !== 'positions');
+        document.getElementById('panelStrategy').classList.toggle('hidden', tab !== 'strategy');
 
         // Load positions data when switching to positions tab
         if (tab === 'positions') {
@@ -592,8 +593,22 @@ class TravelerApp {
             // Match server-side PositionSizer logic:
             // riskBudget = capital * riskPerTrade (NOT divided by positions)
             // maxPositionValue = capital * maxPositionPct
-            const riskPct = this.isKR() ? 1.5 : (this.settings.riskPct || 1);
-            const maxPosPct = this.isKR() ? 0.25 : 0.20;
+            let riskPct, maxPosPct;
+            if (this.isKR()) {
+                if (this.capital < 500000) {
+                    riskPct = 3; maxPosPct = 0.40; // 50만 미만: 공격적
+                } else if (this.capital < 5000000) {
+                    riskPct = 2; maxPosPct = 0.30; // 500만 미만: 적극적
+                } else {
+                    riskPct = 1.5; maxPosPct = 0.25; // 500만 이상: 보수적
+                }
+            } else {
+                if (this.capital < 500) {
+                    riskPct = 2; maxPosPct = 0.30;
+                } else {
+                    riskPct = this.settings.riskPct || 1; maxPosPct = 0.20;
+                }
+            }
             const riskBudget = this.capital * (riskPct / 100); // per trade, not per position
             const maxPositionValue = this.capital * maxPosPct;
 

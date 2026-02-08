@@ -324,16 +324,24 @@ func AdjustConfigForKRBalance(balance float64) SizerConfig {
 	}
 
 	switch {
-	case balance < 1000000: // 100만원 미만
-		cfg.RiskPerTrade = 0.02
+	case balance < 500000: // 50만원 미만: 공격적
+		cfg.RiskPerTrade = 0.03
+		cfg.MaxPositionPct = 0.40
 		cfg.MaxPositions = 3
 		cfg.MinRiskReward = 1.5
-	case balance < 10000000: // 1000만원 미만
+	case balance < 5000000: // 500만원 미만: 적극적
+		cfg.RiskPerTrade = 0.02
+		cfg.MaxPositionPct = 0.30
+		cfg.MaxPositions = 3
+		cfg.MinRiskReward = 1.5
+	case balance < 50000000: // 5000만원 미만
 		cfg.RiskPerTrade = 0.015
+		cfg.MaxPositionPct = 0.25
 		cfg.MaxPositions = 5
 		cfg.MinRiskReward = 1.5
 	default:
 		cfg.RiskPerTrade = 0.01
+		cfg.MaxPositionPct = 0.20
 		cfg.MaxPositions = 5
 		cfg.MinRiskReward = 2.0
 	}

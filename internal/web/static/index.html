@@ -7,7 +7,7 @@
     <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/css/style.css?v=6">
+    <link rel="stylesheet" href="/css/style.css?v=7">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Header -->
@@ -29,6 +29,7 @@
         <nav class="flex gap-1">
             <button class="tab-btn active" data-tab="scanner">Scanner</button>
             <button class="tab-btn" data-tab="positions">Positions</button>
+            <button class="tab-btn" data-tab="strategy">Strategy</button>
         </nav>
     </header>
 
@@ -184,6 +185,100 @@
             </div>
         </div>
 
+        <!-- ==================== STRATEGY TAB ==================== -->
+        <div id="panelStrategy" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Trading Strategies</h2>
+                <p class="text-gray-400 text-sm">멀티 전략 스캔 시 3가지 전략을 동시에 분석하여 가장 강한 시그널을 선택합니다.</p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Pullback -->
+                <div class="strategy-card strategy-card-pullback">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge strategy-pullback text-sm">PULLBACK</span>
+                        <span class="text-gray-400 text-sm">추세 추종</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">상승 추세에서 일시적으로 조정받은 종목의 반등을 노리는 스윙 매매 전략</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> 주가가 MA50 위 (상승 추세)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가가 MA20 부근까지 조정 (±2%)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 거래량이 평균 이하 (매도세 약함)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 긴 아래꼬리)</li>
+                        <li><span class="condition-tag condition-support">보조</span> RSI 30~60 구간 (과매도 접근)</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>진입가 -2% 또는 MA20 아래</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>1.5R (리스크의 1.5배)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>2.5R (리스크의 2.5배)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.0</span></div>
+                        <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유 기간</span><span>최대 10일</span></div>
+                    </div>
+                </div>
+
+                <!-- Breakout -->
+                <div class="strategy-card strategy-card-breakout">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge strategy-breakout text-sm">BREAKOUT</span>
+                        <span class="text-gray-400 text-sm">돌파 매매</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">20일 최고가를 거래량 동반으로 돌파하는 종목의 모멘텀을 추종하는 전략</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> 주가가 20일 최고가 돌파</li>
+                        <li><span class="condition-tag condition-required">필수</span> 거래량 1.5배 이상 급증</li>
+                        <li><span class="condition-tag condition-required">필수</span> MA50 위 (추세 확인)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 돌파 전 횡보/수렴 (consolidation)</li>
+                        <li><span class="condition-tag condition-support">보조</span> RSI 80 이하 (과매수 아님)</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>돌파 레벨 아래 또는 -3%</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>1.5R (리스크의 1.5배)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>3.0R (리스크의 3배)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.25</span></div>
+                        <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유 기간</span><span>최대 7일</span></div>
+                    </div>
+                </div>
+
+                <!-- Mean Reversion -->
+                <div class="strategy-card strategy-card-meanrev">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge strategy-mean-reversion text-sm">MEAN REVERSION</span>
+                        <span class="text-gray-400 text-sm">평균 회귀</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">과매도 구간에서 볼린저 밴드 하단을 이탈한 종목의 평균 회귀를 노리는 역추세 전략</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> RSI 30 이하 (과매도)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 볼린저 밴드 하단 이탈/터치</li>
+                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 긴 아래꼬리)</li>
+                        <li><span class="condition-tag condition-support">보조</span> MA200 위 (장기 추세 건재)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 거래량 증가 (반등 동력)</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>최근 저점 아래 또는 -3%</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>MA20 (평균 회귀)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>볼린저 밴드 상단</span></div>
+                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>동적 계산</span></div>
+                        <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유 기간</span><span>최대 5일</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Loading Indicator -->
         <div id="loading" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div class="bg-gray-800 rounded-xl p-8 flex flex-col items-center gap-4 min-w-[280px]">
@@ -295,7 +390,7 @@
         </div>
     </div>
 
-    <script src="/js/chart.js?v=6"></script>
-    <script src="/js/app.js?v=6"></script>
+    <script src="/js/chart.js?v=7"></script>
+    <script src="/js/app.js?v=7"></script>
 </body>
 </html>
