@@ -37,8 +37,9 @@ func DefaultMeanReversionConfig() MeanReversionConfig {
 // Buy signal when:
 // 1. RSI14 < 30 (oversold)
 // 2. Price at or below Bollinger lower band
-// 3. Reversal candle (bullish body or long lower shadow)
-// Supporting: above MA200, volume increase, deeply oversold
+// 3. Reversal candle (bullish body or long lower shadow, ATR 기준 포함)
+// 4. Above MA200 (or MA50 fallback) — 장기 상승 추세 내 급락만 (칼날잡기 방지)
+// Supporting: volume increase, deeply oversold
 type MeanReversionStrategy struct {
 	config   MeanReversionConfig
 	provider provider.Provider
@@ -117,16 +118,26 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 	bodySize := math.Abs(today.Close - today.Open)
 	lowerShadow := math.Min(today.Open, today.Close) - today.Low
 	bullishCandle := today.Close > today.Open
-	longLowerShadow := lowerShadow > bodySize*1.5
+	// Body 대비 1.5배 또는 ATR 50% 이상이면 의미 있는 꼬리
+	longLowerShadow := lowerShadow > bodySize*1.5 ||
+		(ind.ATR14 > 0 && lowerShadow >= ind.ATR14*0.5)
 	hasReversal := bullishCandle || longLowerShadow
 	details["bullish_candle"] = boolToFloat(bullishCandle)
 	details["long_lower_shadow"] = boolToFloat(longLowerShadow)
 
-	// Supporting conditions
-	aboveMA200 := ind.MA200 > 0 && today.Close > ind.MA200
+	// Condition 4 (필수): 장기 추세 내 급락에서만 평균회귀 유효 (칼날잡기 방지)
+	// MA200이 있으면 MA200 위, 없으면 MA50으로 대체
+	var inUptrend bool
+	if ind.MA200 > 0 {
+		inUptrend = today.Close > ind.MA200
+	} else if ind.MA50 > 0 {
+		inUptrend = today.Close > ind.MA50
+	}
 	details["ma200"] = ind.MA200
-	details["above_ma200"] = boolToFloat(aboveMA200)
+	details["ma50"] = ind.MA50
+	details["in_uptrend"] = boolToFloat(inUptrend)
 
+	// Supporting conditions
 	volumeRatio := float64(today.Volume) / ind.AvgVol
 	volumeIncrease := volumeRatio > 1.2
 	details["volume_ratio"] = volumeRatio
@@ -137,15 +148,15 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 	// Calculate strength
 	strength := calculateMeanReversionStrength(
 		rsiOversold, atBBLower, hasReversal,
-		aboveMA200, volumeIncrease, deeplyOversold,
+		inUptrend, volumeIncrease, deeplyOversold,
 	)
 
-	// Only return BUY signal if all 3 core conditions are met
-	if !rsiOversold || !atBBLower || !hasReversal {
+	// 필수 4조건: RSI 과매도 + BB 하단 + 반전 캔들 + 장기 상승 추세
+	if !rsiOversold || !atBBLower || !hasReversal || !inUptrend {
 		return nil, nil
 	}
 
-	probability := calculateMeanReversionProbability(strength, ind.RSI14, aboveMA200, volumeIncrease)
+	probability := calculateMeanReversionProbability(strength, ind.RSI14, inUptrend, volumeIncrease)
 	guide := s.calculateTradeGuide(today, ind)
 
 	return &Signal{
@@ -154,8 +165,9 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 		Strategy:    s.Name(),
 		Strength:    strength,
 		Probability: probability,
-		Reason: fmt.Sprintf("Oversold bounce: RSI=%.0f, at BB lower ($%.2f), %s",
-			ind.RSI14, ind.BBLower, reversalDesc(bullishCandle, longLowerShadow)),
+		Reason: fmt.Sprintf("Oversold bounce: RSI=%.0f, at BB lower ($%.2f), %s, above %s",
+			ind.RSI14, ind.BBLower, reversalDesc(bullishCandle, longLowerShadow),
+			func() string { if ind.MA200 > 0 { return "MA200" }; return "MA50" }()),
 		Details: details,
 		Guide:   guide,
 	}, nil
@@ -163,8 +175,17 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 
 // calculateTradeGuide generates trading guidance for mean reversion
 func (s *MeanReversionStrategy) calculateTradeGuide(today model.Candle, ind *Indicators) *TradeGuide {
-	// Stop: below recent low or 3% below entry
-	stopLoss := math.Min(today.Low*0.99, today.Close*0.97)
+	// ATR 기반 손절: 변동성에 맞춰 조절
+	atrStop := today.Close - ind.ATR14*1.5   // 1.5 ATR
+	lowStop := today.Low * 0.99              // 당일 저점 -1%
+	stopLoss := math.Max(atrStop, lowStop)   // 둘 중 보수적(높은) 쪽
+
+	// 최소 보장: -5% floor
+	minStop := today.Close * 0.95
+	if stopLoss < minStop {
+		stopLoss = minStop
+	}
+
 	stopLossPct := (today.Close - stopLoss) / today.Close
 
 	// Target 1: MA20 (mean reversion)

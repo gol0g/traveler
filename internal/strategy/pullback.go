@@ -111,11 +111,17 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	details["daily_dollar_vol"] = dailyDollarVol
 	details["avg_volume"] = ind.AvgVol
 
-	// Condition 1: Price above MA50 (uptrend)
+	// Condition 1: Price above MA50 (uptrend) + 추세 확인
 	aboveMA50 := today.Close > ind.MA50
 	details["close"] = today.Close
 	details["ma50"] = ind.MA50
 	details["price_vs_ma50_pct"] = (today.Close - ind.MA50) / ind.MA50 * 100
+	details["ma50_slope"] = ind.MA50Slope
+	details["atr14"] = ind.ATR14
+
+	// 추세 확인: MA50 기울기 상승 또는 MA20 > MA50 (정배열)
+	trendConfirmed := ind.MA50Slope > 0 || (ind.MA20 > 0 && ind.MA20 > ind.MA50)
+	details["trend_confirmed"] = boolToFloat(trendConfirmed)
 
 	// Condition 2: Low touched MA20 (pullback)
 	ma20Lower := ind.MA20 * (1 - s.config.MA20TouchTolerance)
@@ -125,11 +131,27 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	details["low"] = today.Low
 	details["price_vs_ma20_pct"] = (today.Low - ind.MA20) / ind.MA20 * 100
 
-	// Condition 3: Volume below average (weak selling)
+	// Condition 3: Volume pattern (조정구간 거래량 감소 + 반전일 거래량 회복)
 	todayVolume := float64(today.Volume)
 	volumeRatio := todayVolume / ind.AvgVol
-	lowVolume := volumeRatio < s.config.MinVolumeRatio
 	details["volume_ratio"] = volumeRatio
+
+	// 조정 구간 평균 거래량 (반전 당일 제외, 직전 3일)
+	var pullbackAvgVol float64
+	if len(candles) >= 5 {
+		var pbVolSum float64
+		for i := len(candles) - 4; i < len(candles)-1; i++ {
+			pbVolSum += float64(candles[i].Volume)
+		}
+		pullbackAvgVol = pbVolSum / 3.0
+	}
+	details["pullback_avg_vol_ratio"] = pullbackAvgVol / ind.AvgVol
+
+	// 정석 패턴: 조정일 거래량 감소 + 반전일 거래량 회복
+	pullbackVolLow := pullbackAvgVol < ind.AvgVol          // 조정구간 매도 약함
+	reversalVolUp := todayVolume >= ind.AvgVol*0.8          // 반전일 수급 유입
+	volumePattern := pullbackVolLow && reversalVolUp
+	details["volume_pattern"] = boolToFloat(volumePattern)
 
 	// Condition 4: Reversal sign
 	// Option A: Bullish candle (close > open)
@@ -138,7 +160,9 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	// Option B: Long lower shadow (buyers stepped in)
 	bodySize := math.Abs(today.Close - today.Open)
 	lowerShadow := math.Min(today.Open, today.Close) - today.Low
-	longLowerShadow := lowerShadow > bodySize*1.5
+	// Body 대비 1.5배 또는 ATR 50% 이상이면 의미 있는 꼬리
+	longLowerShadow := lowerShadow > bodySize*1.5 ||
+		(ind.ATR14 > 0 && lowerShadow >= ind.ATR14*0.5)
 
 	hasReversalSign := bullishCandle || longLowerShadow
 	details["bullish_candle"] = boolToFloat(bullishCandle)
@@ -154,7 +178,7 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 
 	// Calculate signal strength
 	strength := calculatePullbackStrength(
-		aboveMA50, touchedMA20, lowVolume, hasReversalSign,
+		aboveMA50, trendConfirmed, touchedMA20, volumePattern, hasReversalSign,
 		rsiOK, bouncing, details["price_vs_ma50_pct"],
 	)
 
@@ -162,11 +186,11 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	signalType := SignalHold
 	reason := ""
 
-	if aboveMA50 && touchedMA20 && hasReversalSign {
-		if lowVolume {
+	if aboveMA50 && trendConfirmed && touchedMA20 && hasReversalSign {
+		if volumePattern {
 			signalType = SignalBuy
-			reason = fmt.Sprintf("Uptrend pullback to MA20 (%.1f%% above MA50), low volume (%.1fx), ",
-				details["price_vs_ma50_pct"], volumeRatio)
+			reason = fmt.Sprintf("Uptrend pullback to MA20 (%.1f%% above MA50, slope %.2f%%), volume pattern OK (pb:%.1fx, rev:%.1fx), ",
+				details["price_vs_ma50_pct"], ind.MA50Slope, pullbackAvgVol/ind.AvgVol, volumeRatio)
 			if bullishCandle {
 				reason += "bullish candle"
 			} else {
@@ -174,11 +198,15 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 			}
 		} else {
 			signalType = SignalBuy
-			strength *= 0.7 // Reduce strength if volume is not ideal
-			reason = fmt.Sprintf("Uptrend pullback to MA20, but volume is %.1fx (watch for confirmation)", volumeRatio)
+			strength *= 0.7 // 거래량 패턴 불일치: 시그널은 남기되 강도 감소
+			reason = fmt.Sprintf("Uptrend pullback to MA20, volume pattern weak (pb:%.1fx, rev:%.1fx)",
+				pullbackAvgVol/ind.AvgVol, volumeRatio)
 		}
 	} else if !aboveMA50 {
 		reason = fmt.Sprintf("Not in uptrend (%.1f%% below MA50)", details["price_vs_ma50_pct"])
+	} else if !trendConfirmed {
+		reason = fmt.Sprintf("Trend not confirmed (MA50 slope: %.2f%%, MA20 vs MA50: %.1f%%)",
+			ind.MA50Slope, (ind.MA20-ind.MA50)/ind.MA50*100)
 	} else if !touchedMA20 {
 		reason = fmt.Sprintf("Price not near MA20 (%.1f%% away)", details["price_vs_ma20_pct"])
 	}
@@ -190,7 +218,7 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 
 	// Calculate trading guide
 	probability := calculatePullbackProbability(strength, ind.RSI14, volumeRatio, bouncing)
-	guide := s.calculateTradeGuide(today.Close, ind.MA20, probability)
+	guide := s.calculateTradeGuide(today.Close, ind.MA20, ind.ATR14, probability)
 
 	return &Signal{
 		Stock:       stock,
@@ -205,16 +233,19 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 }
 
 // calculateTradeGuide generates actionable trade guidance
-func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, winRate float64) *TradeGuide {
-	// Stop loss: below MA20 by a small margin
-	stopLossPct := 0.02 // 2% below entry
-	stopLoss := currentPrice * (1 - stopLossPct)
+func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, atr, winRate float64) *TradeGuide {
+	// ATR 기반 손절: 변동성에 맞춰 조절
+	atrStop := currentPrice - atr*1.5  // 1.5 ATR
+	ma20Stop := ma20 * 0.98            // MA20 -2% (추세 이탈 기준)
+	stopLoss := math.Max(atrStop, ma20Stop) // 둘 중 보수적(높은) 쪽
 
-	// Make sure stop is below MA20
-	if stopLoss > ma20*0.98 {
-		stopLoss = ma20 * 0.98
-		stopLossPct = (currentPrice - stopLoss) / currentPrice
+	// 최소 보장: 진입가 -5% 이하로는 안 내려감
+	minStop := currentPrice * 0.95
+	if stopLoss < minStop {
+		stopLoss = minStop
 	}
+
+	stopLossPct := (currentPrice - stopLoss) / currentPrice
 
 	riskPerShare := currentPrice - stopLoss
 
@@ -250,35 +281,37 @@ func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, winRate float
 
 // calculatePullbackStrength calculates signal strength 0-100
 func calculatePullbackStrength(
-	aboveMA50, touchedMA20, lowVolume, hasReversal bool,
+	aboveMA50, trendConfirmed, touchedMA20, volumePattern, hasReversal bool,
 	rsiOK, bouncing bool, priceVsMA50 float64,
 ) float64 {
 	var score float64
 
-	// Core conditions (60 points max)
+	// Core conditions (70 points max)
 	if aboveMA50 {
-		score += 20
-		// Bonus for stronger uptrend
+		score += 15
 		if priceVsMA50 > 5 {
 			score += 5
 		}
+	}
+	if trendConfirmed {
+		score += 15 // MA50 기울기 상승 또는 정배열
 	}
 	if touchedMA20 {
 		score += 20
 	}
 	if hasReversal {
-		score += 20
+		score += 15
 	}
 
-	// Supporting conditions (40 points max)
-	if lowVolume {
-		score += 15
+	// Supporting conditions (30 points max)
+	if volumePattern {
+		score += 15 // 조정구간 거래량 감소 + 반전일 증가
 	}
 	if rsiOK {
-		score += 10
+		score += 5
 	}
 	if bouncing {
-		score += 15
+		score += 10
 	}
 
 	return math.Min(score, 100)

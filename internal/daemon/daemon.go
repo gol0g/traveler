@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"traveler/internal/broker"
 	"traveler/internal/provider"
@@ -33,6 +35,9 @@ type Config struct {
 	// 스캔 설정
 	ScanInterval     time.Duration // 스캔 주기
 	MonitorInterval  time.Duration // 모니터링 주기
+
+	// 스캔 옵션
+	ForceScan        bool // 이미 매매했더라도 강제 스캔
 
 	// 종료 설정
 	SleepOnExit      bool // 종료시 PC 절전
@@ -58,6 +63,7 @@ type Daemon struct {
 	provider   provider.Provider
 	tracker    *DailyTracker
 	autoTrader *trader.AutoTrader
+	history    *trader.TradeHistory
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -69,11 +75,24 @@ func NewDaemon(cfg Config, b broker.Broker, p provider.Provider) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Sizer config는 나중에 잔고 확인 후 설정
+	tracker := NewDailyTracker(cfg.Daily, cfg.DataDir)
+
+	// 마켓 타임존 설정 (US=ET, KR=KST)
+	if cfg.Market == "kr" {
+		if tz, err := time.LoadLocation("Asia/Seoul"); err == nil {
+			tracker.SetTimezone(tz)
+		}
+	} else {
+		if tz, err := time.LoadLocation("America/New_York"); err == nil {
+			tracker.SetTimezone(tz)
+		}
+	}
+
 	return &Daemon{
 		config:   cfg,
 		broker:   b,
 		provider: p,
-		tracker:  NewDailyTracker(cfg.Daily, cfg.DataDir),
+		tracker:  tracker,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
@@ -172,7 +191,15 @@ func (d *Daemon) Run() error {
 		log.Printf("[DAEMON] Warning: could not init plan store: %v", err)
 	}
 
-	// 6. AutoTrader 생성 (PlanStore 포함)
+	// 6. TradeHistory 초기화
+	history, err := trader.NewTradeHistory(dataDir)
+	if err != nil {
+		log.Printf("[DAEMON] Warning: could not init trade history: %v", err)
+	} else {
+		d.history = history
+	}
+
+	// 7. AutoTrader 생성 (PlanStore 포함)
 	traderCfg := trader.Config{
 		DryRun:          false, // 실전 모드
 		MaxPositions:    d.config.Sizer.MaxPositions,
@@ -183,7 +210,12 @@ func (d *Daemon) Run() error {
 	}
 	d.autoTrader = trader.NewAutoTraderWithPlanStore(traderCfg, d.broker, false, planStore)
 
-	// 7. 기존 포지션 확인 및 모니터 등록 (PlanStore에서 원래 플랜 복원)
+	// Monitor에 TradeHistory 연결
+	if d.history != nil {
+		d.autoTrader.GetMonitor().SetTradeHistory(d.history, d.config.Market)
+	}
+
+	// 8. 기존 포지션 확인 및 모니터 등록 (PlanStore에서 원래 플랜 복원)
 	positions, err := d.broker.GetPositions(d.ctx)
 	if err != nil {
 		log.Printf("[DAEMON] Failed to get positions: %v", err)
@@ -233,10 +265,10 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// 8. P&L 재계산 (재시작 시 미체결 주문 반영)
+	// 9. P&L 재계산 (재시작 시 미체결 주문 반영)
 	d.runMonitorCycle()
 
-	// 9. 메인 루프
+	// 10. 메인 루프
 	return d.mainLoop()
 }
 
@@ -250,9 +282,20 @@ func (d *Daemon) mainLoop() error {
 	// 장 시작 시 기존 포지션 전략 무효화 체크 (전일 기준)
 	d.runInvalidationCheck()
 
-	// 멀티 전략 스캔 1회 (일봉 기반이라 장중 재스캔 불필요)
-	d.runScanCycle()
-	log.Println("[DAEMON] Initial scan complete. Switching to monitor-only mode.")
+	// 오늘 이미 스캔+매매했으면 스캔 생략 (재시작 시 중복 매수 방지)
+	// ForceScan이면 무조건 1회 스캔 실행
+	state := d.tracker.GetState()
+	if d.config.ForceScan {
+		log.Printf("[DAEMON] Force scan enabled (existing trades: %d). Running scan...", state.TradeCount)
+		d.runScanCycle()
+		log.Println("[DAEMON] Force scan complete.")
+	} else if state.TradeCount > 0 {
+		log.Printf("[DAEMON] Already traded today (%d trades). Skipping scan.", state.TradeCount)
+	} else {
+		d.runScanCycle()
+		log.Println("[DAEMON] Initial scan complete.")
+	}
+	log.Println("[DAEMON] Switching to monitor-only mode.")
 
 	for {
 		select {
@@ -283,12 +326,18 @@ func (d *Daemon) runScanCycle() {
 	}
 
 	// 적응형 스캔
-	signals, err := d.adaptiveScan()
+	scanStart := time.Now()
+	scanResult, err := d.adaptiveScan()
 	if err != nil {
 		log.Printf("[DAEMON] Scan error: %v", err)
 		return
 	}
+	scanResult.ScanTime = time.Since(scanStart)
 
+	// 스캔 결과를 웹 UI용 JSON으로 저장
+	d.saveScanResultForWeb(scanResult)
+
+	signals := scanResult.Signals
 	if len(signals) == 0 {
 		log.Println("[DAEMON] No trading signals found.")
 		return
@@ -319,6 +368,19 @@ func (d *Daemon) runScanCycle() {
 				OrderID:  orderID,
 				Reason:   "signal",
 			})
+
+			// TradeHistory에도 매수 기록
+			if d.history != nil {
+				d.history.Append(trader.TradeRecord{
+					Market:   d.config.Market,
+					Symbol:   r.Order.Symbol,
+					Side:     "buy",
+					Quantity: r.Order.Quantity,
+					Price:    r.Order.LimitPrice,
+					Strategy: r.Signal.Strategy,
+					Reason:   "signal",
+				})
+			}
 		}
 	}
 }
@@ -369,8 +431,20 @@ func (d *Daemon) runMonitorCycle() {
 	d.tracker.UpdatePnL(realizedPnL, unrealizedPnL, totalEquity)
 }
 
+// daemonScanResult 데몬 스캔 결과 (웹 저장용 메타데이터 포함)
+type daemonScanResult struct {
+	Signals              []strategy.Signal
+	ScannedCount         int
+	UniversesUsed        []string
+	Decision             string
+	Expansions           int
+	AvgProb              float64
+	FundamentalsFiltered int
+	ScanTime             time.Duration
+}
+
 // adaptiveScan 적응형 멀티 전략 스캔
-func (d *Daemon) adaptiveScan() ([]strategy.Signal, error) {
+func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 	// 모든 전략 가져오기
 	strategies := strategy.GetAll(d.provider)
 	log.Printf("[DAEMON] Multi-strategy scan (%d strategies: %v)", len(strategies), strategy.List())
@@ -420,9 +494,61 @@ func (d *Daemon) adaptiveScan() ([]strategy.Signal, error) {
 		return nil, err
 	}
 
+	// 펀더멘털 필터
+	var fundamentalsFiltered int
+	if len(result.Signals) > 0 {
+		dataDir := d.config.DataDir
+		if dataDir == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				dataDir = filepath.Join(home, ".traveler")
+			}
+		}
+		if dataDir != "" {
+			var kosdaqSet map[string]bool
+			if d.isKR() {
+				kosdaqSet = make(map[string]bool)
+				for _, s := range symbols.Kosdaq30Symbols {
+					kosdaqSet[s] = true
+				}
+			}
+			checker := provider.NewFundamentalsChecker(dataDir, kosdaqSet)
+			if err := checker.Init(d.ctx); err != nil {
+				log.Printf("[DAEMON] Fundamentals checker init failed (skipping): %v", err)
+			} else {
+				syms := make([]string, 0, len(result.Signals))
+				for _, sig := range result.Signals {
+					syms = append(syms, sig.Stock.Symbol)
+				}
+				rejected := checker.FilterSymbols(d.ctx, syms)
+				if len(rejected) > 0 {
+					before := len(result.Signals)
+					var filtered []strategy.Signal
+					for _, sig := range result.Signals {
+						if _, rej := rejected[sig.Stock.Symbol]; !rej {
+							filtered = append(filtered, sig)
+						}
+					}
+					result.Signals = filtered
+					fundamentalsFiltered = before - len(filtered)
+					log.Printf("[DAEMON] Fundamentals filter: %d → %d signals", before, len(result.Signals))
+				}
+			}
+		}
+	}
+
 	// 포지션 사이징 적용
 	sizer := trader.NewPositionSizer(d.config.Sizer)
-	return sizer.ApplyToSignals(result.Signals), nil
+	sized := sizer.ApplyToSignals(result.Signals)
+
+	return &daemonScanResult{
+		Signals:              sized,
+		ScannedCount:         result.ScannedCount,
+		UniversesUsed:        result.UniversesUsed,
+		Decision:             result.Decision,
+		Expansions:           result.Expansions,
+		AvgProb:              result.Quality.AvgProb,
+		FundamentalsFiltered: fundamentalsFiltered,
+	}, nil
 }
 
 // checkStopConditions 종료 조건 체크
@@ -464,25 +590,17 @@ func (d *Daemon) shutdown(reason string) error {
 	fmt.Println(d.tracker.GenerateReport())
 
 	// PC 절전
+	// wake timer는 영구 예약 작업(TravelerDaemon, TravelerDaemonKR)이 관리함
+	// setup-daemon.ps1에서 WakeToRun 설정 완료 → 여기서 별도 등록 불필요
 	if d.config.SleepOnExit {
-		// 다음 시장 오픈 시간에 wake timer 등록
-		status := d.getMarketStatus()
-		if status.TimeToOpen > 0 {
-			taskName := "TravelerDaemon"
-			if d.isKR() {
-				taskName = "TravelerDaemonKR"
-			}
-			wakeTime := time.Now().Add(status.TimeToOpen).Add(-10 * time.Minute) // 10분 전에 깨우기
-			if err := registerWakeTimer(wakeTime, taskName); err != nil {
-				log.Printf("[DAEMON] Failed to register wake timer: %v", err)
-			} else {
-				log.Printf("[DAEMON] Wake timer set for %s", wakeTime.Format("2006-01-02 15:04:05"))
-			}
+		idle := getUserIdleSeconds()
+		if idle < 300 { // 5분 이내 활동 있으면 사용 중
+			log.Printf("[DAEMON] User active (idle %ds < 300s). Skipping sleep.", idle)
+		} else {
+			log.Printf("[DAEMON] User idle %ds. Entering sleep mode...", idle)
+			time.Sleep(3 * time.Second)
+			sleepPC()
 		}
-
-		log.Println("[DAEMON] Entering sleep mode...")
-		time.Sleep(3 * time.Second) // 로그 출력 대기
-		sleepPC()
 	}
 
 	return nil
@@ -515,12 +633,14 @@ func wakeMonitor() {
 	log.Println("[DAEMON] Monitor wake signal sent")
 }
 
-// sleepPC PC 절전 모드
+// sleepPC PC 절전 모드 (wake timer를 존중하는 방식)
 func sleepPC() {
 	switch runtime.GOOS {
 	case "windows":
-		// Windows 절전 모드
-		cmd := exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0", "1", "0")
+		// PowerShell SetSuspendState: force=false, disableWakeEvent=false
+		// → 예약 작업의 WakeToRun이 정상 작동함
+		cmd := exec.Command("powershell", "-Command",
+			"Add-Type -Assembly System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)")
 		if err := cmd.Run(); err != nil {
 			log.Printf("[DAEMON] Failed to sleep PC: %v", err)
 		}
@@ -535,24 +655,99 @@ func sleepPC() {
 	}
 }
 
-// registerWakeTimer 다음 실행을 위한 wake timer 시간 업데이트
-func registerWakeTimer(wakeTime time.Time, taskName string) error {
+// getUserIdleSeconds 사용자 마지막 입력 이후 경과 시간 (초)
+func getUserIdleSeconds() int {
 	if runtime.GOOS != "windows" {
-		return fmt.Errorf("wake timer only supported on Windows")
+		return 9999 // 비 Windows: 항상 유휴 상태로 간주
+	}
+	user32 := syscall.NewLazyDLL("user32.dll")
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getLastInputInfo := user32.NewProc("GetLastInputInfo")
+	getTickCount := kernel32.NewProc("GetTickCount")
+
+	// LASTINPUTINFO: cbSize(4) + dwTime(4) = 8 bytes
+	type lastInputInfo struct {
+		cbSize uint32
+		dwTime uint32
+	}
+	var info lastInputInfo
+	info.cbSize = 8
+	ret, _, _ := getLastInputInfo.Call(uintptr(unsafe.Pointer(&info)))
+	if ret == 0 {
+		return 9999 // 실패 시 유휴로 간주
+	}
+	tick, _, _ := getTickCount.Call()
+	idleMs := uint32(tick) - info.dwTime
+	return int(idleMs / 1000)
+}
+
+
+// saveScanResultForWeb 데몬 스캔 결과를 웹 UI에서 읽을 수 있는 JSON으로 저장
+func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
+	dataDir := d.config.DataDir
+	if dataDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dataDir = filepath.Join(home, ".traveler")
+		} else {
+			return
+		}
 	}
 
-	// schtasks /change로 기존 task의 시간만 변경
-	// 초기 설정은 setup-daemon.ps1로 관리자가 한 번만 실행
-	timeStr := wakeTime.Format("15:04")
+	// 웹 ScanResponse와 동일한 JSON 구조
+	type signalWithChart struct {
+		strategy.Signal
+		Candles []model.Candle `json:"candles,omitempty"`
+	}
 
-	cmd := exec.Command("schtasks", "/change", "/tn", taskName, "/st", timeStr)
-	output, err := cmd.CombinedOutput()
+	sigs := make([]signalWithChart, len(sr.Signals))
+	var totalInvest, totalRisk float64
+	for i, sig := range sr.Signals {
+		// 차트 데이터 로드 (최근 100일)
+		candles, _ := d.provider.GetDailyCandles(d.ctx, sig.Stock.Symbol, 100)
+		sigs[i] = signalWithChart{Signal: sig, Candles: candles}
+		if sig.Guide != nil {
+			totalInvest += sig.Guide.InvestAmount
+			totalRisk += sig.Guide.RiskAmount
+		}
+	}
+
+	strategyName := "multi"
+	if d.isKR() {
+		strategyName = "multi-kr"
+	}
+
+	resp := map[string]interface{}{
+		"strategy":              strategyName,
+		"total_scanned":         sr.ScannedCount,
+		"signals_found":         len(sigs),
+		"signals":               sigs,
+		"scan_time":             sr.ScanTime.Round(time.Second).String(),
+		"capital":               d.config.Sizer.TotalCapital,
+		"total_invest":          totalInvest,
+		"total_risk":            totalRisk,
+		"universes_used":        sr.UniversesUsed,
+		"decision":              sr.Decision,
+		"expansions":            sr.Expansions,
+		"avg_prob":              sr.AvgProb,
+		"fundamentals_filtered": sr.FundamentalsFiltered,
+	}
+
+	data, err := json.Marshal(resp)
 	if err != nil {
-		return fmt.Errorf("failed to update wake timer: %v, output: %s", err, string(output))
+		log.Printf("[DAEMON] Failed to marshal scan result: %v", err)
+		return
 	}
 
-	log.Printf("[DAEMON] Wake timer updated: %s at %s", taskName, timeStr)
-	return nil
+	market := "us"
+	if d.isKR() {
+		market = "kr"
+	}
+	path := filepath.Join(dataDir, fmt.Sprintf("last_scan_%s.json", market))
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		log.Printf("[DAEMON] Failed to save scan result: %v", err)
+	} else {
+		log.Printf("[DAEMON] Scan result saved to %s (%d signals)", filepath.Base(path), len(sigs))
+	}
 }
 
 // daemonStockLoader StockLoader 구현

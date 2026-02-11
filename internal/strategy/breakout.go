@@ -39,10 +39,10 @@ func DefaultBreakoutConfig() BreakoutConfig {
 
 // BreakoutStrategy implements the "Breakout" strategy
 // Buy signal when:
-// 1. Price breaks above 20-day high
-// 2. Volume 1.5x+ above average (confirmation)
+// 1. Close breaks above 20-day high (종가 기준, 장중 터치 제외)
+// 2. Volume 1.5x+ above 20-day average (confirmation)
 // 3. Price above MA50 (trend confirmation)
-// Supporting: RSI not overbought, prior consolidation, above MA20
+// Supporting: RSI not overbought, prior consolidation (없으면 strength 0.7x), above MA20
 type BreakoutStrategy struct {
 	config   BreakoutConfig
 	provider provider.Provider
@@ -114,10 +114,10 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	details["close"] = today.Close
 	details["high"] = today.High
 
-	// Condition 1: Price breaks above 20-day high
-	breakout := today.High > highestHigh && highestHigh > 0
+	// Condition 1: 종가가 20일 최고가 위에서 마감 (장중 터치만으로는 페이크)
+	breakout := today.Close > highestHigh && highestHigh > 0
 	details["highest_high_20"] = highestHigh
-	details["breakout_pct"] = (today.High - highestHigh) / highestHigh * 100
+	details["breakout_pct"] = (today.Close - highestHigh) / highestHigh * 100
 
 	// Condition 2: Volume confirmation
 	volumeRatio := float64(today.Volume) / ind.AvgVol
@@ -153,8 +153,17 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		return nil, nil
 	}
 
+	// 수렴 없는 돌파: 시그널은 남기되 강도 감소 (뉴스/갭 돌파 실패율 높음)
+	reason := fmt.Sprintf("Breakout above 20d high ($%.2f), volume %.1fx avg, %.1f%% above MA50",
+		highestHigh, volumeRatio, details["price_vs_ma50_pct"])
+	if !priorConsolidation {
+		strength *= 0.7
+		reason += " (no prior consolidation, reduced confidence)"
+	}
+	details["prior_consolidation"] = boolToFloat(priorConsolidation)
+
 	probability := calculateBreakoutProbability(strength, volumeRatio, priorConsolidation, rsiNotOverbought)
-	guide := s.calculateTradeGuide(today.Close, highestHigh)
+	guide := s.calculateTradeGuide(today.Close, highestHigh, ind.ATR14)
 
 	return &Signal{
 		Stock:       stock,
@@ -162,17 +171,25 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		Strategy:    s.Name(),
 		Strength:    strength,
 		Probability: probability,
-		Reason: fmt.Sprintf("Breakout above 20d high ($%.2f), volume %.1fx avg, %.1f%% above MA50",
-			highestHigh, volumeRatio, details["price_vs_ma50_pct"]),
+		Reason:  reason,
 		Details: details,
 		Guide:   guide,
 	}, nil
 }
 
 // calculateTradeGuide generates trading guidance for breakout
-func (s *BreakoutStrategy) calculateTradeGuide(currentPrice, breakoutLevel float64) *TradeGuide {
-	// Stop: below breakout level or 3% below entry
-	stopLoss := math.Max(breakoutLevel*0.97, currentPrice*0.97)
+func (s *BreakoutStrategy) calculateTradeGuide(currentPrice, breakoutLevel, atr float64) *TradeGuide {
+	// ATR 기반 손절: 변동성에 맞춰 조절
+	atrStop := currentPrice - atr*2.0       // 2.0 ATR (breakout은 변동 큼)
+	breakoutStop := breakoutLevel * 0.97     // breakout 레벨 -3%
+	stopLoss := math.Max(atrStop, breakoutStop)
+
+	// 최소 보장: -5% floor
+	minStop := currentPrice * 0.95
+	if stopLoss < minStop {
+		stopLoss = minStop
+	}
+
 	stopLossPct := (currentPrice - stopLoss) / currentPrice
 
 	riskPerShare := currentPrice - stopLoss

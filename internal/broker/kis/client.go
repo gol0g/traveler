@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -65,8 +67,30 @@ func (c *Client) IsReady() bool {
 	return err == nil
 }
 
-// doRequest 공통 HTTP 요청 메서드
+// doRequest 공통 HTTP 요청 메서드 (토큰 만료 시 자동 재발급 + 재시도)
 func (c *Client) doRequest(ctx context.Context, method, path string, trID string, body interface{}) ([]byte, error) {
+	respBody, err := c.doRequestOnce(ctx, method, path, trID, body)
+	if err != nil && isTokenExpiredError(respBody) {
+		// 토큰 만료: 무효화 후 재시도 1회
+		log.Printf("[KIS] Token expired, refreshing and retrying...")
+		c.tokenMgr.Invalidate()
+		// 캐시 파일도 삭제
+		os.Remove(c.tokenMgr.GetCacheFile())
+		return c.doRequestOnce(ctx, method, path, trID, body)
+	}
+	return respBody, err
+}
+
+// isTokenExpiredError 토큰 만료 에러 감지 (EGW00123)
+func isTokenExpiredError(respBody []byte) bool {
+	if len(respBody) == 0 {
+		return false
+	}
+	return strings.Contains(string(respBody), "EGW00123")
+}
+
+// doRequestOnce 단일 HTTP 요청 실행
+func (c *Client) doRequestOnce(ctx context.Context, method, path string, trID string, body interface{}) ([]byte, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("rate limit: %w", err)
 	}
@@ -111,7 +135,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, trID string
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return respBody, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	return respBody, nil
@@ -177,19 +201,32 @@ func (c *Client) placeOverseasOrder(ctx context.Context, order broker.Order) (*b
 		trID = TrIDSellReal
 	}
 
-	ordDvsn := "00"
+	ordDvsn := "00" // 해외주식은 지정가만 지원
 	price := fmt.Sprintf("%.2f", order.LimitPrice)
 	if order.Type == broker.OrderTypeMarket {
-		ordDvsn = "01"
-		price = "0"
+		// 해외주식 시장가 미지원 → 현재가 기준 공격적 지정가로 변환
+		currentPrice, err := c.GetQuote(ctx, order.Symbol)
+		if err != nil {
+			return nil, fmt.Errorf("get quote for market order: %w", err)
+		}
+		if order.Side == broker.OrderSideBuy {
+			price = fmt.Sprintf("%.2f", currentPrice*1.05) // 5% 위
+		} else {
+			price = fmt.Sprintf("%.2f", currentPrice*0.95) // 5% 아래
+		}
 	}
 
 	exchange := c.detectExchange(order.Symbol)
+	// 주문 API는 4자리 거래소 코드 사용 (NASD, NYSE, AMEX)
+	orderExch := exchangeOrderCode[exchange]
+	if orderExch == "" {
+		orderExch = "NASD"
+	}
 
 	req := orderRequest{
 		CANO:            cano,
 		ACNT:            acnt,
-		OVRS_EXCG_CD:    exchange,
+		OVRS_EXCG_CD:    orderExch,
 		PDNO:            order.Symbol,
 		ORD_QTY:         fmt.Sprintf("%d", order.Quantity),
 		OVRS_ORD_UNPR:   price,
@@ -289,7 +326,7 @@ func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
 	req := cancelRequest{
 		CANO:              cano,
 		ACNT:              acnt,
-		OVRS_EXCG_CD:      ExchangeNASDAQ, // TODO: 원주문의 거래소 정보 필요
+		OVRS_EXCG_CD:      "NASD", // TODO: 원주문의 거래소 정보 필요
 		PDNO:              "",              // TODO: 원주문의 종목코드 필요
 		ORGN_ODNO:         orderID,
 		RVSE_CNCL_DVSN_CD: "02", // 취소
@@ -471,16 +508,17 @@ func (c *Client) getOverseasPendingOrders(ctx context.Context) ([]broker.Pending
 
 	respBody, err := c.doRequest(ctx, "GET", "/uapi/overseas-stock/v1/trading/inquire-nccs"+params, TrIDPendingReal, nil)
 	if err != nil {
-		return nil, err
+		return []broker.PendingOrder{}, nil // 네트워크 오류 시 빈 결과
 	}
 
 	var resp pendingResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
+		return []broker.PendingOrder{}, nil
 	}
 
 	if resp.RtCd != "0" {
-		return nil, fmt.Errorf("pending query failed: [%s] %s", resp.MsgCd, resp.Msg1)
+		// KIS API 서버 오류 시 빈 결과 반환 (미체결 조회 실패는 치명적이지 않음)
+		return []broker.PendingOrder{}, nil
 	}
 
 	orders := make([]broker.PendingOrder, 0, len(resp.Output))
@@ -567,7 +605,7 @@ func (c *Client) getDomesticBalance(ctx context.Context) (*broker.AccountBalance
 		return nil, err
 	}
 
-	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&AFHR_FLPR_YN=N&OFL_YN=&INQR_DVSN=02&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=01&CTX_AREA_FK100=&CTX_AREA_NK100=",
+	params := fmt.Sprintf("?CANO=%s&ACNT_PRDT_CD=%s&AFHR_FLPR_YN=N&OFL_YN=&INQR_DVSN=01&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00&CTX_AREA_FK100=&CTX_AREA_NK100=",
 		cano, acnt)
 
 	respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/trading/inquire-balance"+params, TrIDDomBalanceReal, nil)
@@ -618,10 +656,13 @@ func (c *Client) getDomesticBalance(ctx context.Context) (*broker.AccountBalance
 	if len(resp.Output2) > 0 {
 		summary := resp.Output2[0]
 		balance.CashBalance = parseFloat(summary.DNCA_TOT_AMT)
-		balance.BuyingPower = parseFloat(summary.DNCA_TOT_AMT)
+		// D+2 예수금: 체결된 매수주문이 차감된 실제 가용 현금
+		// DNCA_TOT_AMT는 T+0 기준이라 당일 매수금이 미차감 → 이중 계산 방지
+		d2Cash := parseFloat(summary.PRVS_RCDL_EXCC_AMT)
+		balance.BuyingPower = d2Cash
 
 		totalStockValue := parseFloat(summary.SCTS_EVLU_AMT)
-		balance.TotalEquity = balance.CashBalance + totalStockValue
+		balance.TotalEquity = d2Cash + totalStockValue
 	}
 
 	return balance, nil

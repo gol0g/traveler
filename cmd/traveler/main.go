@@ -66,6 +66,7 @@ var (
 	sleepOnExit     bool    // 종료시 PC 절전
 	dataDir         string  // 데이터 디렉토리 (plans, logs, reports)
 	marketFlag      string  // 시장: us, kr
+	forceScan       bool    // 강제 스캔 (이미 매매했어도)
 )
 
 func main() {
@@ -117,6 +118,7 @@ Examples:
 	rootCmd.Flags().BoolVar(&sleepOnExit, "sleep-on-exit", true, "sleep PC when daemon exits")
 	rootCmd.Flags().StringVar(&dataDir, "data-dir", "", "data directory for plans, logs, reports (default: ~/.traveler)")
 	rootCmd.Flags().StringVar(&marketFlag, "market", "us", "market: us, kr")
+	rootCmd.Flags().BoolVar(&forceScan, "force-scan", false, "force scan even if already traded today")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -355,6 +357,7 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	daemonCfg.Daily.TargetPct = dailyTargetPct
 	daemonCfg.Daily.LossLimitPct = dailyLossLimit
 	daemonCfg.SleepOnExit = sleepOnExit
+	daemonCfg.ForceScan = forceScan
 	daemonCfg.DataDir = resolvedDir
 
 	fmt.Printf(" Daily Target:    %.1f%%\n", dailyTargetPct)

@@ -37,13 +37,15 @@ type ScanResponse struct {
 	UniversesUsed []string         `json:"universes_used,omitempty"`
 	Decision      string           `json:"decision,omitempty"`
 	Expansions    int              `json:"expansions,omitempty"`
-	AvgProb       float64          `json:"avg_prob,omitempty"`
+	AvgProb              float64          `json:"avg_prob,omitempty"`
+	FundamentalsFiltered int              `json:"fundamentals_filtered,omitempty"`
 }
 
-// SignalWithChart extends Signal with chart data
+// SignalWithChart extends Signal with chart data and fundamentals
 type SignalWithChart struct {
 	strategy.Signal
-	Candles []model.Candle `json:"candles,omitempty"`
+	Candles      []model.Candle           `json:"candles,omitempty"`
+	Fundamentals *provider.FundamentalsData `json:"fundamentals,omitempty"`
 }
 
 // StockResponse represents a single stock with chart data
@@ -226,6 +228,37 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 		return
 	}
 
+	// Fundamentals filter (use fresh context since scan may have consumed most of the timeout)
+	var fundamentalsFiltered int
+	var fundChecker *provider.FundamentalsChecker
+	if len(result.Signals) > 0 && s.dataDir != "" {
+		s.updateScanProgress("Checking fundamentals...", totalScanned, totalFound)
+		fundCtx, fundCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		fundChecker = provider.NewFundamentalsChecker(s.dataDir, nil) // US: no KOSDAQ
+		if err := fundChecker.Init(fundCtx); err != nil {
+			log.Printf("[WEB] Fundamentals init failed: %v", err)
+			fundChecker = nil
+		} else {
+			syms := make([]string, 0, len(result.Signals))
+			for _, sig := range result.Signals {
+				syms = append(syms, sig.Stock.Symbol)
+			}
+			rejected := fundChecker.FilterSymbols(fundCtx, syms)
+			if len(rejected) > 0 {
+				var filtered []strategy.Signal
+				for _, sig := range result.Signals {
+					if _, rej := rejected[sig.Stock.Symbol]; !rej {
+						filtered = append(filtered, sig)
+					}
+				}
+				fundamentalsFiltered = len(result.Signals) - len(filtered)
+				result.Signals = filtered
+				log.Printf("[WEB] Fundamentals filter: %d → %d signals", fundamentalsFiltered+len(filtered), len(filtered))
+			}
+		}
+		fundCancel()
+	}
+
 	s.updateScanProgress("Applying position sizing...", totalScanned, totalFound)
 
 	sizer := trader.NewPositionSizer(sizerCfg)
@@ -240,10 +273,13 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 	var totalInvest, totalRisk float64
 	for _, sig := range sized {
 		candles, _ := cachedProvider.GetDailyCandles(ctx, sig.Stock.Symbol, 100)
-		signals = append(signals, SignalWithChart{
-			Signal:  sig,
-			Candles: candles,
-		})
+		swc := SignalWithChart{Signal: sig, Candles: candles}
+		if fundChecker != nil {
+			if fd, err := fundChecker.Check(context.Background(), sig.Stock.Symbol); err == nil {
+				swc.Fundamentals = fd
+			}
+		}
+		signals = append(signals, swc)
 		if sig.Guide != nil {
 			totalInvest += sig.Guide.InvestAmount
 			totalRisk += sig.Guide.RiskAmount
@@ -255,18 +291,19 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 		len(signals), result.UniversesUsed, scanTime.Round(time.Second), result.Decision)
 
 	resp := ScanResponse{
-		Strategy:      "multi",
-		TotalScanned:  result.ScannedCount,
-		SignalsFound:  len(signals),
-		Signals:       signals,
-		ScanTime:      scanTime.Round(time.Second).String(),
-		Capital:       capital,
-		TotalInvest:   totalInvest,
-		TotalRisk:     totalRisk,
-		UniversesUsed: result.UniversesUsed,
-		Decision:      result.Decision,
-		Expansions:    result.Expansions,
-		AvgProb:       result.Quality.AvgProb,
+		Strategy:             "multi",
+		TotalScanned:         result.ScannedCount,
+		SignalsFound:         len(signals),
+		Signals:              signals,
+		ScanTime:             scanTime.Round(time.Second).String(),
+		Capital:              capital,
+		TotalInvest:          totalInvest,
+		TotalRisk:            totalRisk,
+		UniversesUsed:        result.UniversesUsed,
+		Decision:             result.Decision,
+		Expansions:           result.Expansions,
+		AvgProb:              result.Quality.AvgProb,
+		FundamentalsFiltered: fundamentalsFiltered,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -352,6 +389,41 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 		return
 	}
 
+	// Fundamentals filter (KR — use fresh context)
+	var fundamentalsFiltered int
+	var fundChecker *provider.FundamentalsChecker
+	if len(result.Signals) > 0 && s.dataDir != "" {
+		s.updateScanKRProgress("Checking fundamentals...", totalScanned, totalFound)
+		fundCtx, fundCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		kosdaqSet := make(map[string]bool)
+		for _, sym := range symbols.Kosdaq30Symbols {
+			kosdaqSet[sym] = true
+		}
+		fundChecker = provider.NewFundamentalsChecker(s.dataDir, kosdaqSet)
+		if err := fundChecker.Init(fundCtx); err != nil {
+			log.Printf("[WEB] KR Fundamentals init failed: %v", err)
+			fundChecker = nil
+		} else {
+			syms := make([]string, 0, len(result.Signals))
+			for _, sig := range result.Signals {
+				syms = append(syms, sig.Stock.Symbol)
+			}
+			rejected := fundChecker.FilterSymbols(fundCtx, syms)
+			if len(rejected) > 0 {
+				var filtered []strategy.Signal
+				for _, sig := range result.Signals {
+					if _, rej := rejected[sig.Stock.Symbol]; !rej {
+						filtered = append(filtered, sig)
+					}
+				}
+				fundamentalsFiltered = len(result.Signals) - len(filtered)
+				result.Signals = filtered
+				log.Printf("[WEB] KR Fundamentals filter: %d → %d signals", fundamentalsFiltered+len(filtered), len(filtered))
+			}
+		}
+		fundCancel()
+	}
+
 	s.updateScanKRProgress("Applying position sizing...", totalScanned, totalFound)
 
 	sizer := trader.NewPositionSizer(sizerCfg)
@@ -366,10 +438,13 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 	var totalInvest, totalRisk float64
 	for _, sig := range sized {
 		candles, _ := cachedProvider.GetDailyCandles(ctx, sig.Stock.Symbol, 100)
-		signals = append(signals, SignalWithChart{
-			Signal:  sig,
-			Candles: candles,
-		})
+		swc := SignalWithChart{Signal: sig, Candles: candles}
+		if fundChecker != nil {
+			if fd, err := fundChecker.Check(context.Background(), sig.Stock.Symbol); err == nil {
+				swc.Fundamentals = fd
+			}
+		}
+		signals = append(signals, swc)
 		if sig.Guide != nil {
 			totalInvest += sig.Guide.InvestAmount
 			totalRisk += sig.Guide.RiskAmount
@@ -381,18 +456,19 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 		len(signals), result.UniversesUsed, scanTime.Round(time.Second))
 
 	resp := ScanResponse{
-		Strategy:      "multi-kr",
-		TotalScanned:  result.ScannedCount,
-		SignalsFound:  len(signals),
-		Signals:       signals,
-		ScanTime:      scanTime.Round(time.Second).String(),
-		Capital:       capital,
-		TotalInvest:   totalInvest,
-		TotalRisk:     totalRisk,
-		UniversesUsed: result.UniversesUsed,
-		Decision:      result.Decision,
-		Expansions:    result.Expansions,
-		AvgProb:       result.Quality.AvgProb,
+		Strategy:             "multi-kr",
+		TotalScanned:         result.ScannedCount,
+		SignalsFound:         len(signals),
+		Signals:              signals,
+		ScanTime:             scanTime.Round(time.Second).String(),
+		Capital:              capital,
+		TotalInvest:          totalInvest,
+		TotalRisk:            totalRisk,
+		UniversesUsed:        result.UniversesUsed,
+		Decision:             result.Decision,
+		Expansions:           result.Expansions,
+		AvgProb:              result.Quality.AvgProb,
+		FundamentalsFiltered: fundamentalsFiltered,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -785,5 +861,50 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"orders": result,
+	})
+}
+
+// handleTradeHistory 누적 매매 기록 + 요약 반환
+func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.history == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"records": []interface{}{},
+			"summary": trader.TradeSummary{
+				ByStrategy: map[string]trader.StrategySummary{},
+				ByMarket:   map[string]trader.MarketSummary{},
+			},
+		})
+		return
+	}
+
+	market := r.URL.Query().Get("market")
+	if market == "" {
+		market = "us"
+	}
+
+	// 디스크에서 최신 데이터 리로드
+	s.history.Reload()
+
+	records := s.history.GetAll(market)
+	// KR 종목명 보강
+	for i := range records {
+		if records[i].Name == "" {
+			if n := symbols.GetKRSymbolName(records[i].Symbol); n != "" {
+				records[i].Name = n
+			}
+		}
+	}
+	summary := s.history.Summary(market)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"records": records,
+		"summary": summary,
 	})
 }

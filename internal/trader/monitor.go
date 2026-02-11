@@ -30,6 +30,8 @@ type Monitor struct {
 	executor  *Executor
 	config    Config
 	planStore *PlanStore
+	history   *TradeHistory
+	market    string // "us" or "kr"
 
 	mu        sync.RWMutex
 	positions map[string]*ActivePosition
@@ -44,6 +46,12 @@ func NewMonitor(b broker.Broker, executor *Executor, cfg Config, planStore *Plan
 		planStore: planStore,
 		positions: make(map[string]*ActivePosition),
 	}
+}
+
+// SetTradeHistory 매매 기록 저장소 설정
+func (m *Monitor) SetTradeHistory(h *TradeHistory, market string) {
+	m.history = h
+	m.market = market
 }
 
 // RegisterPosition 포지션 등록 (진입시 호출)
@@ -126,7 +134,7 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 		if currentPrice <= active.StopLoss {
 			log.Printf("[STOP LOSS] %s hit stop at $%.2f (current: $%.2f)",
 				symbol, active.StopLoss, currentPrice)
-			m.executeSell(ctx, symbol, active.Quantity, "stop_loss")
+			m.executeSell(ctx, symbol, active.Quantity, "stop_loss", currentPrice)
 			continue
 		}
 
@@ -134,7 +142,7 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 		if active.Target1Hit && currentPrice >= active.Target2 {
 			log.Printf("[TARGET2] %s hit target2 at $%.2f - closing position",
 				symbol, active.Target2)
-			m.executeSell(ctx, symbol, active.Quantity, "target2")
+			m.executeSell(ctx, symbol, active.Quantity, "target2", currentPrice)
 			continue
 		}
 
@@ -147,6 +155,27 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			if _, err := m.executor.ExecuteSell(ctx, symbol, halfQty, "target1"); err != nil {
 				log.Printf("[MONITOR] Error selling %s: %v", symbol, err)
 				continue
+			}
+
+			// Target1 매도 기록
+			if m.history != nil {
+				pnl := float64(halfQty) * (currentPrice - active.EntryPrice)
+				pnlPct := 0.0
+				if active.EntryPrice > 0 {
+					pnlPct = (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+				}
+				m.history.Append(TradeRecord{
+					Market:     m.market,
+					Symbol:     symbol,
+					Side:       "sell",
+					Quantity:   halfQty,
+					Price:      currentPrice,
+					Strategy:   active.Strategy,
+					Reason:     "target1",
+					EntryPrice: active.EntryPrice,
+					PnL:        pnl,
+					PnLPct:     pnlPct,
+				})
 			}
 
 			// 상태 업데이트
@@ -176,19 +205,45 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 				reason := fmt.Sprintf("time_stop_%dd (P&L: %.1f%%)", tradingDays, pnlPct)
 				log.Printf("[TIME STOP] %s held %d trading days (max %d), current=$%.2f, P&L=%.1f%% - closing",
 					symbol, tradingDays, active.MaxHoldDays, currentPrice, pnlPct)
-				m.executeSell(ctx, symbol, active.Quantity, reason)
+				m.executeSell(ctx, symbol, active.Quantity, reason, currentPrice)
 				continue
 			}
 		}
 	}
 }
 
-// executeSell 전량 매도
-func (m *Monitor) executeSell(ctx context.Context, symbol string, quantity int, reason string) {
+// executeSell 전량 매도 (exitPrice: 매도 트리거 시점의 현재가)
+func (m *Monitor) executeSell(ctx context.Context, symbol string, quantity int, reason string, exitPrice float64) {
+	// 매도 전에 포지션 정보 캡처 (history 기록용)
+	m.mu.RLock()
+	active, hasActive := m.positions[symbol]
+	m.mu.RUnlock()
+
 	_, err := m.executor.ExecuteSell(ctx, symbol, quantity, reason)
 	if err != nil {
 		log.Printf("[MONITOR] Error selling %s: %v", symbol, err)
 		return
+	}
+
+	// 매매 기록 저장
+	if m.history != nil && hasActive {
+		pnl := float64(quantity) * (exitPrice - active.EntryPrice)
+		pnlPct := 0.0
+		if active.EntryPrice > 0 {
+			pnlPct = (exitPrice - active.EntryPrice) / active.EntryPrice * 100
+		}
+		m.history.Append(TradeRecord{
+			Market:     m.market,
+			Symbol:     symbol,
+			Side:       "sell",
+			Quantity:   quantity,
+			Price:      exitPrice,
+			Strategy:   active.Strategy,
+			Reason:     reason,
+			EntryPrice: active.EntryPrice,
+			PnL:        pnl,
+			PnLPct:     pnlPct,
+		})
 	}
 
 	m.UnregisterPosition(symbol)
@@ -211,7 +266,13 @@ func (m *Monitor) ClosePosition(ctx context.Context, symbol string, reason strin
 		return fmt.Errorf("position %s not found in monitor", symbol)
 	}
 
-	m.executeSell(ctx, symbol, active.Quantity, reason)
+	// 현재가 조회 (매도 기록용)
+	exitPrice, err := m.broker.GetQuote(ctx, symbol)
+	if err != nil || exitPrice <= 0 {
+		exitPrice = active.EntryPrice // fallback
+	}
+
+	m.executeSell(ctx, symbol, active.Quantity, reason, exitPrice)
 	return nil
 }
 

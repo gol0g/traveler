@@ -2,7 +2,7 @@ package trader
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"sort"
 
 	"traveler/internal/strategy"
@@ -175,6 +175,7 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 
 	balance := s.sizerConfig.TotalCapital
 	maxPrice := balance * s.sizerConfig.MaxPositionPct
+	log.Printf("[ADAPTIVE] Balance=$%.2f, maxPrice=$%.2f, maxExpansions=%d", balance, maxPrice, s.config.MaxExpansions)
 
 	var tiers []UniverseTier
 	if s.tierFunc != nil {
@@ -202,14 +203,12 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 
 		// 유니버스 로드 및 스캔
 		for _, tier := range tierUniverses {
-			if s.config.Verbose {
-				fmt.Printf("[ADAPTIVE] Scanning %s universe...\n", tier.Name)
-			}
-
 			stocks, err := loader.LoadUniverse(ctx, tier.Universe)
 			if err != nil {
+				log.Printf("[ADAPTIVE] Failed to load %s: %v", tier.Name, err)
 				continue
 			}
+			log.Printf("[ADAPTIVE] Scanning %s universe (%d stocks)...", tier.Name, len(stocks))
 
 			// 이미 스캔한 종목 제외 + 가격 필터
 			var newStocks []model.Stock
@@ -234,11 +233,16 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 			}
 
 			// 가격 필터링 (매수 가능한 것만)
+			var filtered int
 			for _, sig := range signals {
 				if sig.Guide != nil && sig.Guide.EntryPrice <= maxPrice {
 					allSignals = append(allSignals, sig)
+				} else {
+					filtered++
 				}
 			}
+			log.Printf("[ADAPTIVE] %s: %d raw signals, %d passed price filter (max $%.2f), %d filtered",
+				tier.Name, len(signals), len(signals)-filtered, maxPrice, filtered)
 		}
 
 		// 품질 평가
@@ -246,13 +250,12 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 		result.Quality = quality
 		result.Signals = allSignals
 
-		if s.config.Verbose {
-			fmt.Printf("[ADAPTIVE] Tier %d complete: %d signals, avg prob %.1f%%, avg R/R %.2f\n",
-				currentPriority, quality.SignalCount, quality.AvgProb, quality.AvgRR)
-		}
+		log.Printf("[ADAPTIVE] Tier %d complete: %d signals (total), avg prob %.1f%%, avg R/R %.2f",
+			currentPriority, quality.SignalCount, quality.AvgProb, quality.AvgRR)
 
 		// 품질 충족시 종료
 		if quality.IsAcceptable(s.config) {
+			log.Printf("[ADAPTIVE] Quality acceptable. Stopping expansion.")
 			result.Decision = "trade"
 			break
 		}
@@ -263,9 +266,10 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 
 		if expansion < s.config.MaxExpansions {
 			result.Decision = "expanded"
-			if s.config.Verbose {
-				fmt.Printf("[ADAPTIVE] Quality not met, expanding to tier %d...\n", currentPriority)
-			}
+			log.Printf("[ADAPTIVE] Quality not met (need %d signals, %.1f%% prob, %.1f R/R). Expanding to tier %d...",
+				s.config.MinSignals, s.config.MinAvgProb, s.config.MinAvgRR, currentPriority)
+		} else {
+			log.Printf("[ADAPTIVE] Max expansions (%d) reached. Using %d signals as-is.", s.config.MaxExpansions, quality.SignalCount)
 		}
 	}
 
@@ -292,10 +296,11 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 // GetKRUniverseTiers 한국 시장 유니버스 티어 (KRW 기준)
 func GetKRUniverseTiers(balance float64) []UniverseTier {
 	switch {
-	case balance < 5000000: // 500만원 미만: KOSDAQ(저가주) 우선
+	case balance < 5000000: // 500만원 미만: KOSDAQ(저가주) 우선 + KOSPI200 확대
 		return []UniverseTier{
 			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
-			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 2},
+			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 1},
+			{Name: "kospi200", Universe: symbols.UniverseKospi200, Priority: 2},
 		}
 	case balance < 50000000: // 5000만원 미만: KOSPI+KOSDAQ
 		return []UniverseTier{
@@ -324,15 +329,15 @@ func AdjustConfigForKRBalance(balance float64) SizerConfig {
 	}
 
 	switch {
-	case balance < 500000: // 50만원 미만: 공격적
+	case balance < 500000: // 50만원 미만: 공격적 + 분산
 		cfg.RiskPerTrade = 0.03
-		cfg.MaxPositionPct = 0.40
-		cfg.MaxPositions = 3
+		cfg.MaxPositionPct = 0.30
+		cfg.MaxPositions = 5
 		cfg.MinRiskReward = 1.5
 	case balance < 5000000: // 500만원 미만: 적극적
 		cfg.RiskPerTrade = 0.02
-		cfg.MaxPositionPct = 0.30
-		cfg.MaxPositions = 3
+		cfg.MaxPositionPct = 0.25
+		cfg.MaxPositions = 5
 		cfg.MinRiskReward = 1.5
 	case balance < 50000000: // 5000만원 미만
 		cfg.RiskPerTrade = 0.015

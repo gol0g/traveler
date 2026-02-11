@@ -42,6 +42,7 @@ type Server struct {
 	universe  string
 	broker    broker.Broker
 	planStore *trader.PlanStore
+	history   *trader.TradeHistory
 	srv       *http.Server
 	dataDir   string
 
@@ -83,6 +84,15 @@ func NewServer(cfg *config.Config, p provider.Provider, capital float64, univers
 		}
 	}
 
+	if dataDir != "" {
+		h, err := trader.NewTradeHistory(dataDir)
+		if err == nil {
+			s.history = h
+		} else {
+			log.Printf("[WEB] Warning: could not load TradeHistory: %v", err)
+		}
+	}
+
 	// Load last scan result from disk
 	s.loadScanResultFromDisk()
 
@@ -106,6 +116,7 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/positions", s.handlePositions)
 	mux.HandleFunc("/api/balance", s.handleBalance)
 	mux.HandleFunc("/api/orders", s.handleOrders)
+	mux.HandleFunc("/api/trade-history", s.handleTradeHistory)
 
 	// Static files (no-cache to prevent stale JS)
 	staticFS, err := fs.Sub(staticFiles, "static")

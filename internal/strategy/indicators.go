@@ -1,6 +1,8 @@
 package strategy
 
 import (
+	"math"
+
 	"traveler/pkg/model"
 )
 
@@ -12,10 +14,13 @@ type Indicators struct {
 	MA50    float64
 	MA200   float64
 	RSI14   float64
+	ATR14   float64 // 14-period Average True Range
 	AvgVol  float64 // Average volume (20-day)
 	BBUpper float64 // Bollinger Band Upper
 	BBLower float64 // Bollinger Band Lower
 	BBWidth float64 // Bollinger Bandwidth
+
+	MA50Slope float64 // MA50 기울기 (5일전 대비 변화율%, 양수=상승)
 }
 
 // CalculateMA calculates Simple Moving Average for the given period
@@ -97,6 +102,25 @@ func CalculateBollingerBands(candles []model.Candle, period int, stdDev float64)
 	return upper, lower, bandwidth
 }
 
+// CalculateATR calculates Average True Range
+// TR = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+// ATR = SMA of TR over period
+func CalculateATR(candles []model.Candle, period int) float64 {
+	if len(candles) < period+1 {
+		return 0
+	}
+
+	var sum float64
+	for i := len(candles) - period; i < len(candles); i++ {
+		highLow := candles[i].High - candles[i].Low
+		highPrevClose := math.Abs(candles[i].High - candles[i-1].Close)
+		lowPrevClose := math.Abs(candles[i].Low - candles[i-1].Close)
+		tr := math.Max(highLow, math.Max(highPrevClose, lowPrevClose))
+		sum += tr
+	}
+	return sum / float64(period)
+}
+
 // CalculateIndicators calculates all indicators for the given candles
 func CalculateIndicators(candles []model.Candle) *Indicators {
 	ind := &Indicators{}
@@ -120,6 +144,15 @@ func CalculateIndicators(candles []model.Candle) *Indicators {
 	}
 	if len(candles) >= 15 {
 		ind.RSI14 = CalculateRSI(candles, 14)
+		ind.ATR14 = CalculateATR(candles, 14)
+	}
+
+	// MA50 기울기: 현재 MA50 vs 5일전 MA50
+	if len(candles) >= 55 && ind.MA50 > 0 {
+		prevMA50 := CalculateMA(candles[:len(candles)-5], 50)
+		if prevMA50 > 0 {
+			ind.MA50Slope = (ind.MA50 - prevMA50) / prevMA50 * 100
+		}
 	}
 
 	return ind

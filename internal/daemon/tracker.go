@@ -65,6 +65,7 @@ type DailyTracker struct {
 	config   DailyConfig
 	state    DailyState
 	dataDir  string
+	tz       *time.Location // 마켓 타임존 (nil이면 로컬)
 	mu       sync.RWMutex
 }
 
@@ -82,12 +83,26 @@ func NewDailyTracker(cfg DailyConfig, dataDir string) *DailyTracker {
 	}
 }
 
+// SetTimezone 마켓 타임존 설정 (US=America/New_York, KR=Asia/Seoul)
+func (t *DailyTracker) SetTimezone(tz *time.Location) {
+	t.tz = tz
+}
+
+// marketDate 마켓 기준 오늘 날짜
+func (t *DailyTracker) marketDate() string {
+	now := time.Now()
+	if t.tz != nil {
+		now = now.In(t.tz)
+	}
+	return now.Format("2006-01-02")
+}
+
 // Start 새로운 거래일 시작
 func (t *DailyTracker) Start(startingBalance float64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	today := time.Now().Format("2006-01-02")
+	today := t.marketDate()
 
 	// 이미 오늘 데이터가 있는지 확인
 	existing, err := t.loadState(today)
@@ -118,7 +133,7 @@ func (t *DailyTracker) EnsureDate() {
 	defer t.mu.Unlock()
 
 	if t.state.Date == "" {
-		t.state.Date = time.Now().Format("2006-01-02")
+		t.state.Date = t.marketDate()
 		t.state.StartTime = time.Now()
 	}
 }

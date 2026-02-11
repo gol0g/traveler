@@ -39,6 +39,8 @@ function renderChart(containerId, candles, guide) {
         timeScale: {
             borderColor: '#374151',
             timeVisible: true,
+            barSpacing: 16,
+            rightOffset: 5,
         },
     });
 
@@ -162,8 +164,8 @@ function renderChart(containerId, candles, guide) {
         }
     }
 
-    // Fit content
-    chartInstance.timeScale().fitContent();
+    // Scroll to latest candles (barSpacing controls zoom level)
+    chartInstance.timeScale().scrollToRealTime();
 
     // Handle resize
     const resizeObserver = new ResizeObserver(entries => {

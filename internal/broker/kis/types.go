@@ -31,12 +31,19 @@ const (
 	TrIDDomBuyPower    = "TTTC8908R"     // 국내 매수가능금액
 )
 
-// 거래소 코드 (KIS API용)
+// 거래소 코드 — 시세 조회용 (3자리)
 const (
 	ExchangeNYSE   = "NYS" // 뉴욕
 	ExchangeNASDAQ = "NAS" // 나스닥
 	ExchangeAMEX   = "AMS" // 아멕스
 )
+
+// 거래소 코드 — 주문용 (4자리)
+var exchangeOrderCode = map[string]string{
+	"NYS": "NYSE",
+	"NAS": "NASD",
+	"AMS": "AMEX",
+}
 
 // tokenRequest 토큰 발급 요청
 type tokenRequest struct {

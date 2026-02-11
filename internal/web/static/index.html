@@ -7,7 +7,7 @@
     <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/css/style.css?v=8">
+    <link rel="stylesheet" href="/css/style.css?v=12">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Header -->
@@ -26,6 +26,7 @@
         <nav class="flex gap-1">
             <button class="tab-btn active" data-tab="scanner">Scanner</button>
             <button class="tab-btn" data-tab="positions">Positions</button>
+            <button class="tab-btn" data-tab="history">History</button>
             <button class="tab-btn" data-tab="strategy">Strategy</button>
         </nav>
     </header>
@@ -104,6 +105,7 @@
                                 <th class="px-4 py-3 font-medium">Alloc%</th>
                                 <th class="px-4 py-3 font-medium">Risk</th>
                                 <th class="px-4 py-3 font-medium">Prob%</th>
+                                <th class="px-4 py-3 font-medium">Fundamentals</th>
                                 <th class="px-4 py-3 font-medium">Action</th>
                             </tr>
                         </thead>
@@ -182,40 +184,109 @@
             </div>
         </div>
 
+        <!-- ==================== HISTORY TAB ==================== -->
+        <div id="panelHistory" class="tab-panel hidden">
+            <!-- Summary Cards -->
+            <div id="historySummary" class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Trades</div>
+                    <div id="histTotalTrades" class="text-2xl font-bold text-white">0</div>
+                    <div class="text-xs text-gray-500"><span id="histBuys">0</span> buys / <span id="histSells">0</span> sells</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Win Rate</div>
+                    <div id="histWinRate" class="text-2xl font-bold text-white">--%</div>
+                    <div class="text-xs text-gray-500"><span id="histWins">0</span>W / <span id="histLosses">0</span>L</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Realized P&L</div>
+                    <div id="histPnL" class="text-2xl font-bold">--</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Commission</div>
+                    <div id="histCommission" class="text-2xl font-bold text-yellow-400">--</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Net P&L</div>
+                    <div id="histNetPnL" class="text-2xl font-bold">--</div>
+                </div>
+            </div>
+
+            <!-- Strategy Performance -->
+            <div id="strategyPerf" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <!-- Filled by JS -->
+            </div>
+
+            <!-- Trade History Table -->
+            <div class="bg-gray-800 rounded-xl border border-gray-700">
+                <div class="p-4 border-b border-gray-700 flex items-center justify-between">
+                    <h2 class="text-lg font-semibold">Trade History</h2>
+                    <span id="histRecordCount" class="text-sm text-gray-500"></span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead class="bg-gray-750">
+                            <tr class="text-left text-gray-400 text-sm">
+                                <th class="px-4 py-3 font-medium">Date</th>
+                                <th class="px-4 py-3 font-medium">Symbol</th>
+                                <th class="px-4 py-3 font-medium">Side</th>
+                                <th class="px-4 py-3 font-medium">Strategy</th>
+                                <th class="px-4 py-3 font-medium">Qty</th>
+                                <th class="px-4 py-3 font-medium">Price</th>
+                                <th class="px-4 py-3 font-medium">Amount</th>
+                                <th class="px-4 py-3 font-medium">P&L</th>
+                                <th class="px-4 py-3 font-medium">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTable" class="divide-y divide-gray-700">
+                        </tbody>
+                    </table>
+                </div>
+                <div id="histNoRecords" class="hidden text-center py-8 text-gray-500">
+                    No trade records yet
+                </div>
+            </div>
+        </div>
+
         <!-- ==================== STRATEGY TAB ==================== -->
         <div id="panelStrategy" class="tab-panel hidden">
             <div class="mb-6">
-                <h2 class="text-xl font-bold mb-1">Trading Strategies</h2>
-                <p class="text-gray-400 text-sm">멀티 전략 스캔 시 3가지 전략을 동시에 분석하여 가장 강한 시그널을 선택합니다.</p>
+                <h2 class="text-xl font-bold mb-1">Trading System</h2>
+                <p class="text-gray-400 text-sm">멀티 전략 스캔 + 펀더멘털 필터 + 적응형 유니버스 확장 + 자동 포지션 무효화</p>
             </div>
 
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- ===== Strategies ===== -->
+            <h3 class="text-lg font-semibold mb-3">Strategies</h3>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
                 <!-- Pullback -->
                 <div class="strategy-card strategy-card-pullback">
                     <div class="flex items-center gap-3 mb-4">
                         <span class="strategy-badge strategy-pullback text-sm">PULLBACK</span>
                         <span class="text-gray-400 text-sm">추세 추종</span>
                     </div>
-                    <p class="text-gray-300 text-sm mb-4">상승 추세에서 일시적으로 조정받은 종목의 반등을 노리는 스윙 매매 전략</p>
+                    <p class="text-gray-300 text-sm mb-4">상승 추세에서 MA20까지 조정받은 종목의 반등을 노리는 스윙 매매 전략</p>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
                     <ul class="strategy-conditions mb-4">
-                        <li><span class="condition-tag condition-required">필수</span> 주가가 MA50 위 (상승 추세)</li>
-                        <li><span class="condition-tag condition-required">필수</span> 주가가 MA20 부근까지 조정 (±2%)</li>
-                        <li><span class="condition-tag condition-required">필수</span> 거래량이 평균 이하 (매도세 약함)</li>
-                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 긴 아래꼬리)</li>
-                        <li><span class="condition-tag condition-support">보조</span> RSI 30~60 구간 (과매도 접근)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 > MA50 (상승 추세 확인)</li>
+                        <li><span class="condition-tag condition-required">필수</span> MA50 기울기 > 0 또는 MA20 > MA50</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가가 MA20 ±2% 범위 조정</li>
+                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 아래꼬리 > 몸통×1.5)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 3일 평균 거래량 < 20일 평균 (매도세 약화)</li>
+                        <li><span class="condition-tag condition-support">보조</span> RSI < 70 (과매수 아님)</li>
                     </ul>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
                     <div class="strategy-guide">
-                        <div class="guide-row"><span class="text-red-400">손절</span><span>진입가 -2% 또는 MA20 아래</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>1.5R (리스크의 1.5배)</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>2.5R (리스크의 2.5배)</span></div>
-                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.0</span></div>
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>MAX(1.5ATR, MA20×0.98, 진입가×0.95)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 + Risk × 1.5</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 + Risk × 2.5</span></div>
+                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.0x</span></div>
                         <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
-                        <div class="guide-row"><span class="text-gray-400">보유 기간</span><span>최대 10일</span></div>
                     </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
+                    <p class="text-gray-400 text-xs">종가 < MA20 이 2일 연속 → 포지션 청산</p>
                 </div>
 
                 <!-- Breakout -->
@@ -228,22 +299,25 @@
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
                     <ul class="strategy-conditions mb-4">
-                        <li><span class="condition-tag condition-required">필수</span> 주가가 20일 최고가 돌파</li>
-                        <li><span class="condition-tag condition-required">필수</span> 거래량 1.5배 이상 급증</li>
-                        <li><span class="condition-tag condition-required">필수</span> MA50 위 (추세 확인)</li>
-                        <li><span class="condition-tag condition-support">보조</span> 돌파 전 횡보/수렴 (consolidation)</li>
-                        <li><span class="condition-tag condition-support">보조</span> RSI 80 이하 (과매수 아님)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 종가 > 20일 최고가 (종가 기준 돌파)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 거래량 ≥ 20일 평균 × 1.5</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 > MA50 (추세 확인)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 돌파 전 수렴 (BB폭 축소 후 확대)</li>
+                        <li><span class="condition-tag condition-support">보조</span> RSI < 80 (과매수 아님)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 거래량 > 2.0x 시 보너스 +5점</li>
                     </ul>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
                     <div class="strategy-guide">
-                        <div class="guide-row"><span class="text-red-400">손절</span><span>돌파 레벨 아래 또는 -3%</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>1.5R (리스크의 1.5배)</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>3.0R (리스크의 3배)</span></div>
-                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.25</span></div>
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>MAX(2.0ATR, 돌파레벨×0.97, 진입가×0.95)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 + Risk × 1.5</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 + Risk × 3.0</span></div>
+                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.25x</span></div>
                         <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
-                        <div class="guide-row"><span class="text-gray-400">보유 기간</span><span>최대 7일</span></div>
                     </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
+                    <p class="text-gray-400 text-xs">종가 < 돌파 레벨 (20일 최고가) → 즉시 청산</p>
                 </div>
 
                 <!-- Mean Reversion -->
@@ -252,25 +326,152 @@
                         <span class="strategy-badge strategy-mean-reversion text-sm">MEAN REVERSION</span>
                         <span class="text-gray-400 text-sm">평균 회귀</span>
                     </div>
-                    <p class="text-gray-300 text-sm mb-4">과매도 구간에서 볼린저 밴드 하단을 이탈한 종목의 평균 회귀를 노리는 역추세 전략</p>
+                    <p class="text-gray-300 text-sm mb-4">과매도 구간에서 볼린저 밴드 하단 이탈 후 평균 회귀를 노리는 역추세 전략</p>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
                     <ul class="strategy-conditions mb-4">
-                        <li><span class="condition-tag condition-required">필수</span> RSI 30 이하 (과매도)</li>
-                        <li><span class="condition-tag condition-required">필수</span> 볼린저 밴드 하단 이탈/터치</li>
-                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 긴 아래꼬리)</li>
-                        <li><span class="condition-tag condition-support">보조</span> MA200 위 (장기 추세 건재)</li>
-                        <li><span class="condition-tag condition-support">보조</span> 거래량 증가 (반등 동력)</li>
+                        <li><span class="condition-tag condition-required">필수</span> RSI14 < 30 (과매도)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 ≤ BB하단 × 1.01 (터치/이탈)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 아래꼬리 > 몸통×1.5)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 > MA200 (장기 추세 건재)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 거래량 비율 > 1.2x (반등 동력)</li>
+                        <li><span class="condition-tag condition-support">보조</span> RSI < 25 시 보너스 +10점</li>
                     </ul>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
                     <div class="strategy-guide">
-                        <div class="guide-row"><span class="text-red-400">손절</span><span>최근 저점 아래 또는 -3%</span></div>
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>MAX(1.5ATR, 당일저가×0.99, 진입가×0.95)</span></div>
                         <div class="guide-row"><span class="text-green-400">목표 1</span><span>MA20 (평균 회귀)</span></div>
                         <div class="guide-row"><span class="text-green-400">목표 2</span><span>볼린저 밴드 상단</span></div>
                         <div class="guide-row"><span class="text-gray-400">R:R</span><span>동적 계산</span></div>
                         <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
-                        <div class="guide-row"><span class="text-gray-400">보유 기간</span><span>최대 5일</span></div>
+                    </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
+                    <p class="text-gray-400 text-xs">진입 2일 후에도 RSI < 35 + 종가 < BB하단 → 청산</p>
+                </div>
+            </div>
+
+            <!-- ===== Fundamentals Filter ===== -->
+            <h3 class="text-lg font-semibold mb-3">Fundamentals Filter</h3>
+            <div class="strategy-card mb-8" style="border-top-color: #10b981;">
+                <p class="text-gray-300 text-sm mb-4">기술적 시그널 발생 후 Yahoo Finance 펀더멘털 데이터를 조회하여 위험 종목을 자동 제거합니다.</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-2">REJECT 조건 (하나라도 해당 시 제거)</h4>
+                        <ul class="strategy-conditions">
+                            <li><span class="condition-tag" style="background:rgba(239,68,68,0.15);color:#f87171;">제거</span> 52주 변동률 < -30% (구조적 하락)</li>
+                            <li><span class="condition-tag" style="background:rgba(239,68,68,0.15);color:#f87171;">제거</span> 부채비율(D/E) > 200% (과다 부채)</li>
+                            <li><span class="condition-tag" style="background:rgba(239,68,68,0.15);color:#f87171;">제거</span> 이익률 < -10% (적자 기업)</li>
+                            <li><span class="condition-tag" style="background:rgba(239,68,68,0.15);color:#f87171;">제거</span> 시가총액 < $200M / ₩200B (소형주)</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">조회 지표</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">Market Cap</span><span>시가총액</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Trailing / Forward P/E</span><span>주가수익비율</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Debt/Equity</span><span>부채비율</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Profit Margin</span><span>순이익률</span></div>
+                            <div class="guide-row"><span class="text-gray-400">52W Change</span><span>52주 수익률</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Revenue Growth</span><span>매출 성장률</span></div>
+                            <div class="guide-row"><span class="text-gray-400">ROE</span><span>자기자본수익률</span></div>
+                        </div>
+                        <p class="text-gray-500 text-xs mt-2">일별 캐시 저장 (3일 후 자동 삭제). API 실패 시 해당 종목은 PASS 처리.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== Adaptive Scanner + Position Sizing ===== -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                <!-- Adaptive Scanner -->
+                <div>
+                    <h3 class="text-lg font-semibold mb-3">Adaptive Scanner</h3>
+                    <div class="strategy-card" style="border-top-color: #6366f1;">
+                        <p class="text-gray-300 text-sm mb-4">계좌 잔고에 따라 스캔 유니버스를 자동 선택하고, 품질 미달 시 확장합니다.</p>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">US 유니버스 (잔고 기준)</h4>
+                        <div class="strategy-guide mb-3">
+                            <div class="guide-row"><span class="text-gray-400">< $500</span><span>Russell → MidCap, S&P500, Nasdaq100</span></div>
+                            <div class="guide-row"><span class="text-gray-400">$500 ~ $5K</span><span>Russell+MidCap → S&P500+Nasdaq100</span></div>
+                            <div class="guide-row"><span class="text-gray-400">$5K ~ $25K</span><span>Nasdaq100+S&P500 → MidCap+Russell</span></div>
+                            <div class="guide-row"><span class="text-gray-400">> $25K</span><span>전체 동시 스캔</span></div>
+                        </div>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">KR 유니버스 (잔고 기준)</h4>
+                        <div class="strategy-guide mb-3">
+                            <div class="guide-row"><span class="text-gray-400">< ₩500만</span><span>KOSDAQ30+KOSPI30 → KOSPI200</span></div>
+                            <div class="guide-row"><span class="text-gray-400">₩500만 ~ ₩5000만</span><span>KOSPI30+KOSDAQ30 → KOSPI200</span></div>
+                            <div class="guide-row"><span class="text-gray-400">> ₩5000만</span><span>전체 동시 스캔</span></div>
+                        </div>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">품질 기준 (미달 시 확장)</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">최소 시그널</span><span>3개</span></div>
+                            <div class="guide-row"><span class="text-gray-400">최소 평균 승률</span><span>55%</span></div>
+                            <div class="guide-row"><span class="text-gray-400">최소 평균 R:R</span><span>1.5x</span></div>
+                            <div class="guide-row"><span class="text-gray-400">최대 확장</span><span>2단계</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Position Sizing -->
+                <div>
+                    <h3 class="text-lg font-semibold mb-3">Position Sizing</h3>
+                    <div class="strategy-card" style="border-top-color: #eab308;">
+                        <p class="text-gray-300 text-sm mb-4">리스크 예산 기반 포지션 사이징. Kelly Fraction을 참고하여 비중 조절.</p>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">공식</h4>
+                        <div class="bg-gray-800 rounded p-3 text-xs text-gray-300 font-mono mb-3">
+                            수량 = min(자본×리스크% / 손절폭, 자본×최대비중% / 진입가)
+                        </div>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">US 설정 (잔고 기준)</h4>
+                        <div class="strategy-guide mb-3">
+                            <div class="guide-row"><span class="text-gray-400">< $500</span><span>리스크 2%, 최대비중 30%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">$500 ~ $5K</span><span>리스크 1%, 최대비중 20%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">> $5K</span><span>리스크 1%, 최대비중 20%, R:R ≥ 2.0</span></div>
+                        </div>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">KR 설정 (잔고 기준)</h4>
+                        <div class="strategy-guide mb-3">
+                            <div class="guide-row"><span class="text-gray-400">< ₩50만</span><span>리스크 3%, 최대비중 30%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">₩50만 ~ ₩500만</span><span>리스크 2%, 최대비중 25%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">₩500만 ~ ₩5000만</span><span>리스크 1.5%, 최대비중 25%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">> ₩5000만</span><span>리스크 1%, 최대비중 20%, R:R ≥ 2.0</span></div>
+                        </div>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">공통</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">최대 동시 포지션</span><span>5개</span></div>
+                            <div class="guide-row"><span class="text-gray-400">수수료 기준</span><span>0.5% (왕복)</span></div>
+                            <div class="guide-row"><span class="text-gray-400">최소 기대수익</span><span>1% (수수료 커버)</span></div>
+                            <div class="guide-row"><span class="text-gray-400">최소 가격</span><span>$5 / ₩해당없음</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== Common Filters ===== -->
+            <h3 class="text-lg font-semibold mb-3">Common Filters</h3>
+            <div class="strategy-card mb-4" style="border-top-color: #6b7280;">
+                <p class="text-gray-300 text-sm mb-2">모든 전략에 공통 적용되는 사전 필터입니다.</p>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div class="bg-gray-800 rounded p-2 text-center">
+                        <div class="text-gray-400 text-xs">최소 주가</div>
+                        <div class="font-semibold">$5</div>
+                    </div>
+                    <div class="bg-gray-800 rounded p-2 text-center">
+                        <div class="text-gray-400 text-xs">일평균 거래대금</div>
+                        <div class="font-semibold">≥ $500K</div>
+                    </div>
+                    <div class="bg-gray-800 rounded p-2 text-center">
+                        <div class="text-gray-400 text-xs">티커 길이</div>
+                        <div class="font-semibold">≤ 4자 (US)</div>
+                    </div>
+                    <div class="bg-gray-800 rounded p-2 text-center">
+                        <div class="text-gray-400 text-xs">필요 데이터</div>
+                        <div class="font-semibold">50~250일</div>
                     </div>
                 </div>
             </div>
@@ -341,6 +542,45 @@
                     </div>
                 </div>
 
+                <!-- Fundamentals -->
+                <div id="modalFundamentals" class="bg-gray-700 rounded-lg p-4 mb-4 hidden">
+                    <h3 class="font-semibold mb-3">Fundamentals</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                        <div>
+                            <span class="text-gray-400">Market Cap</span>
+                            <div id="fundMarketCap" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Trailing P/E</span>
+                            <div id="fundTrailingPE" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Forward P/E</span>
+                            <div id="fundForwardPE" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Debt/Equity</span>
+                            <div id="fundDebtEquity" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Profit Margin</span>
+                            <div id="fundProfitMargin" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">52W Change</span>
+                            <div id="fund52WChange" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Revenue Growth</span>
+                            <div id="fundRevGrowth" class="font-semibold">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">ROE</span>
+                            <div id="fundROE" class="font-semibold">-</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Signal Reason -->
                 <div class="bg-gray-700 rounded-lg p-4">
                     <h3 class="font-semibold mb-2">Signal Reason</h3>
@@ -360,7 +600,7 @@
         </div>
     </div>
 
-    <script src="/js/chart.js?v=8"></script>
-    <script src="/js/app.js?v=8"></script>
+    <script src="/js/chart.js?v=12"></script>
+    <script src="/js/app.js?v=12"></script>
 </body>
 </html>

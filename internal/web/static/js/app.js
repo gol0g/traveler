@@ -68,6 +68,8 @@ class TravelerApp {
             this.loadPositionsData();
         } else if (this.activeTab === 'scanner') {
             this.loadLastResult(true);
+        } else if (this.activeTab === 'history') {
+            this.loadTradeHistory();
         }
     }
 
@@ -86,14 +88,19 @@ class TravelerApp {
         // Update panels
         document.getElementById('panelScanner').classList.toggle('hidden', tab !== 'scanner');
         document.getElementById('panelPositions').classList.toggle('hidden', tab !== 'positions');
+        document.getElementById('panelHistory').classList.toggle('hidden', tab !== 'history');
         document.getElementById('panelStrategy').classList.toggle('hidden', tab !== 'strategy');
 
-        // Load positions data when switching to positions tab
+        // Load data for specific tabs
         if (tab === 'positions') {
             this.loadPositionsData();
             this.startPositionsRefresh();
         } else {
             this.stopPositionsRefresh();
+        }
+
+        if (tab === 'history') {
+            this.loadTradeHistory();
         }
     }
 
@@ -393,6 +400,20 @@ class TravelerApp {
                 renderChart('chartContainer', data.candles, guide);
             }
 
+            // Calculate investment/risk for position
+            if (pos) {
+                const entry = pos.avg_cost || 0;
+                const stop = pos.stop_loss || 0;
+                const qty = pos.quantity || 0;
+                const investment = qty * entry;
+                const riskPerShare = stop > 0 ? entry - stop : 0;
+                const riskAmount = qty * riskPerShare;
+                const riskPct = this.capital > 0 ? (riskAmount / this.capital) * 100 : 0;
+                document.getElementById('modalInvestment').textContent = this.formatMoney(investment);
+                document.getElementById('modalRiskAmount').textContent = this.formatMoney(riskAmount);
+                document.getElementById('modalRiskPct').textContent = `${riskPct.toFixed(2)}%`;
+            }
+
             // Hide scanner-specific buttons
             document.getElementById('excludeBtn').classList.add('hidden');
             document.getElementById('applySharesBtn').classList.add('hidden');
@@ -524,7 +545,8 @@ class TravelerApp {
             reason: signal.reason || signal.Reason || '',
             details: signal.details || signal.Details || {},
             guide: signal.guide || signal.Guide || null,
-            candles: signal.candles || signal.Candles || []
+            candles: signal.candles || signal.Candles || [],
+            fundamentals: signal.fundamentals || signal.Fundamentals || null
         };
     }
 
@@ -651,6 +673,21 @@ class TravelerApp {
             };
             const stratBg = stratColors[strategyName] || 'bg-gray-600';
 
+            // Fundamentals summary
+            const fund = signal.fundamentals;
+            let fundHTML = '<span class="text-gray-500">-</span>';
+            if (fund) {
+                const isKR = symbol.length === 6 && /^\d+$/.test(symbol);
+                const de = fund.debtToEquity || fund.DebtToEquity || 0;
+                const pm = ((fund.profitMargins || fund.ProfitMargins || 0) * 100).toFixed(1);
+                const w52 = ((fund.fiftyTwoWeekChg || fund.FiftyTwoWeekChg || 0) * 100).toFixed(0);
+                const mcap = fund.marketCap || fund.MarketCap || 0;
+                const mcapStr = isKR
+                    ? (mcap >= 1e12 ? (mcap/1e12).toFixed(1)+'T' : (mcap/1e8).toFixed(0)+'B')
+                    : (mcap >= 1e9 ? (mcap/1e9).toFixed(1)+'B' : (mcap/1e6).toFixed(0)+'M');
+                fundHTML = `<span class="text-xs">D/E:${de.toFixed(0)} PM:${pm}% 52W:${w52}%</span>`;
+            }
+
             row.innerHTML = `
                 <td class="px-4 py-3 text-gray-400">${index + 1}</td>
                 <td class="px-4 py-3 font-semibold text-blue-400">${displaySym}</td>
@@ -661,6 +698,7 @@ class TravelerApp {
                 <td class="px-4 py-3">${allocationPct.toFixed(1)}%</td>
                 <td class="px-4 py-3 text-red-400">${this.formatMoney(riskAmount)}</td>
                 <td class="px-4 py-3 text-green-400">${probability.toFixed(0)}%</td>
+                <td class="px-4 py-3">${fundHTML}</td>
                 <td class="px-4 py-3">
                     <button class="detail-btn bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" data-symbol="${symbol}">
                         Detail
@@ -692,6 +730,46 @@ class TravelerApp {
         document.getElementById('modalTarget2').textContent = `${this.formatPrice(guide.target_2 || guide.Target2 || 0)} (+${(guide.target_2_pct || guide.Target2Pct || 0).toFixed(1)}%)`;
         document.getElementById('modalShares').value = guide.position_size || guide.PositionSize || 0;
         document.getElementById('modalReason').textContent = signal.reason || 'N/A';
+
+        // Fundamentals section
+        const fund = signal.fundamentals;
+        const fundSection = document.getElementById('modalFundamentals');
+        if (fund) {
+            fundSection.classList.remove('hidden');
+            const isKR = (symbol.length === 6 && /^\d+$/.test(symbol));
+            const mcap = fund.marketCap || fund.MarketCap || 0;
+            const mcapStr = isKR
+                ? (mcap >= 1e12 ? `₩${(mcap/1e12).toFixed(1)}T` : `₩${(mcap/1e8).toFixed(0)}B`)
+                : (mcap >= 1e9 ? `$${(mcap/1e9).toFixed(1)}B` : `$${(mcap/1e6).toFixed(0)}M`);
+            const tpe = fund.trailingPE || fund.TrailingPE || 0;
+            const fpe = fund.forwardPE || fund.ForwardPE || 0;
+            const de = fund.debtToEquity || fund.DebtToEquity || 0;
+            const pm = (fund.profitMargins || fund.ProfitMargins || 0) * 100;
+            const w52 = (fund.fiftyTwoWeekChg || fund.FiftyTwoWeekChg || 0) * 100;
+            const revg = (fund.revenueGrowth || fund.RevenueGrowth || 0) * 100;
+            const roe = (fund.returnOnEquity || fund.ReturnOnEquity || 0) * 100;
+
+            document.getElementById('fundMarketCap').textContent = mcapStr;
+            document.getElementById('fundTrailingPE').textContent = tpe > 0 ? tpe.toFixed(1) : 'N/A';
+            document.getElementById('fundForwardPE').textContent = fpe > 0 ? fpe.toFixed(1) : 'N/A';
+
+            const deEl = document.getElementById('fundDebtEquity');
+            deEl.textContent = `${de.toFixed(1)}%`;
+            deEl.className = de > 200 ? 'font-semibold text-red-400' : 'font-semibold';
+
+            const pmEl = document.getElementById('fundProfitMargin');
+            pmEl.textContent = `${pm.toFixed(1)}%`;
+            pmEl.className = pm < -10 ? 'font-semibold text-red-400' : pm > 10 ? 'font-semibold text-green-400' : 'font-semibold';
+
+            const w52El = document.getElementById('fund52WChange');
+            w52El.textContent = `${w52 >= 0 ? '+' : ''}${w52.toFixed(1)}%`;
+            w52El.className = w52 < -30 ? 'font-semibold text-red-400' : w52 > 0 ? 'font-semibold text-green-400' : 'font-semibold text-yellow-400';
+
+            document.getElementById('fundRevGrowth').textContent = `${revg >= 0 ? '+' : ''}${revg.toFixed(1)}%`;
+            document.getElementById('fundROE').textContent = `${roe.toFixed(1)}%`;
+        } else {
+            fundSection.classList.add('hidden');
+        }
 
         this.updateModalInvestment(guide.position_size || guide.PositionSize || 0);
 
@@ -920,6 +998,7 @@ class TravelerApp {
             meta.push(`${data.total_scanned || 0} scanned`);
             if (data.avg_prob > 0) meta.push(`avg ${data.avg_prob.toFixed(0)}% prob`);
             if (data.expansions > 0) meta.push(`${data.expansions}x expanded`);
+            if (data.fundamentals_filtered > 0) meta.push(`${data.fundamentals_filtered} rejected by fundamentals`);
             meta.push(data.scan_time || '');
             document.getElementById('scanMeta').textContent = meta.filter(Boolean).join(' | ');
             document.getElementById('recalculateBtn').classList.remove('hidden');
@@ -950,6 +1029,159 @@ class TravelerApp {
                 this._loadingTimer = null;
             }
         }
+    }
+
+    // ==================== HISTORY TAB ====================
+    async loadTradeHistory() {
+        try {
+            const mq = this.isKR() ? '?market=kr' : '';
+            const res = await fetch('/api/trade-history' + mq);
+            const data = await res.json();
+
+            this.renderHistorySummary(data.summary || {});
+            this.renderStrategyPerformance(data.summary || {});
+            this.renderHistoryTable(data.records || []);
+        } catch (e) {
+            console.error('Failed to load trade history:', e);
+        }
+    }
+
+    renderHistorySummary(summary) {
+        const fmt = (v) => this.formatMoney(v);
+        const total = summary.total_trades || 0;
+        const buys = summary.buy_count || 0;
+        const sells = summary.sell_count || 0;
+        const wins = summary.win_count || 0;
+        const losses = summary.loss_count || 0;
+        const winRate = summary.win_rate || 0;
+        const pnl = summary.total_realized_pnl || 0;
+        const commission = summary.total_commission || 0;
+        const netPnl = summary.net_pnl || 0;
+
+        document.getElementById('histTotalTrades').textContent = total;
+        document.getElementById('histBuys').textContent = buys;
+        document.getElementById('histSells').textContent = sells;
+        document.getElementById('histWinRate').textContent = sells > 0 ? `${winRate.toFixed(1)}%` : '--%';
+        document.getElementById('histWins').textContent = wins;
+        document.getElementById('histLosses').textContent = losses;
+
+        const pnlEl = document.getElementById('histPnL');
+        pnlEl.textContent = (pnl >= 0 ? '+' : '') + fmt(pnl);
+        pnlEl.className = `text-2xl font-bold ${pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-neutral'}`;
+
+        document.getElementById('histCommission').textContent = fmt(commission);
+
+        const netEl = document.getElementById('histNetPnL');
+        netEl.textContent = (netPnl >= 0 ? '+' : '') + fmt(netPnl);
+        netEl.className = `text-2xl font-bold ${netPnl > 0 ? 'pnl-positive' : netPnl < 0 ? 'pnl-negative' : 'pnl-neutral'}`;
+    }
+
+    renderStrategyPerformance(summary) {
+        const container = document.getElementById('strategyPerf');
+        const byStrategy = summary.by_strategy || {};
+
+        if (Object.keys(byStrategy).length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        const fmt = (v) => this.formatMoney(v);
+        container.innerHTML = Object.entries(byStrategy).map(([name, s]) => {
+            const stratClass = `strategy-${name}`;
+            const pnlClass = s.pnl > 0 ? 'pnl-positive' : s.pnl < 0 ? 'pnl-negative' : 'pnl-neutral';
+            const netClass = s.net_pnl > 0 ? 'pnl-positive' : s.net_pnl < 0 ? 'pnl-negative' : 'pnl-neutral';
+
+            return `
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="strategy-badge ${stratClass}">${name}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <div><span class="text-gray-500">Trades:</span> ${s.trades}</div>
+                        <div><span class="text-gray-500">Win Rate:</span> ${s.trades > 0 ? s.win_rate.toFixed(1) : 0}%</div>
+                        <div><span class="text-gray-500">Wins:</span> <span class="text-green-400">${s.wins}</span></div>
+                        <div><span class="text-gray-500">Losses:</span> <span class="text-red-400">${s.losses}</span></div>
+                        <div><span class="text-gray-500">P&L:</span> <span class="${pnlClass}">${fmt(s.pnl)}</span></div>
+                        <div><span class="text-gray-500">Net:</span> <span class="${netClass}">${fmt(s.net_pnl)}</span></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderHistoryTable(records) {
+        const tbody = document.getElementById('historyTable');
+        const noRecords = document.getElementById('histNoRecords');
+        const countEl = document.getElementById('histRecordCount');
+
+        if (records.length === 0) {
+            tbody.innerHTML = '';
+            noRecords.classList.remove('hidden');
+            countEl.textContent = '';
+            return;
+        }
+
+        noRecords.classList.add('hidden');
+        countEl.textContent = `${records.length} records`;
+
+        // Reverse to show newest first
+        const sorted = [...records].reverse();
+
+        tbody.innerHTML = sorted.map(r => {
+            const date = r.timestamp ? new Date(r.timestamp).toLocaleDateString('ko-KR', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}) : '--';
+            const isSell = r.side === 'sell';
+            const sideClass = isSell ? 'text-red-400' : 'text-green-400';
+            const sideLabel = isSell ? 'SELL' : 'BUY';
+
+            let pnlHtml = '';
+            if (isSell && r.pnl !== undefined) {
+                const pnlClass = r.pnl > 0 ? 'pnl-positive' : r.pnl < 0 ? 'pnl-negative' : 'pnl-neutral';
+                const sign = r.pnl >= 0 ? '+' : '';
+                pnlHtml = `<span class="${pnlClass}">${sign}${this.formatMoney(r.pnl)}</span>`;
+                if (r.pnl_pct) {
+                    pnlHtml += ` <span class="${pnlClass} text-xs">(${sign}${r.pnl_pct.toFixed(1)}%)</span>`;
+                }
+            }
+
+            const stratClass = r.strategy ? `strategy-${r.strategy}` : '';
+            const stratLabel = r.strategy || '';
+
+            const reasonBadge = r.reason ? this.getReasonBadge(r.reason) : '';
+
+            return `
+                <tr class="text-sm">
+                    <td class="px-4 py-3 text-gray-400 whitespace-nowrap">${date}</td>
+                    <td class="px-4 py-3 font-semibold text-blue-400">${r.symbol}${r.name ? `<span class="text-gray-400 font-normal text-xs ml-1">${r.name}</span>` : ''}</td>
+                    <td class="px-4 py-3 ${sideClass} font-medium">${sideLabel}</td>
+                    <td class="px-4 py-3">${stratLabel ? `<span class="strategy-badge ${stratClass} text-xs">${stratLabel}</span>` : ''}</td>
+                    <td class="px-4 py-3">${r.quantity}</td>
+                    <td class="px-4 py-3">${this.formatPrice(r.price || 0)}</td>
+                    <td class="px-4 py-3">${this.formatMoney(r.amount || 0)}</td>
+                    <td class="px-4 py-3">${pnlHtml}</td>
+                    <td class="px-4 py-3">${reasonBadge}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    getReasonBadge(reason) {
+        const reasonColors = {
+            'signal': 'bg-blue-600',
+            'stop_loss': 'bg-red-600',
+            'target1': 'bg-green-600',
+            'target2': 'bg-green-700',
+            'invalidation': 'bg-yellow-600',
+        };
+        // Handle time_stop variants like "time_stop_7d (P&L: -0.5%)"
+        let displayReason = reason;
+        let colorClass = 'bg-gray-600';
+        if (reason.startsWith('time_stop')) {
+            displayReason = 'time_stop';
+            colorClass = 'bg-orange-600';
+        } else {
+            colorClass = reasonColors[reason] || 'bg-gray-600';
+        }
+        return `<span class="${colorClass} px-2 py-0.5 rounded text-xs">${displayReason}</span>`;
     }
 
     formatUSD(amount) {
