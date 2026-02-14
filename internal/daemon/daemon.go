@@ -65,9 +65,16 @@ type Daemon struct {
 	autoTrader *trader.AutoTrader
 	history    *trader.TradeHistory
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	isRunning  bool
+	ctx            context.Context
+	cancel         context.CancelFunc
+	isRunning      bool
+	startedAt      time.Time
+	preMarketScan  bool                // 프리마켓 스캔 완료 여부
+	preMarketSigs  []strategy.Signal   // 프리마켓에서 찾은 시그널
+
+	// 장중 매매
+	intradayScanner *strategy.IntradayScanner
+	intradaySymbols []string // 장중 스캔 대상 종목
 }
 
 // NewDaemon 생성자
@@ -76,6 +83,7 @@ func NewDaemon(cfg Config, b broker.Broker, p provider.Provider) *Daemon {
 
 	// Sizer config는 나중에 잔고 확인 후 설정
 	tracker := NewDailyTracker(cfg.Daily, cfg.DataDir)
+	tracker.SetMarket(cfg.Market) // 파일명 분리: daily_us_*.json vs daily_kr_*.json
 
 	// 마켓 타임존 설정 (US=ET, KR=KST)
 	if cfg.Market == "kr" {
@@ -113,6 +121,7 @@ func (d *Daemon) getMarketStatus() MarketStatus {
 
 // Run 데몬 실행
 func (d *Daemon) Run() error {
+	d.startedAt = time.Now()
 	log.Println("[DAEMON] Starting automated trading daemon...")
 
 	// 화면 켜기 (절전 해제 후 모니터가 꺼져있을 수 있음)
@@ -132,28 +141,21 @@ func (d *Daemon) Run() error {
 	log.Printf("[DAEMON] Market status: %s (%s: %s)", status.Reason, tzLabel, status.CurrentTimeET.Format("15:04"))
 
 	if !status.IsOpen {
-		if d.config.WaitForMarket {
-			log.Printf("[DAEMON] Market closed. Waiting %s for market open...", FormatDuration(status.TimeToOpen))
-
-			if status.TimeToOpen > d.config.MaxWaitTime {
-				log.Printf("[DAEMON] Wait time too long (> %s). Exiting.", FormatDuration(d.config.MaxWaitTime))
-				return d.shutdown("wait_too_long")
-			}
-
-			// 대기
-			select {
-			case <-time.After(status.TimeToOpen):
-				log.Println("[DAEMON] Market should be open now.")
-			case <-d.ctx.Done():
-				return d.shutdown("cancelled")
-			}
-		} else {
+		if !d.config.WaitForMarket {
 			log.Println("[DAEMON] Market closed and WaitForMarket=false. Exiting.")
 			return d.shutdown("market_closed")
 		}
+
+		if status.TimeToOpen > d.config.MaxWaitTime {
+			log.Printf("[DAEMON] Wait time too long (%s > %s). Exiting.",
+				FormatDuration(status.TimeToOpen), FormatDuration(d.config.MaxWaitTime))
+			return d.shutdown("wait_too_long")
+		}
+
+		log.Printf("[DAEMON] Market opens in %s. Setting up and pre-scanning...", FormatDuration(status.TimeToOpen))
 	}
 
-	// 2. 계좌 잔고 확인
+	// 2. 계좌 잔고 확인 (프리마켓에서도 가능)
 	balance, err := d.broker.GetBalance(d.ctx)
 	if err != nil {
 		log.Printf("[DAEMON] Failed to get balance: %v", err)
@@ -265,122 +267,127 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// 9. P&L 재계산 (재시작 시 미체결 주문 반영)
+	// 9. 전략 무효화 체크 (전일 데이터 기반, 프리마켓에서 가능)
+	d.runInvalidationCheck()
+
+	// 10. 프리마켓 스캔 (전일 일봉 데이터 사용, 장 열기 전에 시그널 준비)
+	state := d.tracker.GetState()
+	if !d.config.ForceScan && state.TradeCount > 0 {
+		log.Printf("[DAEMON] Already traded today (%d trades). Skipping scan.", state.TradeCount)
+	} else {
+		if d.config.ForceScan {
+			log.Printf("[DAEMON] Force scan enabled (existing trades: %d). Running scan...", state.TradeCount)
+		}
+		scanStart := time.Now()
+		scanResult, err := d.adaptiveScan()
+		if err != nil {
+			log.Printf("[DAEMON] Scan error: %v", err)
+		} else {
+			scanResult.ScanTime = time.Since(scanStart)
+			d.saveScanResultForWeb(scanResult)
+			d.preMarketSigs = scanResult.Signals
+			log.Printf("[DAEMON] Scan complete: %d signals found in %s",
+				len(d.preMarketSigs), scanResult.ScanTime.Round(time.Second))
+		}
+	}
+
+	// 11. 장 열릴 때까지 대기 (프리마켓이면)
+	if !status.IsOpen {
+		// 스캔 완료 후 남은 대기 시간 재계산
+		remaining := d.getMarketStatus()
+		if !remaining.IsOpen && remaining.TimeToOpen > 0 {
+			log.Printf("[DAEMON] Scan done. Waiting %s for market open...", FormatDuration(remaining.TimeToOpen))
+			select {
+			case <-time.After(remaining.TimeToOpen):
+				log.Println("[DAEMON] Market should be open now.")
+			case <-d.ctx.Done():
+				return d.shutdown("cancelled")
+			}
+		}
+	}
+
+	// 12. 장 열림 → 프리마켓 시그널 즉시 실행
+	if len(d.preMarketSigs) > 0 {
+		log.Printf("[DAEMON] Executing %d pre-scanned signals...", len(d.preMarketSigs))
+		results, err := d.autoTrader.ExecuteSignals(d.ctx, d.preMarketSigs)
+		if err != nil {
+			log.Printf("[DAEMON] Execution error: %v", err)
+		} else {
+			for _, r := range results {
+				if r.Success {
+					orderID := ""
+					if r.Result != nil {
+						orderID = r.Result.OrderID
+					}
+					d.tracker.RecordTrade(TradeLog{
+						Symbol:   r.Order.Symbol,
+						Side:     string(r.Order.Side),
+						Quantity: r.Order.Quantity,
+						Price:    r.Order.LimitPrice,
+						Amount:   float64(r.Order.Quantity) * r.Order.LimitPrice,
+						OrderID:  orderID,
+						Reason:   "signal",
+					})
+					if d.history != nil {
+						d.history.Append(trader.TradeRecord{
+							Market:   d.config.Market,
+							Symbol:   r.Order.Symbol,
+							Side:     "buy",
+							Quantity: r.Order.Quantity,
+							Price:    r.Order.LimitPrice,
+							Strategy: r.Signal.Strategy,
+							Reason:   "signal",
+						})
+					}
+				}
+			}
+		}
+		d.preMarketSigs = nil
+	}
+
+	// 13. P&L 재계산
 	d.runMonitorCycle()
 
-	// 10. 메인 루프
+	// 14. 모니터 루프
 	return d.mainLoop()
 }
 
-// mainLoop 메인 거래 루프
+// mainLoop 메인 거래 루프 (스캔/무효화는 Run()에서 완료, 여기서는 모니터링 + 장중 매매)
 func (d *Daemon) mainLoop() error {
-	log.Println("[DAEMON] Entering main trading loop...")
+	log.Println("[DAEMON] Switching to monitor + intraday mode.")
 
 	monitorTicker := time.NewTicker(d.config.MonitorInterval)
 	defer monitorTicker.Stop()
 
-	// 장 시작 시 기존 포지션 전략 무효화 체크 (전일 기준)
-	d.runInvalidationCheck()
+	// 장중 매매 초기화
+	d.initIntraday()
 
-	// 오늘 이미 스캔+매매했으면 스캔 생략 (재시작 시 중복 매수 방지)
-	// ForceScan이면 무조건 1회 스캔 실행
-	state := d.tracker.GetState()
-	if d.config.ForceScan {
-		log.Printf("[DAEMON] Force scan enabled (existing trades: %d). Running scan...", state.TradeCount)
-		d.runScanCycle()
-		log.Println("[DAEMON] Force scan complete.")
-	} else if state.TradeCount > 0 {
-		log.Printf("[DAEMON] Already traded today (%d trades). Skipping scan.", state.TradeCount)
-	} else {
-		d.runScanCycle()
-		log.Println("[DAEMON] Initial scan complete.")
-	}
-	log.Println("[DAEMON] Switching to monitor-only mode.")
+	// 장중 스캔 루프 (별도 고루틴)
+	intradayDone := make(chan struct{})
+	go func() {
+		defer close(intradayDone)
+		d.runIntradayLoop()
+	}()
 
 	for {
 		select {
 		case <-d.ctx.Done():
+			<-intradayDone
 			return d.shutdown("cancelled")
 
 		case <-monitorTicker.C:
-			// 포지션 모니터링만 (30초 간격)
+			// 포지션 모니터링 (30초 간격)
 			d.runMonitorCycle()
 		}
 
 		// 종료 조건 체크
 		if shouldStop, reason := d.checkStopConditions(); shouldStop {
+			// 장중 포지션 강제 청산
+			if d.autoTrader != nil {
+				d.autoTrader.GetMonitor().ForceCloseIntraday(d.ctx)
+			}
+			<-intradayDone
 			return d.shutdown(reason)
-		}
-	}
-}
-
-// runScanCycle 스캔 사이클
-func (d *Daemon) runScanCycle() {
-	log.Println("[DAEMON] Running scan cycle...")
-
-	// 마켓 상태 재확인
-	status := d.getMarketStatus()
-	if !status.IsOpen {
-		log.Printf("[DAEMON] Market closed during scan cycle. Status: %s", status.Reason)
-		return
-	}
-
-	// 적응형 스캔
-	scanStart := time.Now()
-	scanResult, err := d.adaptiveScan()
-	if err != nil {
-		log.Printf("[DAEMON] Scan error: %v", err)
-		return
-	}
-	scanResult.ScanTime = time.Since(scanStart)
-
-	// 스캔 결과를 웹 UI용 JSON으로 저장
-	d.saveScanResultForWeb(scanResult)
-
-	signals := scanResult.Signals
-	if len(signals) == 0 {
-		log.Println("[DAEMON] No trading signals found.")
-		return
-	}
-
-	log.Printf("[DAEMON] Found %d signals", len(signals))
-
-	// 매매 실행
-	results, err := d.autoTrader.ExecuteSignals(d.ctx, signals)
-	if err != nil {
-		log.Printf("[DAEMON] Execution error: %v", err)
-		return
-	}
-
-	// 거래 기록
-	for _, r := range results {
-		if r.Success {
-			orderID := ""
-			if r.Result != nil {
-				orderID = r.Result.OrderID
-			}
-			d.tracker.RecordTrade(TradeLog{
-				Symbol:   r.Order.Symbol,
-				Side:     string(r.Order.Side),
-				Quantity: r.Order.Quantity,
-				Price:    r.Order.LimitPrice,
-				Amount:   float64(r.Order.Quantity) * r.Order.LimitPrice,
-				OrderID:  orderID,
-				Reason:   "signal",
-			})
-
-			// TradeHistory에도 매수 기록
-			if d.history != nil {
-				d.history.Append(trader.TradeRecord{
-					Market:   d.config.Market,
-					Symbol:   r.Order.Symbol,
-					Side:     "buy",
-					Quantity: r.Order.Quantity,
-					Price:    r.Order.LimitPrice,
-					Strategy: r.Signal.Strategy,
-					Reason:   "signal",
-				})
-			}
 		}
 	}
 }
@@ -445,9 +452,35 @@ type daemonScanResult struct {
 
 // adaptiveScan 적응형 멀티 전략 스캔
 func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
-	// 모든 전략 가져오기
-	strategies := strategy.GetAll(d.provider)
-	log.Printf("[DAEMON] Multi-strategy scan (%d strategies: %v)", len(strategies), strategy.List())
+	// 시장 인식 전략 생성 (레짐 필터 포함)
+	pullbackCfg := strategy.DefaultPullbackConfig()
+	if d.isKR() {
+		pullbackCfg.MarketRegimeSymbol = "069500" // KODEX 200 (KOSPI 추종 ETF)
+	} else {
+		pullbackCfg.MarketRegimeSymbol = "SPY"
+	}
+	pullback := strategy.NewPullbackStrategy(pullbackCfg, d.provider)
+
+	breakoutCfg := strategy.DefaultBreakoutConfig()
+	breakout := strategy.NewBreakoutStrategy(breakoutCfg, d.provider)
+
+	meanRevCfg := strategy.DefaultMeanReversionConfig()
+	meanRev := strategy.NewMeanReversionStrategy(meanRevCfg, d.provider)
+
+	oversoldCfg := strategy.DefaultOversoldConfig()
+	if d.isKR() {
+		oversoldCfg.MarketRegimeSymbol = "069500"
+	} else {
+		oversoldCfg.MarketRegimeSymbol = "SPY"
+	}
+	oversold := strategy.NewOversoldStrategy(oversoldCfg, d.provider)
+
+	strategies := []strategy.Strategy{pullback, meanRev, breakout, oversold}
+	stratNames := make([]string, len(strategies))
+	for i, s := range strategies {
+		stratNames[i] = s.Name()
+	}
+	log.Printf("[DAEMON] Multi-strategy scan (%d strategies: %v)", len(strategies), stratNames)
 
 	// 스캔 함수: 종목별로 모든 전략 실행, 가장 강한 신호만 유지
 	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
@@ -487,53 +520,53 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		})
 	}
 
+	// 펀더멘탈 필터를 스캐너에 주입 (품질 평가 전에 적용)
+	var fundamentalsFiltered int
+	dataDir := d.config.DataDir
+	if dataDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dataDir = filepath.Join(home, ".traveler")
+		}
+	}
+	if dataDir != "" {
+		var kosdaqSet map[string]bool
+		if d.isKR() {
+			kosdaqSet = make(map[string]bool)
+			for _, s := range symbols.Kosdaq30Symbols {
+				kosdaqSet[s] = true
+			}
+		}
+		checker := provider.NewFundamentalsChecker(dataDir, kosdaqSet)
+		if err := checker.Init(d.ctx); err != nil {
+			log.Printf("[DAEMON] Fundamentals checker init failed (skipping): %v", err)
+		} else {
+			scanner.SetFilterFunc(func(ctx context.Context, signals []strategy.Signal) []strategy.Signal {
+				syms := make([]string, 0, len(signals))
+				for _, sig := range signals {
+					syms = append(syms, sig.Stock.Symbol)
+				}
+				rejected := checker.FilterSymbols(ctx, syms)
+				if len(rejected) == 0 {
+					return signals
+				}
+				var filtered []strategy.Signal
+				for _, sig := range signals {
+					if _, rej := rejected[sig.Stock.Symbol]; !rej {
+						filtered = append(filtered, sig)
+					}
+				}
+				fundamentalsFiltered += len(signals) - len(filtered)
+				log.Printf("[DAEMON] Fundamentals filter: %d → %d signals", len(signals), len(filtered))
+				return filtered
+			})
+		}
+	}
+
 	// 스캔 실행
 	loader := &daemonStockLoader{provider: d.provider, korean: d.isKR()}
 	result, err := scanner.Scan(d.ctx, loader)
 	if err != nil {
 		return nil, err
-	}
-
-	// 펀더멘털 필터
-	var fundamentalsFiltered int
-	if len(result.Signals) > 0 {
-		dataDir := d.config.DataDir
-		if dataDir == "" {
-			if home, err := os.UserHomeDir(); err == nil {
-				dataDir = filepath.Join(home, ".traveler")
-			}
-		}
-		if dataDir != "" {
-			var kosdaqSet map[string]bool
-			if d.isKR() {
-				kosdaqSet = make(map[string]bool)
-				for _, s := range symbols.Kosdaq30Symbols {
-					kosdaqSet[s] = true
-				}
-			}
-			checker := provider.NewFundamentalsChecker(dataDir, kosdaqSet)
-			if err := checker.Init(d.ctx); err != nil {
-				log.Printf("[DAEMON] Fundamentals checker init failed (skipping): %v", err)
-			} else {
-				syms := make([]string, 0, len(result.Signals))
-				for _, sig := range result.Signals {
-					syms = append(syms, sig.Stock.Symbol)
-				}
-				rejected := checker.FilterSymbols(d.ctx, syms)
-				if len(rejected) > 0 {
-					before := len(result.Signals)
-					var filtered []strategy.Signal
-					for _, sig := range result.Signals {
-						if _, rej := rejected[sig.Stock.Symbol]; !rej {
-							filtered = append(filtered, sig)
-						}
-					}
-					result.Signals = filtered
-					fundamentalsFiltered = before - len(filtered)
-					log.Printf("[DAEMON] Fundamentals filter: %d → %d signals", before, len(result.Signals))
-				}
-			}
-		}
 	}
 
 	// 포지션 사이징 적용
@@ -593,13 +626,33 @@ func (d *Daemon) shutdown(reason string) error {
 	// wake timer는 영구 예약 작업(TravelerDaemon, TravelerDaemonKR)이 관리함
 	// setup-daemon.ps1에서 WakeToRun 설정 완료 → 여기서 별도 등록 불필요
 	if d.config.SleepOnExit {
-		idle := getUserIdleSeconds()
-		if idle < 300 { // 5분 이내 활동 있으면 사용 중
-			log.Printf("[DAEMON] User active (idle %ds < 300s). Skipping sleep.", idle)
+		// 어떤 시장이든 장중이면 절전하지 않음
+		usOpen := IsMarketOpen()
+		krOpen := GetKRMarketStatus(KRMarketSchedule()).IsOpen
+		if usOpen || krOpen {
+			openMarket := "US"
+			if krOpen {
+				openMarket = "KR"
+			}
+			log.Printf("[DAEMON] %s market still open. Skipping sleep.", openMarket)
 		} else {
-			log.Printf("[DAEMON] User idle %ds. Entering sleep mode...", idle)
-			time.Sleep(3 * time.Second)
-			sleepPC()
+			runtime := time.Since(d.startedAt)
+			idle := getUserIdleSeconds()
+			if runtime < 5*time.Minute {
+				// 데몬이 5분 미만 실행: 절전 해제 직후이므로 idle 타이머 신뢰 불가
+				// (Windows resume 시 GetLastInputInfo가 리셋됨)
+				// 장중이 아닌 이상 PC를 켜둘 이유 없음 → 바로 절전
+				log.Printf("[DAEMON] Short run (%s), idle unreliable (%ds). Entering sleep mode...",
+					FormatDuration(runtime), idle)
+				time.Sleep(3 * time.Second)
+				sleepPC()
+			} else if idle < 300 { // 5분 이내 활동 있으면 사용 중
+				log.Printf("[DAEMON] User active (idle %ds < 300s). Skipping sleep.", idle)
+			} else {
+				log.Printf("[DAEMON] User idle %ds. Entering sleep mode...", idle)
+				time.Sleep(3 * time.Second)
+				sleepPC()
+			}
 		}
 	}
 
@@ -696,7 +749,23 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 	// 웹 ScanResponse와 동일한 JSON 구조
 	type signalWithChart struct {
 		strategy.Signal
-		Candles []model.Candle `json:"candles,omitempty"`
+		Candles      []model.Candle            `json:"candles,omitempty"`
+		Fundamentals *provider.FundamentalsData `json:"fundamentals,omitempty"`
+	}
+
+	// 펀더멘탈 데이터 로드 (캐시에서)
+	var fundChecker *provider.FundamentalsChecker
+	var kosdaqSet map[string]bool
+	if d.isKR() {
+		kosdaqSet = make(map[string]bool)
+		for _, s := range symbols.Kosdaq30Symbols {
+			kosdaqSet[s] = true
+		}
+	}
+	fundChecker = provider.NewFundamentalsChecker(dataDir, kosdaqSet)
+	if err := fundChecker.Init(context.Background()); err != nil {
+		log.Printf("[DAEMON] Fundamentals checker init for web save: %v", err)
+		fundChecker = nil
 	}
 
 	sigs := make([]signalWithChart, len(sr.Signals))
@@ -705,6 +774,12 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 		// 차트 데이터 로드 (최근 100일)
 		candles, _ := d.provider.GetDailyCandles(d.ctx, sig.Stock.Symbol, 100)
 		sigs[i] = signalWithChart{Signal: sig, Candles: candles}
+		// 펀더멘탈 데이터 첨부
+		if fundChecker != nil {
+			if fd, err := fundChecker.Check(context.Background(), sig.Stock.Symbol); err == nil {
+				sigs[i].Fundamentals = fd
+			}
+		}
 		if sig.Guide != nil {
 			totalInvest += sig.Guide.InvestAmount
 			totalRisk += sig.Guide.RiskAmount
@@ -771,6 +846,266 @@ func (l *daemonStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe
 		stocks[i] = model.Stock{Symbol: sym, Name: name}
 	}
 	return stocks, nil
+}
+
+// ========================================
+// 장중 매매 (Intraday Trading)
+// ========================================
+
+// initIntraday 장중 매매 초기화
+func (d *Daemon) initIntraday() {
+	cfg := strategy.DefaultIntradayConfig()
+
+	// 잔고 조회
+	balance, err := d.broker.GetBalance(d.ctx)
+	if err != nil {
+		log.Printf("[INTRADAY] Failed to get balance, skipping intraday: %v", err)
+		return
+	}
+	capital := balance.TotalEquity
+
+	d.intradayScanner = strategy.NewIntradayScanner(cfg, capital)
+
+	// 장중 스캔 대상 종목 선정: 자본으로 살 수 있는 저가 종목
+	d.intradaySymbols = d.selectIntradayUniverse(capital)
+
+	if len(d.intradaySymbols) == 0 {
+		log.Println("[INTRADAY] No affordable symbols for intraday trading")
+		return
+	}
+
+	log.Printf("[INTRADAY] Initialized: %d symbols, capital=%.2f", len(d.intradaySymbols), capital)
+}
+
+// selectIntradayUniverse 장중 매매 대상 종목 선정
+func (d *Daemon) selectIntradayUniverse(capital float64) []string {
+	// 최대 매수 가능 가격 (자본의 50% 이하인 종목)
+	maxPrice := capital * 0.5
+
+	// 유니버스 로드
+	var allSymbols []string
+	if d.isKR() {
+		for _, u := range []symbols.Universe{symbols.UniverseKospi30, symbols.UniverseKosdaq30} {
+			allSymbols = append(allSymbols, symbols.GetUniverse(u)...)
+		}
+	} else {
+		// US: 가격 필터링 필요 — 상위 100종목에서 저가만
+		for _, u := range []symbols.Universe{symbols.UniverseNasdaq100, symbols.UniverseSP500} {
+			allSymbols = append(allSymbols, symbols.GetUniverse(u)...)
+		}
+	}
+
+	// 중복 제거
+	seen := make(map[string]bool)
+	var unique []string
+	for _, s := range allSymbols {
+		if !seen[s] {
+			seen[s] = true
+			unique = append(unique, s)
+		}
+	}
+
+	// 가격 필터링 (현재가 조회)
+	var affordable []string
+	for _, sym := range unique {
+		price, err := d.broker.GetQuote(d.ctx, sym)
+		if err != nil || price <= 0 {
+			continue
+		}
+		if price <= maxPrice {
+			affordable = append(affordable, sym)
+		}
+
+		// 최대 50종목
+		if len(affordable) >= 50 {
+			break
+		}
+
+		// API 호출 간격
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return affordable
+}
+
+// runIntradayLoop 장중 매매 루프
+func (d *Daemon) runIntradayLoop() {
+	if d.intradayScanner == nil || len(d.intradaySymbols) == 0 {
+		log.Println("[INTRADAY] Scanner not initialized, skipping intraday loop")
+		return
+	}
+
+	// 1단계: 종목 초기화 (전일 종가 설정)
+	log.Printf("[INTRADAY] Initializing %d symbols with previous close...", len(d.intradaySymbols))
+	for _, sym := range d.intradaySymbols {
+		price, err := d.broker.GetQuote(d.ctx, sym)
+		if err != nil || price <= 0 {
+			continue
+		}
+		d.intradayScanner.InitSymbol(sym, price)
+	}
+
+	// 2단계: OR 수집 (장 시작 후 30분간 매 1분마다 가격 수집)
+	log.Println("[INTRADAY] Starting Opening Range collection...")
+	d.collectOpeningRange()
+
+	// OR 완료
+	d.intradayScanner.FinalizeOR()
+	orbSymbols := d.intradayScanner.GetORBSymbols()
+	log.Printf("[INTRADAY] OR collection done. %d symbols with valid ORB range", len(orbSymbols))
+
+	// 3단계: 장중 스캔 루프 (5분 간격)
+	scanInterval := strategy.DefaultIntradayConfig().ScanInterval
+	forceCloseMin := strategy.DefaultIntradayConfig().ForceCloseMin
+
+	log.Printf("[INTRADAY] Starting scan loop (interval=%s, force_close=%dmin before close)", scanInterval, forceCloseMin)
+
+	ticker := time.NewTicker(scanInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			// 장 마감 임박 체크
+			status := d.getMarketStatus()
+			if !status.IsOpen {
+				log.Println("[INTRADAY] Market closed, stopping intraday loop")
+				return
+			}
+
+			// 강제 청산 시간 체크 (마감 N분 전)
+			if status.TimeToClose <= time.Duration(forceCloseMin)*time.Minute {
+				log.Printf("[INTRADAY] %s before close, force closing intraday positions",
+					FormatDuration(status.TimeToClose))
+				if d.autoTrader != nil {
+					d.autoTrader.GetMonitor().ForceCloseIntraday(d.ctx)
+				}
+				return
+			}
+
+			// 일일 손실 한도 체크
+			if d.intradayScanner.IsLossLimitHit() {
+				log.Println("[INTRADAY] Daily loss limit hit, stopping intraday scan")
+				return
+			}
+
+			// 가격 업데이트 + 스캔
+			d.updateIntradayPrices()
+			d.executeIntradaySignals()
+		}
+	}
+}
+
+// collectOpeningRange OR 수집 (첫 30분)
+func (d *Daemon) collectOpeningRange() {
+	cfg := strategy.DefaultIntradayConfig()
+	endTime := time.Now().Add(time.Duration(cfg.ORBCollectMin) * time.Minute)
+	pollInterval := 1 * time.Minute
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	polls := 0
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			if now.After(endTime) {
+				return
+			}
+
+			// 모든 종목 가격 조회
+			for _, sym := range d.intradaySymbols {
+				price, err := d.broker.GetQuote(d.ctx, sym)
+				if err != nil || price <= 0 {
+					continue
+				}
+				d.intradayScanner.RecordPrice(sym, price, now)
+				time.Sleep(50 * time.Millisecond) // API 간격
+			}
+			polls++
+			log.Printf("[INTRADAY] OR poll %d/%d complete (%d symbols)",
+				polls, cfg.ORBCollectMin, d.intradayScanner.SymbolCount())
+		}
+	}
+}
+
+// updateIntradayPrices 장중 가격 업데이트
+func (d *Daemon) updateIntradayPrices() {
+	now := time.Now()
+	for _, sym := range d.intradaySymbols {
+		price, err := d.broker.GetQuote(d.ctx, sym)
+		if err != nil || price <= 0 {
+			continue
+		}
+		d.intradayScanner.RecordPrice(sym, price, now)
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// executeIntradaySignals 장중 시그널 실행
+func (d *Daemon) executeIntradaySignals() {
+	signals := d.intradayScanner.Scan()
+	if len(signals) == 0 {
+		return
+	}
+
+	log.Printf("[INTRADAY] Found %d intraday signals", len(signals))
+
+	// 포지션 사이징 적용
+	sizer := trader.NewPositionSizer(d.config.Sizer)
+	sized := sizer.ApplyToSignals(signals)
+
+	if len(sized) == 0 {
+		log.Println("[INTRADAY] No signals passed sizing")
+		return
+	}
+
+	// AutoTrader로 실행
+	results, err := d.autoTrader.ExecuteSignals(d.ctx, sized)
+	if err != nil {
+		log.Printf("[INTRADAY] Execution error: %v", err)
+		return
+	}
+
+	for _, r := range results {
+		if r.Success {
+			sym := r.Order.Symbol
+			log.Printf("[INTRADAY] Executed %s: BUY %d @ $%.2f",
+				sym, r.Order.Quantity, r.Order.LimitPrice)
+
+			// 장중 포지션 표시
+			if d.autoTrader != nil {
+				monitor := d.autoTrader.GetMonitor()
+				// Monitor에 Intraday 플래그 설정
+				for _, pos := range monitor.GetActivePositions() {
+					if pos.Symbol == sym && (pos.Strategy == "intraday_orb" || pos.Strategy == "intraday_dip") {
+						pos.Intraday = true
+					}
+				}
+			}
+
+			// 중복 진입 방지
+			d.intradayScanner.MarkExecuted(sym, r.Signal.Strategy)
+
+			// 매매 기록
+			if d.history != nil {
+				d.history.Append(trader.TradeRecord{
+					Market:   d.config.Market,
+					Symbol:   sym,
+					Side:     "buy",
+					Quantity: r.Order.Quantity,
+					Price:    r.Order.LimitPrice,
+					Strategy: r.Signal.Strategy,
+					Reason:   "intraday_signal",
+				})
+			}
+		}
+	}
 }
 
 // generatePlanFromAnalysis 기존 보유 종목에 대해 기술 분석 기반 플랜 자동 생성

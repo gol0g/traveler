@@ -17,6 +17,10 @@ type BreakoutConfig struct {
 	MaxRSI                 float64 // Maximum RSI (not overbought, default 80)
 	ConsolidationThreshold float64 // Prior BB width must be < current * this (default 0.8)
 
+	// KR market stricter filters
+	KRVolumeMultiple float64 // KR: higher volume threshold (default 2.0x)
+	KRMinBreakoutPct float64 // KR: minimum breakout % above 20d high (default 1.5%)
+
 	// Quality filters
 	MinPrice          float64
 	MaxTickerLength   int
@@ -30,6 +34,10 @@ func DefaultBreakoutConfig() BreakoutConfig {
 		VolumeMultiple:         1.5,
 		MaxRSI:                 80,
 		ConsolidationThreshold: 0.8,
+
+		// KR market: stricter to avoid false breakouts
+		KRVolumeMultiple: 2.0,
+		KRMinBreakoutPct: 1.5,
 
 		MinPrice:          5.0,
 		MaxTickerLength:   4,
@@ -148,19 +156,36 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		volumeRatio,
 	)
 
+	// KR market: stricter filters for false breakout prevention
+	isKR := symbols.IsKoreanSymbol(stock.Symbol)
+	details["is_kr"] = boolToFloat(isKR)
+
+	if isKR {
+		// KR: 거래량 기준 상향 (2.0x)
+		volumeConfirm = volumeRatio >= s.config.KRVolumeMultiple
+		details["kr_volume_threshold"] = s.config.KRVolumeMultiple
+
+		// KR: 최소 돌파 폭 (20일 고점 대비 1.5% 이상)
+		breakoutPct := details["breakout_pct"]
+		if breakoutPct < s.config.KRMinBreakoutPct {
+			breakout = false
+			details["kr_min_breakout_pct"] = s.config.KRMinBreakoutPct
+		}
+	}
+
 	// Only return BUY signal if all 3 core conditions are met
 	if !breakout || !volumeConfirm || !aboveMA50 {
 		return nil, nil
 	}
 
-	// 수렴 없는 돌파: 시그널은 남기되 강도 감소 (뉴스/갭 돌파 실패율 높음)
-	reason := fmt.Sprintf("Breakout above 20d high ($%.2f), volume %.1fx avg, %.1f%% above MA50",
-		highestHigh, volumeRatio, details["price_vs_ma50_pct"])
+	// 수렴 필수: 수렴 없는 돌파는 허위 돌파 가능성 높음 (US/KR 모두 적용)
 	if !priorConsolidation {
-		strength *= 0.7
-		reason += " (no prior consolidation, reduced confidence)"
+		return nil, nil
 	}
 	details["prior_consolidation"] = boolToFloat(priorConsolidation)
+
+	reason := fmt.Sprintf("Breakout above 20d high ($%.2f), volume %.1fx avg, %.1f%% above MA50",
+		highestHigh, volumeRatio, details["price_vs_ma50_pct"])
 
 	probability := calculateBreakoutProbability(strength, volumeRatio, priorConsolidation, rsiNotOverbought)
 	guide := s.calculateTradeGuide(today.Close, highestHigh, ind.ATR14)

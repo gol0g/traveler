@@ -17,6 +17,33 @@ import (
 	"traveler/pkg/model"
 )
 
+// createMarketAwareStrategies creates strategies with market-specific configs (regime filter etc.)
+func createMarketAwareStrategies(p provider.Provider, market string) []strategy.Strategy {
+	pullbackCfg := strategy.DefaultPullbackConfig()
+	if market == "kr" {
+		pullbackCfg.MarketRegimeSymbol = "069500" // KODEX 200
+	} else {
+		pullbackCfg.MarketRegimeSymbol = "SPY"
+	}
+	pullback := strategy.NewPullbackStrategy(pullbackCfg, p)
+
+	breakoutCfg := strategy.DefaultBreakoutConfig()
+	breakout := strategy.NewBreakoutStrategy(breakoutCfg, p)
+
+	meanRevCfg := strategy.DefaultMeanReversionConfig()
+	meanRev := strategy.NewMeanReversionStrategy(meanRevCfg, p)
+
+	oversoldCfg := strategy.DefaultOversoldConfig()
+	if market == "kr" {
+		oversoldCfg.MarketRegimeSymbol = "069500"
+	} else {
+		oversoldCfg.MarketRegimeSymbol = "SPY"
+	}
+	oversold := strategy.NewOversoldStrategy(oversoldCfg, p)
+
+	return []strategy.Strategy{pullback, meanRev, breakout, oversold}
+}
+
 // ScanRequest represents a scan request
 type ScanRequest struct {
 	Capital  float64  `json:"capital"`
@@ -172,7 +199,7 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 	// Caching provider: each stock fetched once, shared across strategies
 	cachedProvider := provider.NewCachingProvider(s.provider, 250)
 
-	strategies := strategy.GetAll(cachedProvider)
+	strategies := createMarketAwareStrategies(cachedProvider, "us")
 	totalScanned := 0
 	totalFound := 0
 
@@ -331,7 +358,7 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 	}
 
 	cachedProvider := provider.NewCachingProvider(s.providerKR, 250)
-	strategies := strategy.GetAll(cachedProvider)
+	strategies := createMarketAwareStrategies(cachedProvider, "kr")
 	totalScanned := 0
 	totalFound := 0
 
@@ -534,6 +561,11 @@ func (s *Server) handleStock(w http.ResponseWriter, r *http.Request) {
 	}
 	stock := model.Stock{Symbol: symbol, Name: stockName}
 	pullbackCfg := strategy.DefaultPullbackConfig()
+	if symbols.IsKoreanSymbol(symbol) {
+		pullbackCfg.MarketRegimeSymbol = "069500"
+	} else {
+		pullbackCfg.MarketRegimeSymbol = "SPY"
+	}
 	strat := strategy.NewPullbackStrategy(pullbackCfg, prov)
 	signal, _ := strat.Analyze(ctx, stock)
 

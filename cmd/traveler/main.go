@@ -172,7 +172,12 @@ func run(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	// Web mode - start web server
+	// Daemon mode - fully automated trading (may also start web server)
+	if daemonMode {
+		return runDaemonMode(cfg, fallbackProvider)
+	}
+
+	// Web mode - start web server (standalone, without daemon)
 	if webMode {
 		return runWebServer(cfg, fallbackProvider)
 	}
@@ -180,11 +185,6 @@ func run(cmd *cobra.Command, args []string) error {
 	// Monitor mode - only monitor existing positions
 	if monitorMode {
 		return runMonitorMode(cfg)
-	}
-
-	// Daemon mode - fully automated trading
-	if daemonMode {
-		return runDaemonMode(cfg, fallbackProvider)
 	}
 
 	// Setup context with cancellation
@@ -368,8 +368,34 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	// 데몬 생성 및 실행
 	if isKR {
 		daemonCfg.Market = "kr"
+	} else {
+		daemonCfg.Market = "us"
 	}
 	d := daemon.NewDaemon(daemonCfg, broker, daemonProvider)
+
+	// --web 플래그가 함께 있으면 웹 서버를 백그라운드로 시작
+	if webMode {
+		log.Printf("[DAEMON] Starting web server on port %d", webPort)
+		server := web.NewServer(cfg, p, accountBalance, universe, broker, resolvedDir)
+		if !isKR && cfg.KIS.Domestic.AppKey != "" {
+			krCreds := kis.Credentials{
+				AppKey:    cfg.KIS.Domestic.AppKey,
+				AppSecret: cfg.KIS.Domestic.AppSecret,
+				AccountNo: cfg.KIS.Domestic.AccountNo,
+			}
+			krBroker := kis.NewDomesticClient(krCreds)
+			krProvider := provider.NewKISProvider(krCreds)
+			if krBroker.IsReady() {
+				server.SetKoreanMarket(krBroker, krProvider)
+				log.Printf("[DAEMON] KR market connected for web UI")
+			}
+		}
+		go func() {
+			if err := server.Start(webPort); err != nil {
+				log.Printf("[DAEMON] Web server error: %v", err)
+			}
+		}()
+	}
 
 	// 시그널 핸들링
 	sigChan := make(chan os.Signal, 1)

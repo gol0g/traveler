@@ -65,6 +65,7 @@ type DailyTracker struct {
 	config   DailyConfig
 	state    DailyState
 	dataDir  string
+	market   string         // "us" or "kr" — 파일 분리용
 	tz       *time.Location // 마켓 타임존 (nil이면 로컬)
 	mu       sync.RWMutex
 }
@@ -81,6 +82,11 @@ func NewDailyTracker(cfg DailyConfig, dataDir string) *DailyTracker {
 		config:  cfg,
 		dataDir: dataDir,
 	}
+}
+
+// SetMarket 마켓 설정 (파일명 분리: daily_us_2026-02-12.json vs daily_kr_2026-02-12.json)
+func (t *DailyTracker) SetMarket(market string) {
+	t.market = market
 }
 
 // SetTimezone 마켓 타임존 설정 (US=America/New_York, KR=Asia/Seoul)
@@ -237,8 +243,11 @@ func (t *DailyTracker) GetConfig() DailyConfig {
 	return t.config
 }
 
-// 상태 파일 경로
+// 상태 파일 경로 (마켓별 분리: daily_us_2026-02-12.json)
 func (t *DailyTracker) stateFilePath(date string) string {
+	if t.market != "" {
+		return filepath.Join(t.dataDir, fmt.Sprintf("daily_%s_%s.json", t.market, date))
+	}
 	return filepath.Join(t.dataDir, fmt.Sprintf("daily_%s.json", date))
 }
 

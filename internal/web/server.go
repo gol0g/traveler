@@ -184,6 +184,13 @@ func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 	market := r.URL.Query().Get("market")
 	state := s.getScanState(market)
 
+	// idle 상태이면 디스크에서 로드 시도
+	if state.Status == "idle" || (state.Status == "" && state.Result == nil) {
+		if data := s.tryLoadFromDisk(market); data != nil {
+			state = s.getScanState(market) // 다시 읽기
+		}
+	}
+
 	resp := struct {
 		Status    string `json:"status"`
 		Message   string `json:"message"`
@@ -213,13 +220,54 @@ func (s *Server) handleScanResult(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if state.Status != "done" || state.Result == nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "no scan result available"})
+	// 메모리에 결과가 있으면 바로 반환
+	if state.Status == "done" && state.Result != nil {
+		w.Write(state.Result)
 		return
 	}
 
-	w.Write(state.Result)
+	// 메모리에 없으면 디스크에서 직접 로드 (데몬이 별도 프로세스로 결과를 썼을 수 있음)
+	data := s.tryLoadFromDisk(market)
+	if data != nil {
+		w.Write(data)
+		return
+	}
+
+	w.WriteHeader(http.StatusNotFound)
+	json.NewEncoder(w).Encode(map[string]string{"error": "no scan result available"})
+}
+
+// tryLoadFromDisk 디스크에서 스캔 결과를 읽고 메모리에 캐시
+func (s *Server) tryLoadFromDisk(market string) json.RawMessage {
+	path := s.scanResultPath(market)
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if time.Since(info.ModTime()) > 24*time.Hour {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	// 메모리에 캐시
+	s.scanMu.Lock()
+	if market == "kr" {
+		s.scanKR.Status = "done"
+		s.scanKR.Result = data
+		s.scanKR.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+	} else {
+		s.scan.Status = "done"
+		s.scan.Result = data
+		s.scan.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+	}
+	s.scanMu.Unlock()
+	log.Printf("[WEB] Loaded %s scan result from disk (%s)", market, path)
+	return data
 }
 
 func (s *Server) scanResultPath(market string) string {

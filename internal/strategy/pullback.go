@@ -3,7 +3,9 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
+	"sync"
 
 	"traveler/internal/provider"
 	"traveler/internal/symbols"
@@ -20,6 +22,10 @@ type PullbackConfig struct {
 	MinPrice         float64 // Minimum stock price (default $5)
 	MaxTickerLength  int     // Maximum ticker length (4 = exclude OTC 5-letter tickers)
 	MinDailyDollarVol float64 // Minimum daily dollar volume (price * volume)
+
+	// Market regime filter: broad market must be above MA20
+	// US: "SPY", KR: "069500" (KODEX 200)
+	MarketRegimeSymbol string
 }
 
 // DefaultPullbackConfig returns default configuration
@@ -38,13 +44,21 @@ func DefaultPullbackConfig() PullbackConfig {
 
 // PullbackStrategy implements the "Pullback in Uptrend" strategy
 // Buy signal when:
-// 1. Price is above MA50 (confirmed uptrend)
-// 2. Price pulls back to touch MA20
-// 3. Volume is lower than average (weak selling pressure)
-// 4. Shows reversal sign (bullish candle or long lower shadow)
+// 1. Broad market (SPY/KOSPI) above MA20 (regime filter)
+// 2. Price is above MA50 (confirmed uptrend)
+// 3. Price pulls back to touch MA20
+// 4. Volume pattern: pullback low volume + reversal volume recovery
+// 5. Bouncing: today's low > yesterday's low
+// 6. RSI < 50 (room to run)
+// 7. Shows reversal sign (bullish candle or long lower shadow)
 type PullbackStrategy struct {
 	config   PullbackConfig
 	provider provider.Provider
+
+	// Market regime cache (per scan session)
+	regimeMu      sync.Mutex
+	regimeChecked bool
+	regimeOK      bool
 }
 
 // NewPullbackStrategy creates a new pullback strategy
@@ -65,8 +79,63 @@ func (s *PullbackStrategy) Description() string {
 	return "Pullback in Uptrend - Buy when uptrending stock pulls back to MA20"
 }
 
+// ResetRegimeCache resets the cached regime check (call at start of each scan cycle)
+func (s *PullbackStrategy) ResetRegimeCache() {
+	s.regimeMu.Lock()
+	s.regimeChecked = false
+	s.regimeOK = false
+	s.regimeMu.Unlock()
+}
+
+// checkMarketRegime checks if the broad market is above MA20.
+// Result is cached for the entire scan session.
+func (s *PullbackStrategy) checkMarketRegime(ctx context.Context) bool {
+	s.regimeMu.Lock()
+	defer s.regimeMu.Unlock()
+
+	if s.regimeChecked {
+		return s.regimeOK
+	}
+
+	s.regimeChecked = true
+	s.regimeOK = true // default to true if no symbol configured or on error
+
+	sym := s.config.MarketRegimeSymbol
+	if sym == "" {
+		return s.regimeOK
+	}
+
+	candles, err := s.provider.GetDailyCandles(ctx, sym, 30)
+	if err != nil {
+		log.Printf("[PULLBACK] regime check: failed to fetch %s: %v (allowing entries)", sym, err)
+		return s.regimeOK
+	}
+
+	if len(candles) < 20 {
+		log.Printf("[PULLBACK] regime check: insufficient %s data (%d candles)", sym, len(candles))
+		return s.regimeOK
+	}
+
+	ma20 := CalculateMA(candles, 20)
+	lastClose := candles[len(candles)-1].Close
+	s.regimeOK = lastClose > ma20
+
+	if !s.regimeOK {
+		log.Printf("[PULLBACK] regime BEARISH: %s %.2f < MA20 %.2f — skipping pullback entries", sym, lastClose, ma20)
+	} else {
+		log.Printf("[PULLBACK] regime OK: %s %.2f > MA20 %.2f", sym, lastClose, ma20)
+	}
+
+	return s.regimeOK
+}
+
 // Analyze analyzes a stock for pullback opportunity
 func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Signal, error) {
+	// Market regime filter: skip all entries if broad market is below MA20
+	if !s.checkMarketRegime(ctx) {
+		return nil, nil
+	}
+
 	// Pre-filter: Ticker length (exclude OTC 5-letter tickers, warrants, etc.)
 	// Korean symbols are 6-digit numeric codes — skip this filter for them
 	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength && !symbols.IsKoreanSymbol(stock.Symbol) {
@@ -168,11 +237,11 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	details["bullish_candle"] = boolToFloat(bullishCandle)
 	details["long_lower_shadow"] = boolToFloat(longLowerShadow)
 
-	// Bonus: RSI in healthy range (not overbought)
-	rsiOK := ind.RSI14 < 70
+	// Required: RSI < 50 (room to run, not overbought)
+	rsiOK := ind.RSI14 < 50
 	details["rsi14"] = ind.RSI14
 
-	// Bonus: Price bouncing (today's low > yesterday's low)
+	// Required: Price bouncing (today's low > yesterday's low)
 	bouncing := today.Low > yesterday.Low
 	details["bouncing"] = boolToFloat(bouncing)
 
@@ -182,25 +251,18 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		rsiOK, bouncing, details["price_vs_ma50_pct"],
 	)
 
-	// Determine signal type
+	// Determine signal type — ALL conditions must be met
 	signalType := SignalHold
 	reason := ""
 
-	if aboveMA50 && trendConfirmed && touchedMA20 && hasReversalSign {
-		if volumePattern {
-			signalType = SignalBuy
-			reason = fmt.Sprintf("Uptrend pullback to MA20 (%.1f%% above MA50, slope %.2f%%), volume pattern OK (pb:%.1fx, rev:%.1fx), ",
-				details["price_vs_ma50_pct"], ind.MA50Slope, pullbackAvgVol/ind.AvgVol, volumeRatio)
-			if bullishCandle {
-				reason += "bullish candle"
-			} else {
-				reason += "long lower shadow"
-			}
+	if aboveMA50 && trendConfirmed && touchedMA20 && hasReversalSign && volumePattern && bouncing && rsiOK {
+		signalType = SignalBuy
+		reason = fmt.Sprintf("Pullback to MA20 (%.1f%% >MA50, slope %.2f%%, RSI %.0f), vol OK (pb:%.1fx, rev:%.1fx), ",
+			details["price_vs_ma50_pct"], ind.MA50Slope, ind.RSI14, pullbackAvgVol/ind.AvgVol, volumeRatio)
+		if bullishCandle {
+			reason += "bullish candle, bouncing"
 		} else {
-			signalType = SignalBuy
-			strength *= 0.7 // 거래량 패턴 불일치: 시그널은 남기되 강도 감소
-			reason = fmt.Sprintf("Uptrend pullback to MA20, volume pattern weak (pb:%.1fx, rev:%.1fx)",
-				pullbackAvgVol/ind.AvgVol, volumeRatio)
+			reason += "long lower shadow, bouncing"
 		}
 	} else if !aboveMA50 {
 		reason = fmt.Sprintf("Not in uptrend (%.1f%% below MA50)", details["price_vs_ma50_pct"])
@@ -209,6 +271,14 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 			ind.MA50Slope, (ind.MA20-ind.MA50)/ind.MA50*100)
 	} else if !touchedMA20 {
 		reason = fmt.Sprintf("Price not near MA20 (%.1f%% away)", details["price_vs_ma20_pct"])
+	} else if !hasReversalSign {
+		reason = "No reversal sign (need bullish candle or long lower shadow)"
+	} else if !volumePattern {
+		reason = fmt.Sprintf("Volume pattern weak (pb:%.1fx, rev:%.1fx)", pullbackAvgVol/ind.AvgVol, volumeRatio)
+	} else if !bouncing {
+		reason = "Not bouncing (today's low <= yesterday's low)"
+	} else if !rsiOK {
+		reason = fmt.Sprintf("RSI too high (%.0f >= 50)", ind.RSI14)
 	}
 
 	// Only return signal if it's a buy

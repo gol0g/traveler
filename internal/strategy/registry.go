@@ -81,6 +81,9 @@ func init() {
 	Register("breakout", func(p provider.Provider) Strategy {
 		return NewBreakoutStrategy(DefaultBreakoutConfig(), p)
 	})
+	Register("oversold", func(p provider.Provider) Strategy {
+		return NewOversoldStrategy(DefaultOversoldConfig(), p)
+	})
 }
 
 // StrategyInfo 전략 정보

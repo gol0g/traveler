@@ -29,9 +29,12 @@ type PositionPlan struct {
 
 // MaxHoldDays per strategy
 var strategyMaxHoldDays = map[string]int{
-	"pullback":        7,
-	"mean-reversion":  5,
-	"breakout":        15,
+	"pullback":       7,
+	"mean-reversion": 5,
+	"breakout":       15,
+	"oversold":       5,
+	"intraday_orb":   1,
+	"intraday_dip":   1,
 }
 
 // GetMaxHoldDays returns the max hold days for a strategy

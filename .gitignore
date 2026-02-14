@@ -39,3 +39,6 @@ web_err.log
 
 # Scan result dumps
 kr_scan_result.json
+
+# Bug/issue reports (local only)
+bug/

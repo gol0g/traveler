@@ -132,12 +132,16 @@ func GetUniverseTiers(balance float64) []UniverseTier {
 // TierFunc 유니버스 티어 결정 함수
 type TierFunc func(balance float64) []UniverseTier
 
+// FilterFunc 시그널 필터 함수 (펀더멘탈 등). 통과한 시그널만 반환.
+type FilterFunc func(ctx context.Context, signals []strategy.Signal) []strategy.Signal
+
 // AdaptiveScanner 적응형 스캐너
 type AdaptiveScanner struct {
 	config      AdaptiveConfig
 	sizerConfig SizerConfig
 	scanFunc    ScanFunc
-	tierFunc    TierFunc // nil이면 기본 GetUniverseTiers 사용
+	tierFunc    TierFunc   // nil이면 기본 GetUniverseTiers 사용
+	filterFunc  FilterFunc // nil이면 필터 없음 (품질 평가 전에 적용)
 }
 
 // ScanFunc 스캔 함수 타입
@@ -155,6 +159,11 @@ func NewAdaptiveScanner(cfg AdaptiveConfig, sizerCfg SizerConfig, scanFunc ScanF
 // SetTierFunc 유니버스 티어 결정 함수 커스터마이즈 (한국 시장용)
 func (s *AdaptiveScanner) SetTierFunc(fn TierFunc) {
 	s.tierFunc = fn
+}
+
+// SetFilterFunc 품질 평가 전 시그널 필터 설정 (펀더멘탈 등)
+func (s *AdaptiveScanner) SetFilterFunc(fn FilterFunc) {
+	s.filterFunc = fn
 }
 
 // ScanResult 스캔 결과
@@ -243,6 +252,15 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 			}
 			log.Printf("[ADAPTIVE] %s: %d raw signals, %d passed price filter (max $%.2f), %d filtered",
 				tier.Name, len(signals), len(signals)-filtered, maxPrice, filtered)
+		}
+
+		// 펀더멘탈 등 필터 적용 (품질 평가 전)
+		if s.filterFunc != nil {
+			before := len(allSignals)
+			allSignals = s.filterFunc(ctx, allSignals)
+			if filtered := before - len(allSignals); filtered > 0 {
+				log.Printf("[ADAPTIVE] Filter applied: %d → %d signals", before, len(allSignals))
+			}
 		}
 
 		// 품질 평가

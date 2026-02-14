@@ -22,6 +22,7 @@ type ActivePosition struct {
 	Target1Hit  bool   // Target1 도달 여부
 	Strategy    string // 전략 이름
 	MaxHoldDays int    // 최대 보유 거래일
+	Intraday    bool   // 장중 매매 포지션 (장 마감 전 강제 청산)
 }
 
 // Monitor 포지션 모니터링
@@ -146,53 +147,93 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			continue
 		}
 
-		// Target1 도달 - 절반 청산
-		if !active.Target1Hit && currentPrice >= active.Target1 && active.Quantity > 1 {
-			halfQty := active.Quantity / 2
-			log.Printf("[TARGET1] %s hit target1 at $%.2f - selling %d shares",
-				symbol, active.Target1, halfQty)
+		// Target1 도달 - 절반 청산 (또는 1주면 stop을 본전으로 이동)
+		if !active.Target1Hit && currentPrice >= active.Target1 {
+			if active.Quantity > 1 {
+				// 2주 이상: 절반 매도
+				halfQty := active.Quantity / 2
+				log.Printf("[TARGET1] %s hit target1 at $%.2f - selling %d shares",
+					symbol, active.Target1, halfQty)
 
-			if _, err := m.executor.ExecuteSell(ctx, symbol, halfQty, "target1"); err != nil {
-				log.Printf("[MONITOR] Error selling %s: %v", symbol, err)
-				continue
-			}
-
-			// Target1 매도 기록
-			if m.history != nil {
-				pnl := float64(halfQty) * (currentPrice - active.EntryPrice)
-				pnlPct := 0.0
-				if active.EntryPrice > 0 {
-					pnlPct = (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+				if _, err := m.executor.ExecuteSell(ctx, symbol, halfQty, "target1"); err != nil {
+					log.Printf("[MONITOR] Error selling %s: %v", symbol, err)
+					continue
 				}
-				m.history.Append(TradeRecord{
-					Market:     m.market,
-					Symbol:     symbol,
-					Side:       "sell",
-					Quantity:   halfQty,
-					Price:      currentPrice,
-					Strategy:   active.Strategy,
-					Reason:     "target1",
-					EntryPrice: active.EntryPrice,
-					PnL:        pnl,
-					PnLPct:     pnlPct,
-				})
-			}
 
-			// 상태 업데이트
-			m.mu.Lock()
-			if pos, ok := m.positions[symbol]; ok {
-				pos.Target1Hit = true
-				pos.Quantity -= halfQty
-				pos.StopLoss = pos.EntryPrice // 손절가를 본전으로 이동
-				log.Printf("[MONITOR] %s: moved stop to breakeven ($%.2f), remaining %d shares",
-					symbol, pos.StopLoss, pos.Quantity)
-			}
-			m.mu.Unlock()
+				// Target1 매도 기록
+				if m.history != nil {
+					pnl := float64(halfQty) * (currentPrice - active.EntryPrice)
+					pnlPct := 0.0
+					if active.EntryPrice > 0 {
+						pnlPct = (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+					}
+					m.history.Append(TradeRecord{
+						Market:     m.market,
+						Symbol:     symbol,
+						Side:       "sell",
+						Quantity:   halfQty,
+						Price:      currentPrice,
+						Strategy:   active.Strategy,
+						Reason:     "target1",
+						EntryPrice: active.EntryPrice,
+						PnL:        pnl,
+						PnLPct:     pnlPct,
+					})
+				}
 
-			// PlanStore 업데이트
-			if m.planStore != nil {
-				remaining := active.Quantity - halfQty
-				m.planStore.UpdateTarget1Hit(symbol, remaining, active.EntryPrice)
+				// 상태 업데이트
+				m.mu.Lock()
+				if pos, ok := m.positions[symbol]; ok {
+					pos.Target1Hit = true
+					pos.Quantity -= halfQty
+					pos.StopLoss = pos.EntryPrice // 손절가를 본전으로 이동
+					log.Printf("[MONITOR] %s: moved stop to breakeven ($%.2f), remaining %d shares",
+						symbol, pos.StopLoss, pos.Quantity)
+				}
+				m.mu.Unlock()
+
+				// PlanStore 업데이트
+				if m.planStore != nil {
+					remaining := active.Quantity - halfQty
+					m.planStore.UpdateTarget1Hit(symbol, remaining, active.EntryPrice)
+				}
+			} else {
+				// 1주: T1에서 전량 매도 (수익 확보 우선)
+				log.Printf("[TARGET1] %s hit target1 at $%.2f - 1-share position, selling all",
+					symbol, active.Target1)
+
+				if _, err := m.executor.ExecuteSell(ctx, symbol, active.Quantity, "target1"); err != nil {
+					log.Printf("[MONITOR] Error selling %s: %v", symbol, err)
+					continue
+				}
+
+				if m.history != nil {
+					pnl := float64(active.Quantity) * (currentPrice - active.EntryPrice)
+					pnlPct := 0.0
+					if active.EntryPrice > 0 {
+						pnlPct = (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+					}
+					m.history.Append(TradeRecord{
+						Market:     m.market,
+						Symbol:     symbol,
+						Side:       "sell",
+						Quantity:   active.Quantity,
+						Price:      currentPrice,
+						Strategy:   active.Strategy,
+						Reason:     "target1",
+						EntryPrice: active.EntryPrice,
+						PnL:        pnl,
+						PnLPct:     pnlPct,
+					})
+				}
+
+				m.mu.Lock()
+				delete(m.positions, symbol)
+				m.mu.Unlock()
+
+				if m.planStore != nil {
+					m.planStore.Delete(symbol)
+				}
 			}
 			continue
 		}
@@ -274,6 +315,37 @@ func (m *Monitor) ClosePosition(ctx context.Context, symbol string, reason strin
 
 	m.executeSell(ctx, symbol, active.Quantity, reason, exitPrice)
 	return nil
+}
+
+// ForceCloseIntraday 장중 포지션 전량 강제 청산
+func (m *Monitor) ForceCloseIntraday(ctx context.Context) {
+	m.mu.RLock()
+	var intradaySymbols []string
+	for symbol, pos := range m.positions {
+		if pos.Intraday {
+			intradaySymbols = append(intradaySymbols, symbol)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, symbol := range intradaySymbols {
+		log.Printf("[MONITOR] Force closing intraday position: %s", symbol)
+		m.ClosePosition(ctx, symbol, "intraday_force_close")
+	}
+}
+
+// GetIntradayPositions 장중 포지션만 반환
+func (m *Monitor) GetIntradayPositions() []*ActivePosition {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []*ActivePosition
+	for _, p := range m.positions {
+		if p.Intraday {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // SyncWithBroker 브로커 잔고와 동기화
