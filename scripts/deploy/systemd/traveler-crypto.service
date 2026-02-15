@@ -1,0 +1,27 @@
+[Unit]
+Description=Traveler Crypto Daemon (24/7 Upbit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+ExecStart=/usr/local/bin/traveler --daemon --market crypto --sleep-on-exit=false --data-dir /home/pi/.traveler
+Restart=always
+RestartSec=30
+Environment=HOME=/home/pi
+EnvironmentFile=/home/pi/.traveler/.env
+
+# Logging
+StandardOutput=append:/home/pi/.traveler/daemon_crypto.log
+StandardError=append:/home/pi/.traveler/daemon_crypto.log
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/pi/.traveler
+
+[Install]
+WantedBy=multi-user.target

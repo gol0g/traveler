@@ -1,0 +1,11 @@
+[Unit]
+Description=Traveler US Market Timer (23:20 KST = 14:20 UTC)
+
+[Timer]
+# US market opens 9:30 ET = 23:30 KST
+# Start daemon 10 min before open
+OnCalendar=*-*-* 14:20:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

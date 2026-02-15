@@ -1,0 +1,11 @@
+[Unit]
+Description=Traveler KR Market Timer (08:40 KST = 23:40 UTC prev day)
+
+[Timer]
+# KR market opens 9:00 KST
+# Start daemon 20 min before open
+OnCalendar=*-*-* 23:40:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

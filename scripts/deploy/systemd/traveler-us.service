@@ -1,0 +1,23 @@
+[Unit]
+Description=Traveler US Market Daemon (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+ExecStart=/usr/local/bin/traveler --daemon --market us --sleep-on-exit=false --data-dir /home/pi/.traveler
+TimeoutStartSec=7200
+Environment=HOME=/home/pi
+EnvironmentFile=/home/pi/.traveler/.env
+
+# Logging
+StandardOutput=append:/home/pi/.traveler/daemon_us.log
+StandardError=append:/home/pi/.traveler/daemon_us.log
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/pi/.traveler
