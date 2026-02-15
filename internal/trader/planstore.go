@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,7 +15,7 @@ type PositionPlan struct {
 	Symbol      string    `json:"symbol"`
 	Strategy    string    `json:"strategy"`
 	EntryPrice  float64   `json:"entry_price"`
-	Quantity    int       `json:"quantity"`
+	Quantity    float64   `json:"quantity"`
 	StopLoss    float64   `json:"stop_loss"`
 	Target1     float64   `json:"target1"`
 	Target2     float64   `json:"target2"`
@@ -29,32 +30,48 @@ type PositionPlan struct {
 
 // MaxHoldDays per strategy
 var strategyMaxHoldDays = map[string]int{
-	"pullback":       7,
-	"mean-reversion": 5,
-	"breakout":       15,
-	"oversold":       5,
-	"intraday_orb":   1,
-	"intraday_dip":   1,
+	"pullback":            7,
+	"mean-reversion":      5,
+	"breakout":            15,
+	"oversold":            5,
+	"intraday_orb":        1,
+	"intraday_dip":        1,
+	"volatility-breakout": 3,
+	"range-trading":       5,
+	"rsi-contrarian":      5,
+	"volume-spike":        3,
 }
 
-// GetMaxHoldDays returns the max hold days for a strategy
+// GetMaxHoldDays returns the max hold days for a strategy.
+// Supports meta-strategy names like "volatility-breakout(bull)" by stripping the regime suffix.
 func GetMaxHoldDays(strategy string) int {
 	if days, ok := strategyMaxHoldDays[strategy]; ok {
 		return days
 	}
+	// Strip regime suffix: "volatility-breakout(bull)" → "volatility-breakout"
+	if idx := strings.Index(strategy, "("); idx > 0 {
+		base := strategy[:idx]
+		if days, ok := strategyMaxHoldDays[base]; ok {
+			return days
+		}
+	}
 	return 7 // default
 }
 
-// TradingDaysSince counts weekday days between entry and now
+// TradingDaysSince counts weekday days between entry date and today (date-based, not time-based).
+// Same day always returns 0. Day 1 starts at midnight.
 func TradingDaysSince(entry time.Time) int {
 	now := time.Now()
-	if now.Before(entry) {
-		return 0
+	entryDate := time.Date(entry.Year(), entry.Month(), entry.Day(), 0, 0, 0, 0, entry.Location())
+	nowDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	if !nowDate.After(entryDate) {
+		return 0 // 같은 날이면 0
 	}
 
 	days := 0
-	current := entry
-	for current.Before(now) {
+	current := entryDate
+	for current.Before(nowDate) {
 		current = current.AddDate(0, 0, 1)
 		wd := current.Weekday()
 		if wd != time.Saturday && wd != time.Sunday {
@@ -62,6 +79,19 @@ func TradingDaysSince(entry time.Time) int {
 		}
 	}
 	return days
+}
+
+// CalendarDaysSince counts all calendar days between entry date and today (crypto용, 주말 포함).
+func CalendarDaysSince(entry time.Time) int {
+	now := time.Now()
+	entryDate := time.Date(entry.Year(), entry.Month(), entry.Day(), 0, 0, 0, 0, entry.Location())
+	nowDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	if !nowDate.After(entryDate) {
+		return 0
+	}
+
+	return int(nowDate.Sub(entryDate).Hours() / 24)
 }
 
 // PlanStore persists position plans to a JSON file
@@ -126,7 +156,7 @@ func (ps *PlanStore) Delete(symbol string) error {
 }
 
 // UpdateTarget1Hit marks target1 as hit and updates quantity
-func (ps *PlanStore) UpdateTarget1Hit(symbol string, remainingQty int, newStopLoss float64) error {
+func (ps *PlanStore) UpdateTarget1Hit(symbol string, remainingQty float64, newStopLoss float64) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -134,7 +164,7 @@ func (ps *PlanStore) UpdateTarget1Hit(symbol string, remainingQty int, newStopLo
 		plan.Target1Hit = true
 		plan.Quantity = remainingQty
 		plan.StopLoss = newStopLoss
-		log.Printf("[PLANSTORE] Updated %s: target1 hit, qty=%d, new stop=$%.2f",
+		log.Printf("[PLANSTORE] Updated %s: target1 hit, qty=%.0f, new stop=$%.2f",
 			symbol, remainingQty, newStopLoss)
 		return ps.persist()
 	}

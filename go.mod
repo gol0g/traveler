@@ -3,6 +3,8 @@ module traveler
 go 1.24.4
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/uuid v1.6.0
 	github.com/olekukonko/tablewriter v1.1.3
 	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/spf13/cobra v1.10.2

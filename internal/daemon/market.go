@@ -352,6 +352,18 @@ func timeToNextTradingDay(now time.Time, schedule MarketSchedule) time.Duration 
 	return 24 * time.Hour
 }
 
+// GetCryptoMarketStatus 크립토 마켓 상태 (24/7 항상 오픈)
+func GetCryptoMarketStatus() MarketStatus {
+	loc := GetKSTLocation()
+	now := time.Now().In(loc)
+	return MarketStatus{
+		IsOpen:        true,
+		CurrentTimeET: now,
+		TimeToClose:   24 * time.Hour, // 24시간 항상 열림 (force close 방지)
+		Reason:        "open",
+	}
+}
+
 // IsUSHoliday 미국 공휴일 체크
 func IsUSHoliday(t time.Time) bool {
 	dateStr := t.Format("2006-01-02")

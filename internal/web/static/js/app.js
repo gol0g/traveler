@@ -49,8 +49,8 @@ class TravelerApp {
         // Update capital label and defaults
         const capitalLabel = document.querySelector('label[for="capitalInput"], label');
         const capitalInput = document.getElementById('capitalInput');
-        if (market === 'kr') {
-            if (capitalLabel) capitalLabel.textContent = 'Capital:';
+        if (market === 'kr' || market === 'crypto') {
+            if (capitalLabel) capitalLabel.textContent = market === 'crypto' ? 'Capital (₩):' : 'Capital:';
             if (capitalInput && parseFloat(capitalInput.value) < 10000) {
                 capitalInput.value = 1000000; // Default ₩1,000,000
                 this.capital = 1000000;
@@ -75,6 +75,21 @@ class TravelerApp {
 
     isKR() {
         return this.market === 'kr';
+    }
+
+    isCrypto() {
+        return this.market === 'crypto';
+    }
+
+    // KRW currency (both KR stocks and crypto use Korean Won)
+    isKRW() {
+        return this.market === 'kr' || this.market === 'crypto';
+    }
+
+    // Returns market query string (e.g. '?market=kr', '&market=crypto', or '')
+    marketQuery(sep = '?') {
+        if (this.market === 'us') return '';
+        return `${sep}market=${this.market}`;
     }
 
     switchTab(tab) {
@@ -121,7 +136,7 @@ class TravelerApp {
     // ==================== POSITIONS TAB ====================
     async loadPositionsData() {
         try {
-            const mq = this.isKR() ? '?market=kr' : '';
+            const mq = this.marketQuery();
             const [posRes, balRes, ordRes] = await Promise.all([
                 fetch('/api/positions' + mq).then(r => r.json()).catch(() => ({ positions: [] })),
                 fetch('/api/balance' + mq).then(r => r.json()).catch(() => ({})),
@@ -566,7 +581,7 @@ class TravelerApp {
 
     recalculate() {
         this.capital = parseFloat(document.getElementById('capitalInput').value) || this.capital;
-        const minCap = this.isKR() ? 100000 : 100;
+        const minCap = this.isKRW() ? 100000 : 100;
         if (this.capital < minCap) {
             this.capital = minCap;
             document.getElementById('capitalInput').value = minCap;
@@ -585,7 +600,15 @@ class TravelerApp {
             // riskBudget = capital * riskPerTrade (NOT divided by positions)
             // maxPositionValue = capital * maxPositionPct
             let riskPct, maxPosPct;
-            if (this.isKR()) {
+            if (this.isCrypto()) {
+                if (this.capital < 500000) {
+                    riskPct = 3; maxPosPct = 0.30; // 50만 미만: 공격적
+                } else if (this.capital < 5000000) {
+                    riskPct = 2; maxPosPct = 0.25; // 500만 미만: 적극적
+                } else {
+                    riskPct = 1.5; maxPosPct = 0.20; // 500만 이상: 보수적
+                }
+            } else if (this.isKR()) {
                 if (this.capital < 500000) {
                     riskPct = 3; maxPosPct = 0.40; // 50만 미만: 공격적
                 } else if (this.capital < 5000000) {
@@ -602,6 +625,7 @@ class TravelerApp {
             }
             const riskBudget = this.capital * (riskPct / 100); // per trade, not per position
             const maxPositionValue = this.capital * maxPosPct;
+            const isCrypto = this.isCrypto();
 
             activeSignals.forEach(signal => {
                 if (signal.guide) {
@@ -611,16 +635,24 @@ class TravelerApp {
                     const riskPerShare = entryPrice - stopLoss;
 
                     if (riskPerShare > 0 && entryPrice > 0) {
-                        const sharesByRisk = Math.floor(riskBudget / riskPerShare);
-                        const sharesByAllocation = Math.floor(maxPositionValue / entryPrice);
-                        let shares = Math.min(sharesByRisk, sharesByAllocation);
-                        if (shares < 1) shares = 1; // minimum 1 share
+                        let sharesByRisk, sharesByAllocation, shares;
+                        if (isCrypto) {
+                            // Crypto: fractional quantities allowed
+                            sharesByRisk = riskBudget / riskPerShare;
+                            sharesByAllocation = maxPositionValue / entryPrice;
+                            shares = Math.min(sharesByRisk, sharesByAllocation);
+                        } else {
+                            sharesByRisk = Math.floor(riskBudget / riskPerShare);
+                            sharesByAllocation = Math.floor(maxPositionValue / entryPrice);
+                            shares = Math.min(sharesByRisk, sharesByAllocation);
+                            if (shares < 1) shares = 1; // minimum 1 share
+                        }
 
                         // Cap at maxPositionValue
                         if (shares * entryPrice > maxPositionValue) {
-                            shares = Math.floor(maxPositionValue / entryPrice);
+                            shares = isCrypto ? maxPositionValue / entryPrice : Math.floor(maxPositionValue / entryPrice);
                         }
-                        if (shares < 1) shares = 0;
+                        if (!isCrypto && shares < 1) shares = 0;
 
                         // Update guide with new calculations
                         g.position_size = g.PositionSize = shares;
@@ -669,9 +701,19 @@ class TravelerApp {
             const stratColors = {
                 'pullback': 'bg-purple-600',
                 'breakout': 'bg-orange-600',
-                'mean-reversion': 'bg-teal-600'
+                'mean-reversion': 'bg-teal-600',
+                'volatility-breakout': 'bg-amber-600',
+                'oversold': 'bg-cyan-600',
+                'range-trading': 'bg-sky-600',
+                'rsi-contrarian': 'bg-violet-600',
+                'volume-spike': 'bg-orange-500'
             };
-            const stratBg = stratColors[strategyName] || 'bg-gray-600';
+            // Parse regime from strategy name like "volatility-breakout(bull)"
+            const regimeMatch = strategyName.match(/^(.+)\((bull|sideways|bear)\)$/);
+            const baseStrategy = regimeMatch ? regimeMatch[1] : strategyName;
+            const regime = regimeMatch ? regimeMatch[2] : (signal.details && signal.details.regime !== undefined ? ({1:'bull',0:'sideways','-1':'bear'}[signal.details.regime] || '') : '');
+            const stratBg = stratColors[baseStrategy] || 'bg-gray-600';
+            const regimeBadge = regime ? `<span class="${regime === 'bull' ? 'bg-green-700' : regime === 'bear' ? 'bg-red-700' : 'bg-yellow-700'} px-1.5 py-0.5 rounded text-xs ml-1">${regime.toUpperCase()}</span>` : '';
 
             // Fundamentals summary
             const fund = signal.fundamentals;
@@ -691,9 +733,9 @@ class TravelerApp {
             row.innerHTML = `
                 <td class="px-4 py-3 text-gray-400">${index + 1}</td>
                 <td class="px-4 py-3 font-semibold text-blue-400">${displaySym}</td>
-                <td class="px-4 py-3"><span class="${stratBg} px-2 py-0.5 rounded text-xs font-medium">${strategyName}</span></td>
+                <td class="px-4 py-3"><span class="${stratBg} px-2 py-0.5 rounded text-xs font-medium">${baseStrategy}</span>${regimeBadge}</td>
                 <td class="px-4 py-3">${this.formatPrice(entryPrice)}</td>
-                <td class="px-4 py-3">${shares}</td>
+                <td class="px-4 py-3">${this.formatQty(shares)}</td>
                 <td class="px-4 py-3">${this.formatMoney(investAmount)}</td>
                 <td class="px-4 py-3">${allocationPct.toFixed(1)}%</td>
                 <td class="px-4 py-3 text-red-400">${this.formatMoney(riskAmount)}</td>
@@ -843,19 +885,20 @@ class TravelerApp {
 
     async runScan() {
         const capital = parseFloat(document.getElementById('capitalInput').value) || 200;
-        const minCapital = this.isKR() ? 100000 : 100;
-        const currLabel = this.isKR() ? '₩' : '$';
+        const minCapital = this.isKRW() ? 100000 : 100;
+        const currLabel = this.isKRW() ? '₩' : '$';
         if (capital < minCapital) {
             alert(`Minimum capital is ${currLabel}${minCapital.toLocaleString()}`);
             return;
         }
 
-        const scanLabel = this.isKR() ? 'KR Adaptive Multi-Strategy Scan' : 'Adaptive Multi-Strategy Scan';
+        const scanLabel = this.isCrypto() ? 'Crypto Volatility Breakout Scan'
+            : this.isKR() ? 'KR Adaptive Multi-Strategy Scan' : 'Adaptive Multi-Strategy Scan';
         this.showLoading(true, scanLabel, 'Starting...');
 
         try {
             // Fire-and-forget: start scan
-            const mq = this.isKR() ? `&market=kr` : '';
+            const mq = this.marketQuery('&');
             const startRes = await fetch(`/api/scan?capital=${capital}${mq}`, { method: 'POST' });
             const startData = await startRes.json();
 
@@ -868,7 +911,7 @@ class TravelerApp {
             }
 
             // Poll for progress
-            const statusMq = this.isKR() ? '?market=kr' : '';
+            const statusMq = this.marketQuery();
             this._scanPoll = setInterval(async () => {
                 try {
                     const res = await fetch('/api/scan/status' + statusMq);
@@ -910,20 +953,28 @@ class TravelerApp {
 
     async loadLastResult(noAutoSwitch = false) {
         try {
-            const mq = this.isKR() ? '?market=kr' : '';
+            const mq = this.marketQuery();
             let st = await fetch('/api/scan/status' + mq).then(r => r.json());
 
             // On initial page load only: if current market has no result, auto-switch
             if (!noAutoSwitch && st.status === 'idle') {
-                const otherMarket = this.isKR() ? 'us' : 'kr';
-                const otherMq = otherMarket === 'kr' ? '?market=kr' : '';
-                const otherSt = await fetch('/api/scan/status' + otherMq).then(r => r.json());
-                if (otherSt.status === 'done') {
-                    this.market = otherMarket;
-                    document.querySelectorAll('.market-btn').forEach(btn => {
-                        btn.classList.toggle('active', btn.dataset.market === otherMarket);
-                    });
-                    st = otherSt;
+                const otherMarkets = ['us', 'kr', 'crypto'].filter(m => m !== this.market);
+                for (const otherMarket of otherMarkets) {
+                    const otherMq = otherMarket === 'us' ? '' : `?market=${otherMarket}`;
+                    const otherSt = await fetch('/api/scan/status' + otherMq).then(r => r.json());
+                    if (otherSt.status === 'done') {
+                        this.market = otherMarket;
+                        document.querySelectorAll('.market-btn').forEach(btn => {
+                            btn.classList.toggle('active', btn.dataset.market === otherMarket);
+                            if (btn.dataset.market !== otherMarket) {
+                                btn.classList.add('text-gray-400');
+                            } else {
+                                btn.classList.remove('text-gray-400');
+                            }
+                        });
+                        st = otherSt;
+                        break;
+                    }
                 }
             }
 
@@ -932,9 +983,10 @@ class TravelerApp {
                 await this.fetchScanResult(capital);
             } else if (st.status === 'running') {
                 this.showLoading(true, 'Scan in progress', st.message || '');
+                const pollMq = this.marketQuery();
                 this._scanPoll = setInterval(async () => {
                     try {
-                        const poll = await fetch('/api/scan/status' + mq).then(r => r.json());
+                        const poll = await fetch('/api/scan/status' + pollMq).then(r => r.json());
                         const title = document.getElementById('loadingTitle');
                         const detail = document.getElementById('loadingDetail');
                         if (poll.status === 'running') {
@@ -950,7 +1002,7 @@ class TravelerApp {
                     } catch (err) { /* retry */ }
                 }, 2000);
             } else {
-                const marketLabel = this.isKR() ? 'KR' : 'US';
+                const marketLabel = this.isCrypto() ? 'Crypto' : this.isKR() ? 'KR' : 'US';
                 document.getElementById('scanMeta').textContent = `No ${marketLabel} scan result — click Scan to start`;
                 // Hide results but keep controls (scan button) visible
                 document.getElementById('summaryCards').classList.add('hidden');
@@ -965,7 +1017,7 @@ class TravelerApp {
     async fetchScanResult(capital) {
         try {
             // Fetch result for current market
-            const mq = this.isKR() ? '?market=kr' : '';
+            const mq = this.marketQuery();
             let res = await fetch('/api/scan/result' + mq);
             if (!res.ok) {
                 // No result for this market — clear UI
@@ -974,7 +1026,7 @@ class TravelerApp {
                 this.excluded.clear();
                 this.recalculate();
                 this.hideUI();
-                const label = this.isKR() ? 'KR' : 'US';
+                const label = this.isCrypto() ? 'Crypto' : this.isKR() ? 'KR' : 'US';
                 document.getElementById('scanMeta').textContent = `No ${label} scan result — click Scan to start`;
                 return;
             }
@@ -1034,7 +1086,7 @@ class TravelerApp {
     // ==================== HISTORY TAB ====================
     async loadTradeHistory() {
         try {
-            const mq = this.isKR() ? '?market=kr' : '';
+            const mq = this.marketQuery();
             const res = await fetch('/api/trade-history' + mq);
             const data = await res.json();
 
@@ -1205,14 +1257,24 @@ class TravelerApp {
     }
 
     formatMoney(amount) {
-        return this.isKR() ? this.formatKRW(amount) : this.formatUSD(amount);
+        return this.isKRW() ? this.formatKRW(amount) : this.formatUSD(amount);
     }
 
     formatPrice(price) {
-        if (this.isKR()) {
+        if (this.isKRW()) {
             return `₩${Math.round(price).toLocaleString()}`;
         }
         return `$${price.toFixed(2)}`;
+    }
+
+    formatQty(qty) {
+        if (this.isCrypto()) {
+            if (qty >= 100) return qty.toFixed(2);
+            if (qty >= 1) return qty.toFixed(4);
+            if (qty >= 0.0001) return qty.toFixed(6);
+            return qty.toFixed(8);
+        }
+        return Math.floor(qty).toString();
     }
 }
 

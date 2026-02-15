@@ -4,10 +4,15 @@
 *.dll
 *.so
 *.dylib
-traveler
+/traveler
 
 # Config with API keys
 config.yaml
+.env
+**/.env
+
+# Cross-compiled binaries
+traveler-linux-*
 
 # Test binary
 *.test

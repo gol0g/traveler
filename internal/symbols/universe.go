@@ -42,6 +42,9 @@ func AvailableUniverses() []UniverseInfo {
 		{UniverseKospi30, "KOSPI 30", "KOSPI 시총 상위 30", len(Kospi30Symbols)},
 		{UniverseKospi200, "KOSPI 200", "KOSPI 200 상위 100", len(Kospi200Symbols)},
 		{UniverseKosdaq30, "KOSDAQ 30", "KOSDAQ 시총 상위 30", len(Kosdaq30Symbols)},
+		// Crypto
+		{UniverseCryptoTop10, "Crypto Top 10", "Upbit KRW 거래량 상위 10 코인", len(CryptoTop10Symbols)},
+		{UniverseCryptoTop30, "Crypto Top 30", "Upbit KRW 거래량 상위 30 코인", len(CryptoTop30Symbols)},
 	}
 }
 
@@ -68,6 +71,10 @@ func GetUniverse(u Universe) []string {
 		return Kospi200Symbols
 	case UniverseKosdaq30:
 		return Kosdaq30Symbols
+	case UniverseCryptoTop10:
+		return CryptoTop10Symbols
+	case UniverseCryptoTop30:
+		return CryptoTop30Symbols
 	default:
 		return nil
 	}

@@ -43,7 +43,7 @@ func NewPositionSizer(cfg SizerConfig) *PositionSizer {
 // SizingResult 사이징 결과
 type SizingResult struct {
 	Symbol        string
-	Quantity      int
+	Quantity      float64
 	EntryPrice    float64
 	StopLoss      float64
 	Target        float64
@@ -113,10 +113,10 @@ func (p *PositionSizer) CalculateSize(sig *strategy.Signal) SizingResult {
 
 	// 6. Stop-distance 기반 수량 계산 (핵심!)
 	// qty = floor(riskBudget / stopDistance)
-	qtyByRisk := int(math.Floor(riskBudget / stopDistance))
+	qtyByRisk := math.Floor(riskBudget / stopDistance)
 
 	// 7. 최대 포지션 금액 기반 수량 제한
-	qtyByAllocation := int(math.Floor(maxPositionValue / g.EntryPrice))
+	qtyByAllocation := math.Floor(maxPositionValue / g.EntryPrice)
 
 	// 8. 둘 중 작은 값 선택
 	qty := qtyByRisk
@@ -130,8 +130,8 @@ func (p *PositionSizer) CalculateSize(sig *strategy.Signal) SizingResult {
 	}
 
 	result.Quantity = qty
-	result.InvestAmount = float64(qty) * g.EntryPrice
-	result.RiskAmount = float64(qty) * stopDistance
+	result.InvestAmount = qty * g.EntryPrice
+	result.RiskAmount = qty * stopDistance
 	result.RiskPct = result.RiskAmount / p.config.TotalCapital * 100
 	result.AllocationPct = result.InvestAmount / p.config.TotalCapital * 100
 
@@ -203,6 +203,33 @@ func (p *PositionSizer) ApplyToSignals(signals []strategy.Signal) []strategy.Sig
 	}
 
 	return sized
+}
+
+// AdjustConfigForCryptoBalance adjusts sizer config for crypto trading
+func AdjustConfigForCryptoBalance(balance float64) SizerConfig {
+	cfg := DefaultSizerConfig(balance)
+	cfg.CommissionRate = 0.001     // 0.1% (Upbit: 0.05% each side)
+	cfg.MinExpectedReturn = 0.005  // 0.5%
+
+	switch {
+	case balance < 100000: // 10만원 미만
+		cfg.RiskPerTrade = 0.03
+		cfg.MaxPositionPct = 0.30
+		cfg.MaxPositions = 3
+		cfg.MinRiskReward = 1.5
+	case balance < 1000000: // 100만원 미만
+		cfg.RiskPerTrade = 0.02
+		cfg.MaxPositionPct = 0.20
+		cfg.MaxPositions = 5
+		cfg.MinRiskReward = 1.5
+	default:
+		cfg.RiskPerTrade = 0.01
+		cfg.MaxPositionPct = 0.15
+		cfg.MaxPositions = 8
+		cfg.MinRiskReward = 2.0
+	}
+
+	return cfg
 }
 
 // AdjustForBalance 잔고에 맞게 설정 조정

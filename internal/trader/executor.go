@@ -58,8 +58,13 @@ func (e *Executor) Execute(ctx context.Context, signal strategy.Signal) Executio
 			Status:   "simulated",
 			Message:  "Dry-run mode - no actual order placed",
 		}
-		log.Printf("[DRY-RUN] %s %s %d shares @ $%.2f",
-			order.Side, order.Symbol, order.Quantity, order.LimitPrice)
+		if e.marketOrder {
+			log.Printf("[DRY-RUN] %s %s MARKET ₩%.0f",
+				order.Side, order.Symbol, order.Amount)
+		} else {
+			log.Printf("[DRY-RUN] %s %s %.0f shares @ $%.2f",
+				order.Side, order.Symbol, order.Quantity, order.LimitPrice)
+		}
 		return result
 	}
 
@@ -77,7 +82,7 @@ func (e *Executor) Execute(ctx context.Context, signal strategy.Signal) Executio
 }
 
 // ExecuteSell 매도 주문 실행
-func (e *Executor) ExecuteSell(ctx context.Context, symbol string, quantity int, reason string) (*broker.OrderResult, error) {
+func (e *Executor) ExecuteSell(ctx context.Context, symbol string, quantity float64, reason string) (*broker.OrderResult, error) {
 	order := broker.Order{
 		Symbol:   symbol,
 		Side:     broker.OrderSideSell,
@@ -86,7 +91,7 @@ func (e *Executor) ExecuteSell(ctx context.Context, symbol string, quantity int,
 	}
 
 	if e.config.DryRun {
-		log.Printf("[DRY-RUN] SELL %s %d shares (%s)", symbol, quantity, reason)
+		log.Printf("[DRY-RUN] SELL %s %.0f shares (%s)", symbol, quantity, reason)
 		return &broker.OrderResult{
 			OrderID:  "DRY-RUN",
 			Symbol:   symbol,
@@ -115,12 +120,19 @@ func (e *Executor) signalToOrder(signal strategy.Signal) (*broker.Order, error) 
 		orderType = broker.OrderTypeMarket
 	}
 
-	return &broker.Order{
+	order := &broker.Order{
 		Symbol:     signal.Stock.Symbol,
 		Side:       broker.OrderSideBuy,
 		Type:       orderType,
 		Quantity:   guide.PositionSize,
 		LimitPrice: guide.EntryPrice,
 		StopPrice:  guide.StopLoss,
-	}, nil
+	}
+
+	// 시장가 매수: KRW 투자금액 설정 (Upbit는 Amount 기반)
+	if e.marketOrder {
+		order.Amount = guide.PositionSize * guide.EntryPrice
+	}
+
+	return order, nil
 }

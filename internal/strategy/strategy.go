@@ -31,7 +31,7 @@ type TradeGuide struct {
 
 	// Position sizing
 	RiskRewardRatio float64 `json:"risk_reward_ratio"`
-	PositionSize    int     `json:"position_size"`
+	PositionSize    float64 `json:"position_size"`
 	InvestAmount    float64 `json:"invest_amount"`
 	RiskAmount      float64 `json:"risk_amount"`
 	RiskPct         float64 `json:"risk_pct"`        // Risk as % of portfolio

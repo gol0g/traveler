@@ -26,7 +26,8 @@ type Order struct {
 	Symbol     string
 	Side       OrderSide
 	Type       OrderType
-	Quantity   int
+	Quantity   float64
+	Amount     float64 // Upbit 시장가 매수 시 KRW 금액
 	LimitPrice float64 // limit 주문시 가격
 	StopPrice  float64 // stop loss 가격 (참고용)
 }
@@ -37,8 +38,8 @@ type OrderResult struct {
 	Symbol      string
 	Side        OrderSide
 	Type        OrderType
-	Quantity    int
-	FilledQty   int
+	Quantity    float64
+	FilledQty   float64
 	AvgPrice    float64
 	Status      string // submitted, filled, partial, rejected, cancelled
 	Message     string
@@ -50,7 +51,7 @@ type OrderResult struct {
 type Position struct {
 	Symbol        string
 	Name          string  // 종목명 (국내주식용)
-	Quantity      int
+	Quantity      float64
 	AvgCost       float64
 	CurrentPrice  float64
 	MarketValue   float64
@@ -73,8 +74,8 @@ type PendingOrder struct {
 	Symbol    string
 	Side      OrderSide
 	Type      OrderType
-	Quantity  int
-	FilledQty int
+	Quantity  float64
+	FilledQty float64
 	Price     float64
 	Status    string
 	CreatedAt time.Time

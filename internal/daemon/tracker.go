@@ -30,7 +30,7 @@ type TradeLog struct {
 	Timestamp   time.Time `json:"timestamp"`
 	Symbol      string    `json:"symbol"`
 	Side        string    `json:"side"` // "BUY" or "SELL"
-	Quantity    int       `json:"quantity"`
+	Quantity    float64   `json:"quantity"`
 	Price       float64   `json:"price"`
 	Amount      float64   `json:"amount"`
 	Commission  float64   `json:"commission"` // 수수료
@@ -325,7 +325,7 @@ TIME
 	if len(s.Trades) > 0 {
 		report += "TRADES\n------\n"
 		for i, trade := range s.Trades {
-			report += fmt.Sprintf("  %d. [%s] %s %s x%d @ $%.2f = $%.2f (%s)\n",
+			report += fmt.Sprintf("  %d. [%s] %s %s x%.4g @ $%.2f = $%.2f (%s)\n",
 				i+1,
 				trade.Timestamp.Format("15:04:05"),
 				trade.Side,

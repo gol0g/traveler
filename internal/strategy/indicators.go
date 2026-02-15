@@ -21,6 +21,7 @@ type Indicators struct {
 	BBWidth float64 // Bollinger Bandwidth
 
 	MA50Slope float64 // MA50 기울기 (5일전 대비 변화율%, 양수=상승)
+	MA20Slope float64 // MA20 기울기 (3일전 대비 변화율%, 양수=상승)
 }
 
 // CalculateMA calculates Simple Moving Average for the given period
@@ -155,6 +156,14 @@ func CalculateIndicators(candles []model.Candle) *Indicators {
 		}
 	}
 
+	// MA20 기울기: 현재 MA20 vs 3일전 MA20
+	if len(candles) >= 23 && ind.MA20 > 0 {
+		prevMA20 := CalculateMA(candles[:len(candles)-3], 20)
+		if prevMA20 > 0 {
+			ind.MA20Slope = (ind.MA20 - prevMA20) / prevMA20 * 100
+		}
+	}
+
 	return ind
 }
 
@@ -198,12 +207,5 @@ func CalculatePriorBBWidth(candles []model.Candle, period int, stdDev float64, o
 
 // Helper function for square root
 func sqrt(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	z := x / 2
-	for i := 0; i < 10; i++ {
-		z = (z + x/z) / 2
-	}
-	return z
+	return math.Sqrt(x)
 }

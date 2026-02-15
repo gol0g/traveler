@@ -50,17 +50,29 @@ type Server struct {
 	brokerKR   broker.Broker
 	providerKR provider.Provider
 
-	scan         scanState
-	scanKR       scanState
-	scanMu       sync.RWMutex
-	scanCancel   context.CancelFunc
-	scanKRCancel context.CancelFunc
+	// 크립토 시장 지원
+	brokerCrypto   broker.Broker
+	providerCrypto provider.Provider
+
+	scan             scanState
+	scanKR           scanState
+	scanCrypto       scanState
+	scanMu           sync.RWMutex
+	scanCancel       context.CancelFunc
+	scanKRCancel     context.CancelFunc
+	scanCryptoCancel context.CancelFunc
 }
 
 // SetKoreanMarket 국내 시장 브로커/Provider 설정
 func (s *Server) SetKoreanMarket(b broker.Broker, p provider.Provider) {
 	s.brokerKR = b
 	s.providerKR = p
+}
+
+// SetCryptoMarket 크립토 시장 브로커/Provider 설정
+func (s *Server) SetCryptoMarket(b broker.Broker, p provider.Provider) {
+	s.brokerCrypto = b
+	s.providerCrypto = p
 }
 
 // NewServer creates a new web server
@@ -173,10 +185,14 @@ func (s *Server) updateScanKRProgress(message string, scanned, found int) {
 func (s *Server) getScanState(market string) scanState {
 	s.scanMu.RLock()
 	defer s.scanMu.RUnlock()
-	if market == "kr" {
+	switch market {
+	case "kr":
 		return s.scanKR
+	case "crypto":
+		return s.scanCrypto
+	default:
+		return s.scan
 	}
-	return s.scan
 }
 
 // handleScanStatus returns current scan state (for polling)
@@ -256,11 +272,16 @@ func (s *Server) tryLoadFromDisk(market string) json.RawMessage {
 	}
 	// 메모리에 캐시
 	s.scanMu.Lock()
-	if market == "kr" {
+	switch market {
+	case "kr":
 		s.scanKR.Status = "done"
 		s.scanKR.Result = data
 		s.scanKR.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
-	} else {
+	case "crypto":
+		s.scanCrypto.Status = "done"
+		s.scanCrypto.Result = data
+		s.scanCrypto.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+	default:
 		s.scan.Status = "done"
 		s.scan.Result = data
 		s.scan.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
@@ -274,10 +295,14 @@ func (s *Server) scanResultPath(market string) string {
 	if s.dataDir == "" {
 		return ""
 	}
-	if market == "kr" {
+	switch market {
+	case "kr":
 		return filepath.Join(s.dataDir, "last_scan_kr.json")
+	case "crypto":
+		return filepath.Join(s.dataDir, "last_scan_crypto.json")
+	default:
+		return filepath.Join(s.dataDir, "last_scan_us.json")
 	}
-	return filepath.Join(s.dataDir, "last_scan_us.json")
 }
 
 func (s *Server) saveScanResultToDisk(data json.RawMessage, market string) {
@@ -291,8 +316,8 @@ func (s *Server) saveScanResultToDisk(data json.RawMessage, market string) {
 }
 
 func (s *Server) loadScanResultFromDisk() {
-	// Load both US and KR results — store them separately
-	for _, market := range []string{"us", "kr"} {
+	// Load US, KR, and crypto results — store them separately
+	for _, market := range []string{"us", "kr", "crypto"} {
 		path := s.scanResultPath(market)
 		if path == "" {
 			continue
@@ -308,12 +333,18 @@ func (s *Server) loadScanResultFromDisk() {
 		if time.Since(info.ModTime()) > 24*time.Hour {
 			continue
 		}
-		if market == "kr" {
+		switch market {
+		case "kr":
 			s.scanKR.Status = "done"
 			s.scanKR.Result = data
 			s.scanKR.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
 			log.Printf("[WEB] Loaded KR scan result from %s", path)
-		} else {
+		case "crypto":
+			s.scanCrypto.Status = "done"
+			s.scanCrypto.Result = data
+			s.scanCrypto.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+			log.Printf("[WEB] Loaded Crypto scan result from %s", path)
+		default:
 			s.scan.Status = "done"
 			s.scan.Result = data
 			s.scan.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))

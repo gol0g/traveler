@@ -84,6 +84,21 @@ func init() {
 	Register("oversold", func(p provider.Provider) Strategy {
 		return NewOversoldStrategy(DefaultOversoldConfig(), p)
 	})
+	Register("volatility-breakout", func(p provider.Provider) Strategy {
+		return NewVolatilityBreakoutStrategy(DefaultVolatilityBreakoutConfig(), p)
+	})
+	Register("range-trading", func(p provider.Provider) Strategy {
+		return NewRangeTradingStrategy(p)
+	})
+	Register("rsi-contrarian", func(p provider.Provider) Strategy {
+		return NewRSIContrarianStrategy(p, 25)
+	})
+	Register("volume-spike", func(p provider.Provider) Strategy {
+		return NewVolumeSpikeStrategy(p)
+	})
+	Register("crypto-meta", func(p provider.Provider) Strategy {
+		return NewCryptoMetaStrategy(p)
+	})
 }
 
 // StrategyInfo 전략 정보

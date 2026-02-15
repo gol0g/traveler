@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"traveler/internal/broker"
 	"traveler/internal/provider"
 	"traveler/internal/strategy"
 	"traveler/internal/symbols"
@@ -102,9 +104,34 @@ type UniverseInfo struct {
 	Count int    `json:"count"`
 }
 
+// getBrokerForMarket returns the broker for the given market
+func (s *Server) getBrokerForMarket(market string) broker.Broker {
+	switch market {
+	case "kr":
+		return s.brokerKR
+	case "crypto":
+		return s.brokerCrypto
+	default:
+		return s.broker
+	}
+}
+
+// getProviderForMarket returns the provider for the given market
+func (s *Server) getProviderForMarket(market string) provider.Provider {
+	switch market {
+	case "kr":
+		return s.providerKR
+	case "crypto":
+		return s.providerCrypto
+	default:
+		return s.provider
+	}
+}
+
 // webStockLoader implements trader.StockLoader for web scanning
 type webStockLoader struct {
 	korean bool // true이면 한국 유니버스에서 종목명 적용
+	crypto bool // true이면 크립토 유니버스에서 종목명 적용
 }
 
 func (l *webStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe) ([]model.Stock, error) {
@@ -117,6 +144,8 @@ func (l *webStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe) (
 		name := sym
 		if l.korean {
 			name = symbols.GetKRSymbolName(sym)
+		} else if l.crypto {
+			name = symbols.GetCryptoSymbolName(sym)
 		}
 		stocks[i] = model.Stock{Symbol: sym, Name: name}
 	}
@@ -139,9 +168,12 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// Check if scan already running for this market
 	s.scanMu.RLock()
 	running := false
-	if market == "kr" {
+	switch market {
+	case "kr":
 		running = s.scanKR.Status == "running"
-	} else {
+	case "crypto":
+		running = s.scanCrypto.Status == "running"
+	default:
 		running = s.scan.Status == "running"
 	}
 	s.scanMu.RUnlock()
@@ -162,14 +194,22 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// Init scan state per market
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	s.scanMu.Lock()
-	if market == "kr" {
+	switch market {
+	case "kr":
 		s.scanKRCancel = cancel
 		s.scanKR = scanState{
 			Status:    "running",
 			Message:   "Starting KR adaptive scan...",
 			StartedAt: time.Now(),
 		}
-	} else {
+	case "crypto":
+		s.scanCryptoCancel = cancel
+		s.scanCrypto = scanState{
+			Status:    "running",
+			Message:   "Starting crypto scan...",
+			StartedAt: time.Now(),
+		}
+	default:
 		s.scanCancel = cancel
 		s.scan = scanState{
 			Status:    "running",
@@ -179,10 +219,14 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.scanMu.Unlock()
 
-	if market == "kr" {
+	switch market {
+	case "kr":
 		log.Printf("[WEB] KR scan starting (capital=₩%.0f)", capital)
 		go s.runKRScanAsync(ctx, cancel, capital)
-	} else {
+	case "crypto":
+		log.Printf("[WEB] Crypto scan starting (capital=₩%.0f)", capital)
+		go s.runCryptoScanAsync(ctx, cancel, capital)
+	default:
 		log.Printf("[WEB] Adaptive scan starting (capital=$%.2f)", capital)
 		go s.runScanAsync(ctx, cancel, capital)
 	}
@@ -509,6 +553,141 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 	s.saveScanResultToDisk(respJSON, "kr")
 }
 
+// updateScanCryptoProgress thread-safely updates crypto scan progress
+func (s *Server) updateScanCryptoProgress(message string, scanned, found int) {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	s.scanCrypto.Message = message
+	s.scanCrypto.Scanned = scanned
+	s.scanCrypto.Found = found
+}
+
+// runCryptoScanAsync runs crypto market scan in background
+func (s *Server) runCryptoScanAsync(ctx context.Context, cancel context.CancelFunc, capital float64) {
+	defer cancel()
+	startTime := time.Now()
+
+	if s.providerCrypto == nil {
+		s.scanMu.Lock()
+		s.scanCrypto.Status = "error"
+		s.scanCrypto.Error = "Crypto provider not configured"
+		s.scanMu.Unlock()
+		return
+	}
+
+	cachedProvider := provider.NewCachingProvider(s.providerCrypto, 50)
+	totalScanned := 0
+	totalFound := 0
+
+	// Crypto: regime-aware meta strategy (Bull→VolatilityBreakout, Sideways→RangeTrading, Bear→skip)
+	meta := strategy.NewCryptoMetaStrategy(cachedProvider)
+	strategies := []strategy.Strategy{meta}
+
+	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
+		var signals []strategy.Signal
+		for i, stock := range stocks {
+			select {
+			case <-ctx.Done():
+				return signals, ctx.Err()
+			default:
+			}
+
+			stockCtx, stockCancel := context.WithTimeout(ctx, 15*time.Second)
+			var best *strategy.Signal
+			for _, strat := range strategies {
+				sig, err := strat.Analyze(stockCtx, stock)
+				if err == nil && sig != nil {
+					if best == nil || sig.Strength > best.Strength {
+						best = sig
+					}
+				}
+			}
+			stockCancel()
+
+			if best != nil {
+				signals = append(signals, *best)
+				totalFound++
+			}
+			totalScanned++
+			s.updateScanCryptoProgress(
+				fmt.Sprintf("Scanning Crypto %d/%d symbols...", i+1, len(stocks)),
+				totalScanned, totalFound,
+			)
+		}
+		return signals, nil
+	}
+
+	sizerCfg := trader.AdjustConfigForCryptoBalance(capital)
+	adaptiveCfg := trader.DefaultAdaptiveConfig()
+	adaptiveCfg.Verbose = true
+
+	scanner := trader.NewAdaptiveScanner(adaptiveCfg, sizerCfg, scanFunc)
+	scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+		return trader.GetCryptoUniverseTiers(balance)
+	})
+
+	result, err := scanner.Scan(ctx, &webStockLoader{crypto: true})
+	if err != nil {
+		log.Printf("[WEB] Crypto Scan error: %v", err)
+		s.scanMu.Lock()
+		s.scanCrypto.Status = "error"
+		s.scanCrypto.Error = err.Error()
+		s.scanMu.Unlock()
+		return
+	}
+
+	s.updateScanCryptoProgress("Applying position sizing...", totalScanned, totalFound)
+
+	sizer := trader.NewPositionSizer(sizerCfg)
+	sized := sizer.ApplyToSignals(result.Signals)
+	if len(sized) > 10 {
+		sized = sized[:10]
+	}
+
+	s.updateScanCryptoProgress("Loading chart data...", totalScanned, totalFound)
+
+	var signals []SignalWithChart
+	var totalInvest, totalRisk float64
+	for _, sig := range sized {
+		candles, _ := cachedProvider.GetDailyCandles(ctx, sig.Stock.Symbol, 100)
+		swc := SignalWithChart{Signal: sig, Candles: candles}
+		signals = append(signals, swc)
+		if sig.Guide != nil {
+			totalInvest += sig.Guide.InvestAmount
+			totalRisk += sig.Guide.RiskAmount
+		}
+	}
+
+	scanTime := time.Since(startTime)
+	log.Printf("[WEB] Crypto Scan complete: %d signals from %v in %s",
+		len(signals), result.UniversesUsed, scanTime.Round(time.Second))
+
+	resp := ScanResponse{
+		Strategy:      "multi-crypto",
+		TotalScanned:  result.ScannedCount,
+		SignalsFound:  len(signals),
+		Signals:       signals,
+		ScanTime:      scanTime.Round(time.Second).String(),
+		Capital:       capital,
+		TotalInvest:   totalInvest,
+		TotalRisk:     totalRisk,
+		UniversesUsed: result.UniversesUsed,
+		Decision:      result.Decision,
+		Expansions:    result.Expansions,
+		AvgProb:       result.Quality.AvgProb,
+	}
+
+	respJSON, _ := json.Marshal(resp)
+
+	s.scanMu.Lock()
+	s.scanCrypto.Status = "done"
+	s.scanCrypto.Message = fmt.Sprintf("Crypto Complete: %d signals in %s", len(signals), scanTime.Round(time.Second))
+	s.scanCrypto.Result = respJSON
+	s.scanMu.Unlock()
+
+	s.saveScanResultToDisk(respJSON, "crypto")
+}
+
 // handleSignals returns current cached signals (used for file-based reports)
 func (s *Server) handleSignals(w http.ResponseWriter, r *http.Request) {
 	// This endpoint is for returning cached/stored signals
@@ -541,9 +720,11 @@ func (s *Server) handleStock(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Use KR provider for Korean symbols
+	// Use appropriate provider for symbol type
 	prov := s.provider
-	if symbols.IsKoreanSymbol(symbol) && s.providerKR != nil {
+	if symbols.IsCryptoSymbol(symbol) && s.providerCrypto != nil {
+		prov = s.providerCrypto
+	} else if symbols.IsKoreanSymbol(symbol) && s.providerKR != nil {
 		prov = s.providerKR
 	}
 
@@ -556,18 +737,29 @@ func (s *Server) handleStock(w http.ResponseWriter, r *http.Request) {
 
 	// Try to get signal
 	stockName := symbol
-	if symbols.IsKoreanSymbol(symbol) {
+	if symbols.IsCryptoSymbol(symbol) {
+		stockName = symbols.GetCryptoSymbolName(symbol)
+	} else if symbols.IsKoreanSymbol(symbol) {
 		stockName = symbols.GetKRSymbolName(symbol)
 	}
 	stock := model.Stock{Symbol: symbol, Name: stockName}
-	pullbackCfg := strategy.DefaultPullbackConfig()
-	if symbols.IsKoreanSymbol(symbol) {
-		pullbackCfg.MarketRegimeSymbol = "069500"
+
+	var signal *strategy.Signal
+	if symbols.IsCryptoSymbol(symbol) {
+		// Crypto: use regime-aware meta strategy
+		strat := strategy.NewCryptoMetaStrategy(prov)
+		signal, _ = strat.Analyze(ctx, stock)
 	} else {
-		pullbackCfg.MarketRegimeSymbol = "SPY"
+		// Stock: use pullback
+		pullbackCfg := strategy.DefaultPullbackConfig()
+		if symbols.IsKoreanSymbol(symbol) {
+			pullbackCfg.MarketRegimeSymbol = "069500"
+		} else {
+			pullbackCfg.MarketRegimeSymbol = "SPY"
+		}
+		strat := strategy.NewPullbackStrategy(pullbackCfg, prov)
+		signal, _ = strat.Analyze(ctx, stock)
 	}
-	strat := strategy.NewPullbackStrategy(pullbackCfg, prov)
-	signal, _ := strat.Analyze(ctx, stock)
 
 	resp := StockResponse{
 		Symbol:  symbol,
@@ -622,8 +814,8 @@ func (s *Server) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 				g := activeSignals[i].Guide
 				riskPerShare := g.EntryPrice - g.StopLoss
 				if riskPerShare > 0 {
-					sharesByRisk := int(riskPerPosition / riskPerShare)
-					sharesByAllocation := int(allocationPerPosition / g.EntryPrice)
+					sharesByRisk := math.Floor(riskPerPosition / riskPerShare)
+					sharesByAllocation := math.Floor(allocationPerPosition / g.EntryPrice)
 					g.PositionSize = sharesByRisk
 					if sharesByAllocation < sharesByRisk {
 						g.PositionSize = sharesByAllocation
@@ -631,8 +823,8 @@ func (s *Server) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 					if g.PositionSize < 1 {
 						g.PositionSize = 1
 					}
-					g.InvestAmount = float64(g.PositionSize) * g.EntryPrice
-					g.RiskAmount = float64(g.PositionSize) * riskPerShare
+					g.InvestAmount = g.PositionSize * g.EntryPrice
+					g.RiskAmount = g.PositionSize * riskPerShare
 					g.RiskPct = g.RiskAmount / req.Capital * 100
 					g.AllocationPct = g.InvestAmount / req.Capital * 100
 
@@ -681,7 +873,7 @@ func (s *Server) handleUniverses(w http.ResponseWriter, r *http.Request) {
 type PositionResponse struct {
 	Symbol        string  `json:"symbol"`
 	Name          string  `json:"name,omitempty"`
-	Quantity      int     `json:"quantity"`
+	Quantity      float64 `json:"quantity"`
 	AvgCost       float64 `json:"avg_cost"`
 	CurrentPrice  float64 `json:"current_price"`
 	MarketValue   float64 `json:"market_value"`
@@ -717,8 +909,8 @@ type OrderResponse struct {
 	Symbol    string  `json:"symbol"`
 	Side      string  `json:"side"`
 	Type      string  `json:"type"`
-	Quantity  int     `json:"quantity"`
-	FilledQty int     `json:"filled_qty"`
+	Quantity  float64 `json:"quantity"`
+	FilledQty float64 `json:"filled_qty"`
 	Price     float64 `json:"price"`
 	Status    string  `json:"status"`
 	CreatedAt string  `json:"created_at"`
@@ -732,10 +924,7 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	market := r.URL.Query().Get("market")
-	b := s.broker
-	if market == "kr" {
-		b = s.brokerKR
-	}
+	b := s.getBrokerForMarket(market)
 
 	if b == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -812,10 +1001,7 @@ func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	market := r.URL.Query().Get("market")
-	b := s.broker
-	if market == "kr" {
-		b = s.brokerKR
-	}
+	b := s.getBrokerForMarket(market)
 
 	if b == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -852,10 +1038,7 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	market := r.URL.Query().Get("market")
-	b := s.broker
-	if market == "kr" {
-		b = s.brokerKR
-	}
+	b := s.getBrokerForMarket(market)
 
 	if b == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -924,10 +1107,12 @@ func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
 	s.history.Reload()
 
 	records := s.history.GetAll(market)
-	// KR 종목명 보강
+	// 종목명 보강
 	for i := range records {
 		if records[i].Name == "" {
-			if n := symbols.GetKRSymbolName(records[i].Symbol); n != "" {
+			if symbols.IsCryptoSymbol(records[i].Symbol) {
+				records[i].Name = symbols.GetCryptoSymbolName(records[i].Symbol)
+			} else if n := symbols.GetKRSymbolName(records[i].Symbol); n != "" {
 				records[i].Name = n
 			}
 		}

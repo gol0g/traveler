@@ -228,7 +228,7 @@ func (c *Client) placeOverseasOrder(ctx context.Context, order broker.Order) (*b
 		ACNT:            acnt,
 		OVRS_EXCG_CD:    orderExch,
 		PDNO:            order.Symbol,
-		ORD_QTY:         fmt.Sprintf("%d", order.Quantity),
+		ORD_QTY:         fmt.Sprintf("%.0f", order.Quantity),
 		OVRS_ORD_UNPR:   price,
 		ORD_SVR_DVSN_CD: "0",
 		ORD_DVSN:        ordDvsn,
@@ -286,7 +286,7 @@ func (c *Client) placeDomesticOrder(ctx context.Context, order broker.Order) (*b
 		ACNT:     acnt,
 		PDNO:     order.Symbol,
 		ORD_DVSN: ordDvsn,
-		ORD_QTY:  fmt.Sprintf("%d", order.Quantity),
+		ORD_QTY:  fmt.Sprintf("%.0f", order.Quantity),
 		ORD_UNPR: price,
 	}
 
@@ -417,7 +417,7 @@ func (c *Client) getOverseasBalance(ctx context.Context) (*broker.AccountBalance
 
 		pos := broker.Position{
 			Symbol:        p.OVRS_PDNO,
-			Quantity:      int(qty),
+			Quantity:      qty,
 			AvgCost:       avgCost,
 			CurrentPrice:  currentPrice,
 			MarketValue:   marketValue,
@@ -533,8 +533,8 @@ func (c *Client) getOverseasPendingOrders(ctx context.Context) ([]broker.Pending
 			Symbol:    o.PDNO,
 			Side:      side,
 			Type:      broker.OrderTypeLimit,
-			Quantity:  int(parseFloat(o.FT_ORD_QTY)),
-			FilledQty: int(parseFloat(o.FT_ORD_QTY) - parseFloat(o.NCCS_QTY)),
+			Quantity:  parseFloat(o.FT_ORD_QTY),
+			FilledQty: parseFloat(o.FT_ORD_QTY) - parseFloat(o.NCCS_QTY),
 			Price:     parseFloat(o.FT_ORD_UNPR3),
 			Status:    "pending",
 		})
@@ -642,7 +642,7 @@ func (c *Client) getDomesticBalance(ctx context.Context) (*broker.AccountBalance
 		pos := broker.Position{
 			Symbol:        p.PDNO,
 			Name:          p.PRDT_NAME,
-			Quantity:      int(qty),
+			Quantity:      qty,
 			AvgCost:       avgCost,
 			CurrentPrice:  currentPrice,
 			MarketValue:   marketValue,
@@ -699,8 +699,8 @@ func (c *Client) getDomesticPendingOrders(ctx context.Context) ([]broker.Pending
 			side = broker.OrderSideSell
 		}
 
-		totalQty := int(parseFloat(o.ORD_QTY))
-		remainQty := int(parseFloat(o.RMNN_QTY))
+		totalQty := parseFloat(o.ORD_QTY)
+		remainQty := parseFloat(o.RMNN_QTY)
 
 		orders = append(orders, broker.PendingOrder{
 			OrderID:   o.ODNO,

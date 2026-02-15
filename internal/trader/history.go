@@ -8,8 +8,20 @@ import (
 	"time"
 )
 
-// DefaultCommissionRate 기본 수수료율 (0.25%)
+// DefaultCommissionRate 기본 수수료율 (0.25% — US stocks)
 const DefaultCommissionRate = 0.0025
+
+// CommissionRateByMarket 마켓별 수수료율 (편도)
+func CommissionRateByMarket(market string) float64 {
+	switch market {
+	case "crypto":
+		return 0.0005 // 0.05% (Upbit)
+	case "kr":
+		return 0.0025 // 0.25% (KIS domestic)
+	default:
+		return 0.0025 // 0.25% (KIS overseas)
+	}
+}
 
 // TradeRecord 개별 매매 기록
 type TradeRecord struct {
@@ -18,7 +30,7 @@ type TradeRecord struct {
 	Symbol     string    `json:"symbol"`
 	Name       string    `json:"name,omitempty"`
 	Side       string    `json:"side"`                 // "buy" or "sell"
-	Quantity   int       `json:"quantity"`
+	Quantity   float64   `json:"quantity"`
 	Price      float64   `json:"price"`                // 체결가
 	Amount     float64   `json:"amount"`               // 총액
 	Commission float64   `json:"commission"`
@@ -117,10 +129,10 @@ func (h *TradeHistory) Append(rec TradeRecord) error {
 		rec.Timestamp = time.Now()
 	}
 	if rec.Amount == 0 {
-		rec.Amount = float64(rec.Quantity) * rec.Price
+		rec.Amount = rec.Quantity * rec.Price
 	}
 	if rec.Commission == 0 {
-		rec.Commission = rec.Amount * DefaultCommissionRate
+		rec.Commission = rec.Amount * CommissionRateByMarket(rec.Market)
 	}
 
 	h.records = append(h.records, rec)

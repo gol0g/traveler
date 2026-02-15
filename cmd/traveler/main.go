@@ -21,7 +21,9 @@ import (
 
 	"traveler/internal/analyzer"
 	"traveler/internal/backtest"
+	"traveler/internal/broker"
 	"traveler/internal/broker/kis"
+	"traveler/internal/broker/upbit"
 	"traveler/internal/config"
 	"traveler/internal/daemon"
 	"traveler/internal/provider"
@@ -65,6 +67,7 @@ var (
 	dailyLossLimit  float64 // 일일 최대 손실
 	sleepOnExit     bool    // 종료시 PC 절전
 	dataDir         string  // 데이터 디렉토리 (plans, logs, reports)
+	tradingCapital  float64 // 자동매매 전용 자본 (0=전체 잔고)
 	marketFlag      string  // 시장: us, kr
 	forceScan       bool    // 강제 스캔 (이미 매매했어도)
 )
@@ -117,7 +120,8 @@ Examples:
 	rootCmd.Flags().Float64Var(&dailyLossLimit, "daily-loss-limit", -2.0, "daily loss limit percentage")
 	rootCmd.Flags().BoolVar(&sleepOnExit, "sleep-on-exit", true, "sleep PC when daemon exits")
 	rootCmd.Flags().StringVar(&dataDir, "data-dir", "", "data directory for plans, logs, reports (default: ~/.traveler)")
-	rootCmd.Flags().StringVar(&marketFlag, "market", "us", "market: us, kr")
+	rootCmd.Flags().StringVar(&marketFlag, "market", "us", "market: us, kr, crypto")
+	rootCmd.Flags().Float64Var(&tradingCapital, "trading-capital", 0, "earmarked trading capital for daemon (0=use full balance)")
 	rootCmd.Flags().BoolVar(&forceScan, "force-scan", false, "force scan even if already traded today")
 
 	if err := rootCmd.Execute(); err != nil {
@@ -282,6 +286,35 @@ func resolveDataDir() string {
 	return ".traveler"
 }
 
+// loadEnvFile loads .env file from ~/.traveler/.env if it exists
+func loadEnvFile() {
+	dir := resolveDataDir()
+	envPath := filepath.Join(dir, ".env")
+	f, err := os.Open(envPath)
+	if err != nil {
+		return // no .env file, that's fine
+	}
+	defer f.Close()
+
+	envScanner := bufio.NewScanner(f)
+	for envScanner.Scan() {
+		line := strings.TrimSpace(envScanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		// Don't override existing env vars
+		if os.Getenv(key) == "" {
+			os.Setenv(key, value)
+		}
+	}
+}
+
 // setupLogging configures log output to both stdout and a log file
 func setupLogging(dir string) (*os.File, error) {
 	os.MkdirAll(dir, 0755)
@@ -297,9 +330,12 @@ func setupLogging(dir string) (*os.File, error) {
 }
 
 func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
+	isCrypto := marketFlag == "crypto"
 	isKR := marketFlag == "kr"
 	marketLabel := "US"
-	if isKR {
+	if isCrypto {
+		marketLabel = "CRYPTO"
+	} else if isKR {
 		marketLabel = "KR"
 	}
 
@@ -308,10 +344,19 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	fmt.Println("=" + strings.Repeat("=", 59))
 	fmt.Println()
 
-	var broker *kis.Client
+	var daemonBroker broker.Broker
 	var daemonProvider provider.Provider = p
 
-	if isKR {
+	if isCrypto {
+		// 크립토 시장 모드
+		loadEnvFile()
+		upbitBroker := upbit.NewClient()
+		if !upbitBroker.IsReady() {
+			return fmt.Errorf("Upbit API credentials required for crypto daemon mode (set UPBIT_ACCESS_KEY/UPBIT_SECRET_KEY)")
+		}
+		daemonBroker = upbitBroker
+		daemonProvider = provider.NewUpbitProvider()
+	} else if isKR {
 		// 국내 시장 모드
 		if cfg.KIS.Domestic.AppKey == "" {
 			return fmt.Errorf("KIS domestic credentials required for KR daemon mode")
@@ -321,7 +366,7 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 			AppSecret: cfg.KIS.Domestic.AppSecret,
 			AccountNo: cfg.KIS.Domestic.AccountNo,
 		}
-		broker = kis.NewDomesticClient(krCreds)
+		daemonBroker = kis.NewDomesticClient(krCreds)
 		daemonProvider = provider.NewKISProvider(krCreds)
 	} else {
 		// 해외 시장 모드
@@ -333,11 +378,11 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 			AppSecret: cfg.KIS.AppSecret,
 			AccountNo: cfg.KIS.AccountNo,
 		}
-		broker = kis.NewClient(creds)
+		daemonBroker = kis.NewClient(creds)
 	}
 
-	if !broker.IsReady() {
-		return fmt.Errorf("KIS broker not ready")
+	if !daemonBroker.IsReady() {
+		return fmt.Errorf("broker not ready")
 	}
 	_ = daemonProvider // used below
 
@@ -359,25 +404,46 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	daemonCfg.SleepOnExit = sleepOnExit
 	daemonCfg.ForceScan = forceScan
 	daemonCfg.DataDir = resolvedDir
+	daemonCfg.TradingCapital = tradingCapital
 
 	fmt.Printf(" Daily Target:    %.1f%%\n", dailyTargetPct)
 	fmt.Printf(" Daily Loss Limit: %.1f%%\n", dailyLossLimit)
 	fmt.Printf(" Sleep on Exit:   %v\n", sleepOnExit)
+	if tradingCapital > 0 {
+		fmt.Printf(" Trading Capital: ₩%.0f (earmarked)\n", tradingCapital)
+	}
 	fmt.Println()
 
 	// 데몬 생성 및 실행
-	if isKR {
+	if isCrypto {
+		daemonCfg.Market = "crypto"
+		daemonCfg.SleepOnExit = false // 24/7 시장
+	} else if isKR {
 		daemonCfg.Market = "kr"
 	} else {
 		daemonCfg.Market = "us"
 	}
-	d := daemon.NewDaemon(daemonCfg, broker, daemonProvider)
+	d := daemon.NewDaemon(daemonCfg, daemonBroker, daemonProvider)
 
 	// --web 플래그가 함께 있으면 웹 서버를 백그라운드로 시작
 	if webMode {
 		log.Printf("[DAEMON] Starting web server on port %d", webPort)
-		server := web.NewServer(cfg, p, accountBalance, universe, broker, resolvedDir)
-		if !isKR && cfg.KIS.Domestic.AppKey != "" {
+		// US broker for web (may be nil if running crypto-only mode)
+		var webKISBroker broker.Broker
+		if cfg.KIS.AppKey != "" {
+			creds := kis.Credentials{
+				AppKey:    cfg.KIS.AppKey,
+				AppSecret: cfg.KIS.AppSecret,
+				AccountNo: cfg.KIS.AccountNo,
+			}
+			client := kis.NewClient(creds)
+			if client.IsReady() {
+				webKISBroker = client
+			}
+		}
+		server := web.NewServer(cfg, p, accountBalance, universe, webKISBroker, resolvedDir)
+		// KR market
+		if cfg.KIS.Domestic.AppKey != "" {
 			krCreds := kis.Credentials{
 				AppKey:    cfg.KIS.Domestic.AppKey,
 				AppSecret: cfg.KIS.Domestic.AppSecret,
@@ -389,6 +455,13 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 				server.SetKoreanMarket(krBroker, krProvider)
 				log.Printf("[DAEMON] KR market connected for web UI")
 			}
+		}
+		// Crypto market
+		loadEnvFile()
+		cryptoBroker := upbit.NewClient()
+		if cryptoBroker.IsReady() {
+			server.SetCryptoMarket(cryptoBroker, provider.NewUpbitProvider())
+			log.Printf("[DAEMON] Crypto market connected for web UI")
 		}
 		go func() {
 			if err := server.Start(webPort); err != nil {
@@ -449,6 +522,14 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 			server.SetKoreanMarket(krBroker, krProvider)
 			fmt.Println("KIS Korean domestic broker connected")
 		}
+	}
+
+	// Create crypto market broker/provider
+	loadEnvFile()
+	cryptoBroker := upbit.NewClient()
+	if cryptoBroker.IsReady() {
+		server.SetCryptoMarket(cryptoBroker, provider.NewUpbitProvider())
+		fmt.Println("Upbit crypto broker connected")
 	}
 
 	go func() {
@@ -930,7 +1011,7 @@ func runPullbackBacktest(ctx context.Context, symbol string, p provider.Provider
 	}
 
 	fmt.Printf("Running single-stock backtest for %s (%d days)...\n", symbol, backtestDays)
-	fmt.Println("TIP: Use --universe sp500 for full portfolio simulation with automatic stock discovery\n")
+	fmt.Println("TIP: Use --universe sp500 for full portfolio simulation with automatic stock discovery")
 
 	cfg := backtest.DefaultBacktestConfig()
 	cfg.InitialCapital = accountBalance
@@ -1164,7 +1245,7 @@ func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime ti
 			fmt.Sprintf("%d", i+1),
 			s.Stock.Symbol,
 			fmt.Sprintf("$%.2f", g.EntryPrice),
-			fmt.Sprintf("%d", g.PositionSize),
+			fmt.Sprintf("%.0f", g.PositionSize),
 			formatUSD(g.InvestAmount),
 			fmt.Sprintf("%.1f%%", g.AllocationPct),
 			formatUSD(g.RiskAmount),
@@ -1191,7 +1272,7 @@ func outputSignalsTable(signals []strategy.Signal, totalScanned int, scanTime ti
 
 			// Entry/Exit Guide
 			fmt.Println("\n  [ENTRY]")
-			fmt.Printf("    Buy %d shares @ $%.2f = %s\n", g.PositionSize, g.EntryPrice, formatUSD(g.InvestAmount))
+			fmt.Printf("    Buy %.0f shares @ $%.2f = %s\n", g.PositionSize, g.EntryPrice, formatUSD(g.InvestAmount))
 			fmt.Printf("    Allocation: %.1f%% of portfolio\n", g.AllocationPct)
 
 			fmt.Println("\n  [EXIT - Stop Loss]")
@@ -1315,7 +1396,7 @@ func saveReport(filename string, signals []strategy.Signal, capital float64, tot
 	fmt.Fprintf(f, "%s\n", strings.Repeat("-", 60))
 	for i, s := range signals {
 		if s.Guide != nil {
-			fmt.Fprintf(f, "%-6d %-10s $%-7.2f %-8d %-10s %-10s\n",
+			fmt.Fprintf(f, "%-6d %-10s $%-7.2f %-8.0f %-10s %-10s\n",
 				i+1, s.Stock.Symbol, s.Guide.EntryPrice, s.Guide.PositionSize,
 				formatUSD(s.Guide.InvestAmount), formatUSD(s.Guide.RiskAmount))
 		}
@@ -1335,7 +1416,7 @@ func saveReport(filename string, signals []strategy.Signal, capital float64, tot
 		if s.Guide != nil {
 			g := s.Guide
 			fmt.Fprintf(f, "[ENTRY]\n")
-			fmt.Fprintf(f, "  Buy %d shares @ $%.2f = %s\n", g.PositionSize, g.EntryPrice, formatUSD(g.InvestAmount))
+			fmt.Fprintf(f, "  Buy %.0f shares @ $%.2f = %s\n", g.PositionSize, g.EntryPrice, formatUSD(g.InvestAmount))
 			fmt.Fprintf(f, "  Allocation: %.1f%% of portfolio\n\n", g.AllocationPct)
 
 			fmt.Fprintf(f, "[STOP LOSS]\n")
@@ -1597,7 +1678,7 @@ func executeAutoTrade(ctx context.Context, signals []strategy.Signal, cfg *confi
 				if p.UnrealizedPnL < 0 {
 					pnlSign = ""
 				}
-				fmt.Printf("  - %s: %d shares (P&L: %s%.2f)\n",
+				fmt.Printf("  - %s: %.0f shares (P&L: %s%.2f)\n",
 					p.Symbol, p.Quantity, pnlSign, p.UnrealizedPnL)
 			}
 		}
@@ -1635,7 +1716,7 @@ func executeAutoTrade(ctx context.Context, signals []strategy.Signal, cfg *confi
 			status = "OK"
 			successCount++
 		}
-		fmt.Printf(" [%s] %s: %s %d @ $%.2f",
+		fmt.Printf(" [%s] %s: %s %.0f @ $%.2f",
 			status, r.Signal.Stock.Symbol, r.Order.Side, r.Order.Quantity, r.Order.LimitPrice)
 		if r.Result != nil {
 			fmt.Printf(" (Order: %s)", r.Result.OrderID)
@@ -1717,7 +1798,7 @@ func runMonitorMode(cfg *config.Config) error {
 			if p.UnrealizedPnL < 0 {
 				pnlSign = ""
 			}
-			fmt.Printf("  %s: %d shares @ $%.2f (P&L: %s$%.2f / %s%.1f%%)\n",
+			fmt.Printf("  %s: %.0f shares @ $%.2f (P&L: %s$%.2f / %s%.1f%%)\n",
 				p.Symbol, p.Quantity, p.AvgCost, pnlSign, p.UnrealizedPnL, pnlSign, p.UnrealizedPct)
 		}
 	}

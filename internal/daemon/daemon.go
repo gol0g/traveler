@@ -6,12 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"traveler/internal/broker"
 	"traveler/internal/provider"
@@ -24,7 +20,7 @@ import (
 // Config 데몬 설정
 type Config struct {
 	// 마켓 설정
-	Market           string        // "us" or "kr"
+	Market           string        // "us", "kr", or "crypto"
 	WaitForMarket    bool          // 마켓 열릴 때까지 대기
 	MaxWaitTime      time.Duration // 최대 대기 시간
 
@@ -38,6 +34,9 @@ type Config struct {
 
 	// 스캔 옵션
 	ForceScan        bool // 이미 매매했더라도 강제 스캔
+
+	// 자본 설정
+	TradingCapital   float64 // 자동매매 전용 자본 (0이면 전체 잔고 사용)
 
 	// 종료 설정
 	SleepOnExit      bool // 종료시 PC 절전
@@ -64,6 +63,7 @@ type Daemon struct {
 	tracker    *DailyTracker
 	autoTrader *trader.AutoTrader
 	history    *trader.TradeHistory
+	capital    *CapitalTracker // 자동매매 전용 자본 추적
 
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -85,8 +85,8 @@ func NewDaemon(cfg Config, b broker.Broker, p provider.Provider) *Daemon {
 	tracker := NewDailyTracker(cfg.Daily, cfg.DataDir)
 	tracker.SetMarket(cfg.Market) // 파일명 분리: daily_us_*.json vs daily_kr_*.json
 
-	// 마켓 타임존 설정 (US=ET, KR=KST)
-	if cfg.Market == "kr" {
+	// 마켓 타임존 설정 (US=ET, KR/Crypto=KST)
+	if cfg.Market == "kr" || cfg.Market == "crypto" {
 		if tz, err := time.LoadLocation("Asia/Seoul"); err == nil {
 			tracker.SetTimezone(tz)
 		}
@@ -111,8 +111,16 @@ func (d *Daemon) isKR() bool {
 	return d.config.Market == "kr"
 }
 
+// isCrypto 크립토 시장 모드 여부
+func (d *Daemon) isCrypto() bool {
+	return d.config.Market == "crypto"
+}
+
 // getMarketStatus 현재 시장에 맞는 마켓 상태 조회
 func (d *Daemon) getMarketStatus() MarketStatus {
+	if d.isCrypto() {
+		return GetCryptoMarketStatus()
+	}
 	if d.isKR() {
 		return GetKRMarketStatus(KRMarketSchedule())
 	}
@@ -125,7 +133,19 @@ func (d *Daemon) Run() error {
 	log.Println("[DAEMON] Starting automated trading daemon...")
 
 	// 화면 켜기 (절전 해제 후 모니터가 꺼져있을 수 있음)
-	wakeMonitor()
+	// 비동기 실행 — SendMessageW(HWND_BROADCAST)가 블로킹될 수 있음
+	go func() {
+		done := make(chan struct{})
+		go func() {
+			wakeMonitor()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			log.Println("[DAEMON] wakeMonitor timed out (5s), skipping")
+		}
+	}()
 
 	d.isRunning = true
 	defer func() {
@@ -135,7 +155,7 @@ func (d *Daemon) Run() error {
 	// 1. 마켓 상태 확인
 	status := d.getMarketStatus()
 	tzLabel := "ET"
-	if d.isKR() {
+	if d.isKR() || d.isCrypto() {
 		tzLabel = "KST"
 	}
 	log.Printf("[DAEMON] Market status: %s (%s: %s)", status.Reason, tzLabel, status.CurrentTimeET.Format("15:04"))
@@ -161,22 +181,39 @@ func (d *Daemon) Run() error {
 		log.Printf("[DAEMON] Failed to get balance: %v", err)
 		return d.shutdown("balance_error")
 	}
-	if d.isKR() {
+	if d.isKR() || d.isCrypto() {
 		log.Printf("[DAEMON] Account balance: ₩%.0f", balance.TotalEquity)
 	} else {
 		log.Printf("[DAEMON] Account balance: $%.2f", balance.TotalEquity)
 	}
 
+	// 자동매매 전용 자본 결정
+	tradingCapital := balance.TotalEquity
+	if d.config.TradingCapital > 0 {
+		// CapitalTracker로 자본 추적 (저장된 상태가 있으면 복원)
+		dataDir := d.config.DataDir
+		if dataDir == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				dataDir = filepath.Join(home, ".traveler")
+			}
+		}
+		d.capital = NewCapitalTracker(dataDir, d.config.TradingCapital)
+		tradingCapital = d.capital.GetCurrentCapital()
+		log.Printf("[DAEMON] Trading capital: ₩%.0f (account: ₩%.0f)", tradingCapital, balance.TotalEquity)
+	}
+
 	// 3. 일일 트래커 시작
-	if err := d.tracker.Start(balance.TotalEquity); err != nil {
+	if err := d.tracker.Start(tradingCapital); err != nil {
 		log.Printf("[DAEMON] Failed to start tracker: %v", err)
 	}
 
-	// 4. Sizer 설정 (잔고 기반)
-	if d.isKR() {
-		d.config.Sizer = trader.AdjustConfigForKRBalance(balance.TotalEquity)
+	// 4. Sizer 설정 (자동매매 자본 기반)
+	if d.isCrypto() {
+		d.config.Sizer = trader.AdjustConfigForCryptoBalance(tradingCapital)
+	} else if d.isKR() {
+		d.config.Sizer = trader.AdjustConfigForKRBalance(tradingCapital)
 	} else {
-		d.config.Sizer = trader.AdjustConfigForBalance(balance.TotalEquity)
+		d.config.Sizer = trader.AdjustConfigForBalance(tradingCapital)
 	}
 
 	// 5. PlanStore 초기화 (~/.traveler/ 고정 경로)
@@ -206,25 +243,35 @@ func (d *Daemon) Run() error {
 		DryRun:          false, // 실전 모드
 		MaxPositions:    d.config.Sizer.MaxPositions,
 		MaxPositionPct:  d.config.Sizer.MaxPositionPct,
-		TotalCapital:    balance.TotalEquity,
+		TotalCapital:    tradingCapital,
 		RiskPerTrade:    d.config.Sizer.RiskPerTrade,
 		MonitorInterval: d.config.MonitorInterval,
 	}
-	d.autoTrader = trader.NewAutoTraderWithPlanStore(traderCfg, d.broker, false, planStore)
+	d.autoTrader = trader.NewAutoTraderWithPlanStore(traderCfg, d.broker, d.isCrypto(), planStore)
 
 	// Monitor에 TradeHistory 연결
 	if d.history != nil {
 		d.autoTrader.GetMonitor().SetTradeHistory(d.history, d.config.Market)
 	}
 
-	// 8. 기존 포지션 확인 및 모니터 등록 (PlanStore에서 원래 플랜 복원)
+	// 자본 추적 콜백 등록
+	if d.capital != nil {
+		d.autoTrader.GetMonitor().SetOnSell(func(investedAmount, sellAmount float64) {
+			d.capital.RecordSell(investedAmount, sellAmount)
+		})
+	}
+
+	// 8. 기존 포지션 확인 및 모니터 등록
+	// 크립토: PlanStore에 플랜이 있는(=데몬이 진입한) 포지션만 모니터 등록
+	//         수동 매수한 기존 포지션은 건드리지 않음
+	// 주식(US/KR): 기존처럼 플랜 없으면 자동 생성
 	positions, err := d.broker.GetPositions(d.ctx)
 	if err != nil {
 		log.Printf("[DAEMON] Failed to get positions: %v", err)
 	} else {
 		log.Printf("[DAEMON] Current positions: %d", len(positions))
 		for _, p := range positions {
-			log.Printf("  - %s: %d shares @ $%.2f (P&L: $%.2f)",
+			log.Printf("  - %s: %.0f shares @ $%.2f (P&L: $%.2f)",
 				p.Symbol, p.Quantity, p.AvgCost, p.UnrealizedPnL)
 
 			// PlanStore에서 원래 플랜 복원
@@ -241,7 +288,13 @@ func (d *Daemon) Run() error {
 				}
 			}
 
-			// Fallback: 플랜이 없으면 기술 분석 기반으로 플랜 자동 생성
+			// 크립토: 플랜 없는 기존 포지션은 건드리지 않음 (수동 매수분 보호)
+			if d.isCrypto() {
+				log.Printf("  → Skipping (no plan, manual position)")
+				continue
+			}
+
+			// 주식(US/KR): 플랜 없으면 기술 분석 기반으로 플랜 자동 생성
 			plan := d.generatePlanFromAnalysis(p.Symbol, p.AvgCost, p.Quantity)
 			if plan != nil {
 				log.Printf("  → Generated plan: strategy=%s, stop=$%.2f, T1=$%.2f, T2=$%.2f, maxDays=%d",
@@ -319,15 +372,22 @@ func (d *Daemon) Run() error {
 					if r.Result != nil {
 						orderID = r.Result.OrderID
 					}
+					investAmount := r.Order.Quantity * r.Order.LimitPrice
+					if r.Order.Amount > 0 {
+						investAmount = r.Order.Amount // 시장가 매수: KRW 금액
+					}
 					d.tracker.RecordTrade(TradeLog{
 						Symbol:   r.Order.Symbol,
 						Side:     string(r.Order.Side),
 						Quantity: r.Order.Quantity,
 						Price:    r.Order.LimitPrice,
-						Amount:   float64(r.Order.Quantity) * r.Order.LimitPrice,
+						Amount:   investAmount,
 						OrderID:  orderID,
 						Reason:   "signal",
 					})
+					if d.capital != nil {
+						d.capital.RecordBuy(investAmount)
+					}
 					if d.history != nil {
 						d.history.Append(trader.TradeRecord{
 							Market:   d.config.Market,
@@ -423,7 +483,7 @@ func (d *Daemon) runMonitorCycle() {
 	for _, order := range pendingOrders {
 		if order.Side == broker.OrderSideBuy {
 			unfilledQty := order.Quantity - order.FilledQty
-			pendingValue += float64(unfilledQty) * order.Price
+			pendingValue += unfilledQty * order.Price
 		}
 	}
 
@@ -452,30 +512,38 @@ type daemonScanResult struct {
 
 // adaptiveScan 적응형 멀티 전략 스캔
 func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
-	// 시장 인식 전략 생성 (레짐 필터 포함)
-	pullbackCfg := strategy.DefaultPullbackConfig()
-	if d.isKR() {
-		pullbackCfg.MarketRegimeSymbol = "069500" // KODEX 200 (KOSPI 추종 ETF)
+	var strategies []strategy.Strategy
+
+	if d.isCrypto() {
+		// 크립토: 레짐 인식 메타전략 (Bull→VolatilityBreakout, Sideways→RangeTrading, Bear→skip)
+		meta := strategy.NewCryptoMetaStrategy(d.provider)
+		strategies = []strategy.Strategy{meta}
 	} else {
-		pullbackCfg.MarketRegimeSymbol = "SPY"
+		// 주식 전략 (US/KR)
+		pullbackCfg := strategy.DefaultPullbackConfig()
+		if d.isKR() {
+			pullbackCfg.MarketRegimeSymbol = "069500" // KODEX 200 (KOSPI 추종 ETF)
+		} else {
+			pullbackCfg.MarketRegimeSymbol = "SPY"
+		}
+		pullback := strategy.NewPullbackStrategy(pullbackCfg, d.provider)
+
+		breakoutCfg := strategy.DefaultBreakoutConfig()
+		breakout := strategy.NewBreakoutStrategy(breakoutCfg, d.provider)
+
+		meanRevCfg := strategy.DefaultMeanReversionConfig()
+		meanRev := strategy.NewMeanReversionStrategy(meanRevCfg, d.provider)
+
+		oversoldCfg := strategy.DefaultOversoldConfig()
+		if d.isKR() {
+			oversoldCfg.MarketRegimeSymbol = "069500"
+		} else {
+			oversoldCfg.MarketRegimeSymbol = "SPY"
+		}
+		oversold := strategy.NewOversoldStrategy(oversoldCfg, d.provider)
+
+		strategies = []strategy.Strategy{pullback, meanRev, breakout, oversold}
 	}
-	pullback := strategy.NewPullbackStrategy(pullbackCfg, d.provider)
-
-	breakoutCfg := strategy.DefaultBreakoutConfig()
-	breakout := strategy.NewBreakoutStrategy(breakoutCfg, d.provider)
-
-	meanRevCfg := strategy.DefaultMeanReversionConfig()
-	meanRev := strategy.NewMeanReversionStrategy(meanRevCfg, d.provider)
-
-	oversoldCfg := strategy.DefaultOversoldConfig()
-	if d.isKR() {
-		oversoldCfg.MarketRegimeSymbol = "069500"
-	} else {
-		oversoldCfg.MarketRegimeSymbol = "SPY"
-	}
-	oversold := strategy.NewOversoldStrategy(oversoldCfg, d.provider)
-
-	strategies := []strategy.Strategy{pullback, meanRev, breakout, oversold}
 	stratNames := make([]string, len(strategies))
 	for i, s := range strategies {
 		stratNames[i] = s.Name()
@@ -513,57 +581,63 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 	adaptiveCfg.Verbose = true
 	scanner := trader.NewAdaptiveScanner(adaptiveCfg, d.config.Sizer, scanFunc)
 
-	// KR 모드: 한국 유니버스 티어 사용
-	if d.isKR() {
+	// 마켓별 유니버스 티어
+	if d.isCrypto() {
+		scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+			return trader.GetCryptoUniverseTiers(balance)
+		})
+	} else if d.isKR() {
 		scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
 			return trader.GetKRUniverseTiers(balance)
 		})
 	}
 
-	// 펀더멘탈 필터를 스캐너에 주입 (품질 평가 전에 적용)
+	// 펀더멘탈 필터를 스캐너에 주입 (품질 평가 전에 적용) — 크립토는 사용 안 함
 	var fundamentalsFiltered int
-	dataDir := d.config.DataDir
-	if dataDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			dataDir = filepath.Join(home, ".traveler")
-		}
-	}
-	if dataDir != "" {
-		var kosdaqSet map[string]bool
-		if d.isKR() {
-			kosdaqSet = make(map[string]bool)
-			for _, s := range symbols.Kosdaq30Symbols {
-				kosdaqSet[s] = true
+	if !d.isCrypto() {
+		fundDataDir := d.config.DataDir
+		if fundDataDir == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				fundDataDir = filepath.Join(home, ".traveler")
 			}
 		}
-		checker := provider.NewFundamentalsChecker(dataDir, kosdaqSet)
-		if err := checker.Init(d.ctx); err != nil {
-			log.Printf("[DAEMON] Fundamentals checker init failed (skipping): %v", err)
-		} else {
-			scanner.SetFilterFunc(func(ctx context.Context, signals []strategy.Signal) []strategy.Signal {
-				syms := make([]string, 0, len(signals))
-				for _, sig := range signals {
-					syms = append(syms, sig.Stock.Symbol)
+		if fundDataDir != "" {
+			var kosdaqSet map[string]bool
+			if d.isKR() {
+				kosdaqSet = make(map[string]bool)
+				for _, s := range symbols.Kosdaq30Symbols {
+					kosdaqSet[s] = true
 				}
-				rejected := checker.FilterSymbols(ctx, syms)
-				if len(rejected) == 0 {
-					return signals
-				}
-				var filtered []strategy.Signal
-				for _, sig := range signals {
-					if _, rej := rejected[sig.Stock.Symbol]; !rej {
-						filtered = append(filtered, sig)
+			}
+			checker := provider.NewFundamentalsChecker(fundDataDir, kosdaqSet)
+			if err := checker.Init(d.ctx); err != nil {
+				log.Printf("[DAEMON] Fundamentals checker init failed (skipping): %v", err)
+			} else {
+				scanner.SetFilterFunc(func(ctx context.Context, signals []strategy.Signal) []strategy.Signal {
+					syms := make([]string, 0, len(signals))
+					for _, sig := range signals {
+						syms = append(syms, sig.Stock.Symbol)
 					}
-				}
-				fundamentalsFiltered += len(signals) - len(filtered)
-				log.Printf("[DAEMON] Fundamentals filter: %d → %d signals", len(signals), len(filtered))
-				return filtered
-			})
+					rejected := checker.FilterSymbols(ctx, syms)
+					if len(rejected) == 0 {
+						return signals
+					}
+					var filtered []strategy.Signal
+					for _, sig := range signals {
+						if _, rej := rejected[sig.Stock.Symbol]; !rej {
+							filtered = append(filtered, sig)
+						}
+					}
+					fundamentalsFiltered += len(signals) - len(filtered)
+					log.Printf("[DAEMON] Fundamentals filter: %d → %d signals", len(signals), len(filtered))
+					return filtered
+				})
+			}
 		}
 	}
 
 	// 스캔 실행
-	loader := &daemonStockLoader{provider: d.provider, korean: d.isKR()}
+	loader := &daemonStockLoader{provider: d.provider, korean: d.isKR(), crypto: d.isCrypto()}
 	result, err := scanner.Scan(d.ctx, loader)
 	if err != nil {
 		return nil, err
@@ -586,10 +660,12 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 
 // checkStopConditions 종료 조건 체크
 func (d *Daemon) checkStopConditions() (bool, string) {
-	// 마켓 상태
-	status := d.getMarketStatus()
-	if !status.IsOpen && status.Reason == "after-hours" {
-		return true, "market_closed"
+	// 크립토는 마켓 종료 없음 — 일일 한도만 체크
+	if !d.isCrypto() {
+		status := d.getMarketStatus()
+		if !status.IsOpen && status.Reason == "after-hours" {
+			return true, "market_closed"
+		}
 	}
 
 	// 일일 목표/한도
@@ -625,7 +701,8 @@ func (d *Daemon) shutdown(reason string) error {
 	// PC 절전
 	// wake timer는 영구 예약 작업(TravelerDaemon, TravelerDaemonKR)이 관리함
 	// setup-daemon.ps1에서 WakeToRun 설정 완료 → 여기서 별도 등록 불필요
-	if d.config.SleepOnExit {
+	// 크립토는 24/7이므로 절전 안 함
+	if d.config.SleepOnExit && !d.isCrypto() {
 		// 어떤 시장이든 장중이면 절전하지 않음
 		usOpen := IsMarketOpen()
 		krOpen := GetKRMarketStatus(KRMarketSchedule()).IsOpen
@@ -665,75 +742,6 @@ func (d *Daemon) Stop() {
 	d.cancel()
 }
 
-// wakeMonitor 모니터 켜기
-func wakeMonitor() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-
-	// Windows API로 모니터 켜기
-	user32 := syscall.NewLazyDLL("user32.dll")
-	sendMessage := user32.NewProc("SendMessageW")
-
-	// SC_MONITORPOWER = 0xF170, -1 = on
-	sendMessage.Call(
-		0xFFFF,             // HWND_BROADCAST
-		0x0112,             // WM_SYSCOMMAND
-		0xF170,             // SC_MONITORPOWER
-		uintptr(0xFFFFFFFF), // -1 = monitor on
-	)
-
-	log.Println("[DAEMON] Monitor wake signal sent")
-}
-
-// sleepPC PC 절전 모드 (wake timer를 존중하는 방식)
-func sleepPC() {
-	switch runtime.GOOS {
-	case "windows":
-		// PowerShell SetSuspendState: force=false, disableWakeEvent=false
-		// → 예약 작업의 WakeToRun이 정상 작동함
-		cmd := exec.Command("powershell", "-Command",
-			"Add-Type -Assembly System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)")
-		if err := cmd.Run(); err != nil {
-			log.Printf("[DAEMON] Failed to sleep PC: %v", err)
-		}
-	case "linux":
-		// Linux 절전
-		cmd := exec.Command("systemctl", "suspend")
-		cmd.Run()
-	case "darwin":
-		// macOS 절전
-		cmd := exec.Command("pmset", "sleepnow")
-		cmd.Run()
-	}
-}
-
-// getUserIdleSeconds 사용자 마지막 입력 이후 경과 시간 (초)
-func getUserIdleSeconds() int {
-	if runtime.GOOS != "windows" {
-		return 9999 // 비 Windows: 항상 유휴 상태로 간주
-	}
-	user32 := syscall.NewLazyDLL("user32.dll")
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	getLastInputInfo := user32.NewProc("GetLastInputInfo")
-	getTickCount := kernel32.NewProc("GetTickCount")
-
-	// LASTINPUTINFO: cbSize(4) + dwTime(4) = 8 bytes
-	type lastInputInfo struct {
-		cbSize uint32
-		dwTime uint32
-	}
-	var info lastInputInfo
-	info.cbSize = 8
-	ret, _, _ := getLastInputInfo.Call(uintptr(unsafe.Pointer(&info)))
-	if ret == 0 {
-		return 9999 // 실패 시 유휴로 간주
-	}
-	tick, _, _ := getTickCount.Call()
-	idleMs := uint32(tick) - info.dwTime
-	return int(idleMs / 1000)
-}
-
 
 // saveScanResultForWeb 데몬 스캔 결과를 웹 UI에서 읽을 수 있는 JSON으로 저장
 func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
@@ -753,19 +761,21 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 		Fundamentals *provider.FundamentalsData `json:"fundamentals,omitempty"`
 	}
 
-	// 펀더멘탈 데이터 로드 (캐시에서)
+	// 펀더멘탈 데이터 로드 (캐시에서) — 크립토는 사용 안 함
 	var fundChecker *provider.FundamentalsChecker
-	var kosdaqSet map[string]bool
-	if d.isKR() {
-		kosdaqSet = make(map[string]bool)
-		for _, s := range symbols.Kosdaq30Symbols {
-			kosdaqSet[s] = true
+	if !d.isCrypto() {
+		var kosdaqSet map[string]bool
+		if d.isKR() {
+			kosdaqSet = make(map[string]bool)
+			for _, s := range symbols.Kosdaq30Symbols {
+				kosdaqSet[s] = true
+			}
 		}
-	}
-	fundChecker = provider.NewFundamentalsChecker(dataDir, kosdaqSet)
-	if err := fundChecker.Init(context.Background()); err != nil {
-		log.Printf("[DAEMON] Fundamentals checker init for web save: %v", err)
-		fundChecker = nil
+		fundChecker = provider.NewFundamentalsChecker(dataDir, kosdaqSet)
+		if err := fundChecker.Init(context.Background()); err != nil {
+			log.Printf("[DAEMON] Fundamentals checker init for web save: %v", err)
+			fundChecker = nil
+		}
 	}
 
 	sigs := make([]signalWithChart, len(sr.Signals))
@@ -787,7 +797,9 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 	}
 
 	strategyName := "multi"
-	if d.isKR() {
+	if d.isCrypto() {
+		strategyName = "multi-crypto"
+	} else if d.isKR() {
 		strategyName = "multi-kr"
 	}
 
@@ -814,7 +826,9 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 	}
 
 	market := "us"
-	if d.isKR() {
+	if d.isCrypto() {
+		market = "crypto"
+	} else if d.isKR() {
 		market = "kr"
 	}
 	path := filepath.Join(dataDir, fmt.Sprintf("last_scan_%s.json", market))
@@ -829,6 +843,7 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 type daemonStockLoader struct {
 	provider provider.Provider
 	korean   bool
+	crypto   bool
 }
 
 func (l *daemonStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe) ([]model.Stock, error) {
@@ -842,6 +857,8 @@ func (l *daemonStockLoader) LoadUniverse(ctx context.Context, u symbols.Universe
 		name := sym
 		if l.korean {
 			name = symbols.GetKRSymbolName(sym)
+		} else if l.crypto {
+			name = symbols.GetCryptoSymbolName(sym)
 		}
 		stocks[i] = model.Stock{Symbol: sym, Name: name}
 	}
@@ -863,6 +880,9 @@ func (d *Daemon) initIntraday() {
 		return
 	}
 	capital := balance.TotalEquity
+	if d.config.TradingCapital > 0 {
+		capital = d.config.TradingCapital
+	}
 
 	d.intradayScanner = strategy.NewIntradayScanner(cfg, capital)
 
@@ -884,7 +904,9 @@ func (d *Daemon) selectIntradayUniverse(capital float64) []string {
 
 	// 유니버스 로드
 	var allSymbols []string
-	if d.isKR() {
+	if d.isCrypto() {
+		allSymbols = append(allSymbols, symbols.GetUniverse(symbols.UniverseCryptoTop30)...)
+	} else if d.isKR() {
 		for _, u := range []symbols.Universe{symbols.UniverseKospi30, symbols.UniverseKosdaq30} {
 			allSymbols = append(allSymbols, symbols.GetUniverse(u)...)
 		}
@@ -975,8 +997,8 @@ func (d *Daemon) runIntradayLoop() {
 				return
 			}
 
-			// 강제 청산 시간 체크 (마감 N분 전)
-			if status.TimeToClose <= time.Duration(forceCloseMin)*time.Minute {
+			// 강제 청산 시간 체크 (마감 N분 전) — 크립토는 24시간이므로 해당 없음
+			if !d.isCrypto() && status.TimeToClose <= time.Duration(forceCloseMin)*time.Minute {
 				log.Printf("[INTRADAY] %s before close, force closing intraday positions",
 					FormatDuration(status.TimeToClose))
 				if d.autoTrader != nil {
@@ -1025,7 +1047,7 @@ func (d *Daemon) collectOpeningRange() {
 					continue
 				}
 				d.intradayScanner.RecordPrice(sym, price, now)
-				time.Sleep(50 * time.Millisecond) // API 간격
+				time.Sleep(150 * time.Millisecond) // API 간격 (429 방지)
 			}
 			polls++
 			log.Printf("[INTRADAY] OR poll %d/%d complete (%d symbols)",
@@ -1043,7 +1065,7 @@ func (d *Daemon) updateIntradayPrices() {
 			continue
 		}
 		d.intradayScanner.RecordPrice(sym, price, now)
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 }
 
@@ -1075,8 +1097,11 @@ func (d *Daemon) executeIntradaySignals() {
 	for _, r := range results {
 		if r.Success {
 			sym := r.Order.Symbol
-			log.Printf("[INTRADAY] Executed %s: BUY %d @ $%.2f",
-				sym, r.Order.Quantity, r.Order.LimitPrice)
+			investAmount := r.Order.Quantity * r.Order.LimitPrice
+			if r.Order.Amount > 0 {
+				investAmount = r.Order.Amount // 시장가 매수: KRW 금액
+			}
+			log.Printf("[INTRADAY] Executed %s: BUY ₩%.0f", sym, investAmount)
 
 			// 장중 포지션 표시
 			if d.autoTrader != nil {
@@ -1091,6 +1116,11 @@ func (d *Daemon) executeIntradaySignals() {
 
 			// 중복 진입 방지
 			d.intradayScanner.MarkExecuted(sym, r.Signal.Strategy)
+
+			// 자본 추적
+			if d.capital != nil {
+				d.capital.RecordBuy(investAmount)
+			}
 
 			// 매매 기록
 			if d.history != nil {
@@ -1109,7 +1139,7 @@ func (d *Daemon) executeIntradaySignals() {
 }
 
 // generatePlanFromAnalysis 기존 보유 종목에 대해 기술 분석 기반 플랜 자동 생성
-func (d *Daemon) generatePlanFromAnalysis(symbol string, avgCost float64, quantity int) *trader.PositionPlan {
+func (d *Daemon) generatePlanFromAnalysis(symbol string, avgCost float64, quantity float64) *trader.PositionPlan {
 	candles, err := d.provider.GetDailyCandles(d.ctx, symbol, 50)
 	if err != nil || len(candles) < 20 {
 		log.Printf("[DAEMON] Cannot generate plan for %s: insufficient candle data", symbol)

@@ -245,6 +245,31 @@ button:disabled {
     color: #fb923c;
 }
 
+.strategy-volatility-breakout {
+    background-color: rgba(245, 158, 11, 0.2);
+    color: #fbbf24;
+}
+
+.strategy-oversold {
+    background-color: rgba(6, 182, 212, 0.2);
+    color: #22d3ee;
+}
+
+.strategy-range-trading {
+    background-color: rgba(14, 165, 233, 0.2);
+    color: #38bdf8;
+}
+
+.strategy-rsi-contrarian {
+    background-color: rgba(168, 85, 247, 0.2);
+    color: #a855f7;
+}
+
+.strategy-volume-spike {
+    background-color: rgba(249, 115, 22, 0.2);
+    color: #f97316;
+}
+
 .strategy-unknown {
     background-color: rgba(107, 114, 128, 0.2);
     color: #9ca3af;
@@ -393,6 +418,10 @@ button:disabled {
 
 .strategy-card-meanrev {
     border-top-color: #8b5cf6;
+}
+
+.strategy-card-crypto {
+    border-top-color: #f59e0b;
 }
 
 .strategy-conditions {

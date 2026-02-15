@@ -7,7 +7,7 @@
     <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/css/style.css?v=12">
+    <link rel="stylesheet" href="/css/style.css?v=15">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Header -->
@@ -19,6 +19,7 @@
                 <div class="flex gap-0.5 bg-gray-700 rounded-lg p-0.5">
                     <button class="market-btn active px-3 py-1 rounded-md text-sm font-medium transition-colors" data-market="us">US</button>
                     <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="kr">KR</button>
+                    <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="crypto">Crypto</button>
                 </div>
             </div>
         </div>
@@ -257,7 +258,7 @@
 
             <!-- ===== Strategies ===== -->
             <h3 class="text-lg font-semibold mb-3">Strategies</h3>
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
                 <!-- Pullback -->
                 <div class="strategy-card strategy-card-pullback">
                     <div class="flex items-center gap-3 mb-4">
@@ -350,6 +351,36 @@
                     <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
                     <p class="text-gray-400 text-xs">진입 2일 후에도 RSI < 35 + 종가 < BB하단 → 청산</p>
                 </div>
+
+                <!-- Volatility Breakout (Crypto) -->
+                <div class="strategy-card strategy-card-crypto">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge strategy-volatility-breakout text-sm">VOLATILITY BREAKOUT</span>
+                        <span class="text-gray-400 text-sm">크립토 전용</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">래리 윌리엄스 변동성 돌파 전략을 크립토에 적용. 전일 변동폭 기반으로 당일 진입가 결정.</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> 현재가 > 시가 + (전일고가 - 전일저가) × K</li>
+                        <li><span class="condition-tag condition-required">필수</span> K값 0.5 (기본) — 변동폭의 50% 돌파</li>
+                        <li><span class="condition-tag condition-required">필수</span> RSI < 75 (과매수 아님)</li>
+                        <li><span class="condition-tag condition-support">보조</span> BTC 레짐 필터 (BTC RSI > 30)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 거래량 > 20일 평균 × 1.2</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>진입가 × (1 - K×0.5) 또는 당일 시가</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 × (1 + K)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 × (1 + K×2)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.0x</span></div>
+                        <div class="guide-row"><span class="text-gray-400">마켓</span><span>Upbit KRW (24/7)</span></div>
+                    </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
+                    <p class="text-gray-400 text-xs">당일 종가 기준 청산 (1일 보유). 손절가 이탈 시 즉시 청산.</p>
+                </div>
             </div>
 
             <!-- ===== Fundamentals Filter ===== -->
@@ -405,6 +436,13 @@
                             <div class="guide-row"><span class="text-gray-400">> ₩5000만</span><span>전체 동시 스캔</span></div>
                         </div>
 
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Crypto 유니버스 (잔고 기준)</h4>
+                        <div class="strategy-guide mb-3">
+                            <div class="guide-row"><span class="text-gray-400">< ₩100만</span><span>Top10 → Top20, Top30</span></div>
+                            <div class="guide-row"><span class="text-gray-400">₩100만 ~ ₩500만</span><span>Top20 → Top30</span></div>
+                            <div class="guide-row"><span class="text-gray-400">> ₩500만</span><span>전체 (Top30)</span></div>
+                        </div>
+
                         <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">품질 기준 (미달 시 확장)</h4>
                         <div class="strategy-guide">
                             <div class="guide-row"><span class="text-gray-400">최소 시그널</span><span>3개</span></div>
@@ -439,6 +477,13 @@
                             <div class="guide-row"><span class="text-gray-400">₩50만 ~ ₩500만</span><span>리스크 2%, 최대비중 25%, R:R ≥ 1.5</span></div>
                             <div class="guide-row"><span class="text-gray-400">₩500만 ~ ₩5000만</span><span>리스크 1.5%, 최대비중 25%, R:R ≥ 1.5</span></div>
                             <div class="guide-row"><span class="text-gray-400">> ₩5000만</span><span>리스크 1%, 최대비중 20%, R:R ≥ 2.0</span></div>
+                        </div>
+
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Crypto 설정 (잔고 기준)</h4>
+                        <div class="strategy-guide mb-3">
+                            <div class="guide-row"><span class="text-gray-400">< ₩50만</span><span>리스크 3%, 최대비중 30%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">₩50만 ~ ₩500만</span><span>리스크 2%, 최대비중 25%, R:R ≥ 1.5</span></div>
+                            <div class="guide-row"><span class="text-gray-400">> ₩500만</span><span>리스크 1.5%, 최대비중 20%, R:R ≥ 2.0</span></div>
                         </div>
 
                         <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">공통</h4>
@@ -600,7 +645,7 @@
         </div>
     </div>
 
-    <script src="/js/chart.js?v=12"></script>
-    <script src="/js/app.js?v=12"></script>
+    <script src="/js/chart.js?v=15"></script>
+    <script src="/js/app.js?v=15"></script>
 </body>
 </html>

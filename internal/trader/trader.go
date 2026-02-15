@@ -108,8 +108,13 @@ func (t *AutoTrader) ExecuteSignals(ctx context.Context, signals []strategy.Sign
 		results = append(results, result)
 
 		if result.Success {
-			log.Printf("[EXECUTED] %s: BUY %d shares @ $%.2f",
-				sig.Stock.Symbol, result.Order.Quantity, result.Order.LimitPrice)
+			if result.Order.Type == broker.OrderTypeMarket {
+				log.Printf("[EXECUTED] %s: MARKET BUY ₩%.0f",
+					sig.Stock.Symbol, result.Order.Amount)
+			} else {
+				log.Printf("[EXECUTED] %s: BUY %.0f shares @ $%.2f",
+					sig.Stock.Symbol, result.Order.Quantity, result.Order.LimitPrice)
+			}
 
 			// 모니터링 등록 (전략 정보 포함)
 			if sig.Guide != nil {

@@ -372,6 +372,15 @@ func AdjustConfigForKRBalance(balance float64) SizerConfig {
 	return cfg
 }
 
+// GetCryptoUniverseTiers returns adaptive scanner tiers for crypto
+func GetCryptoUniverseTiers(balance float64) []UniverseTier {
+	// Crypto uses same tiers regardless of balance (small universe)
+	return []UniverseTier{
+		{Name: "crypto-top10", Universe: symbols.UniverseCryptoTop10, Priority: 1},
+		{Name: "crypto-top30", Universe: symbols.UniverseCryptoTop30, Priority: 2},
+	}
+}
+
 // StockLoader 종목 로더 인터페이스
 type StockLoader interface {
 	LoadUniverse(ctx context.Context, universe symbols.Universe) ([]model.Stock, error)
