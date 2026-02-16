@@ -1083,7 +1083,20 @@ func (d *Daemon) executeIntradaySignals() {
 	sized := sizer.ApplyToSignals(signals)
 
 	if len(sized) == 0 {
-		log.Println("[INTRADAY] No signals passed sizing")
+		// 디버깅: 탈락 원인 로그
+		for _, sig := range signals {
+			result := sizer.CalculateSize(&sig)
+			if result.Skipped {
+				rr := 0.0
+				price := 0.0
+				if sig.Guide != nil {
+					rr = sig.Guide.RiskRewardRatio
+					price = sig.Guide.EntryPrice
+				}
+				log.Printf("[INTRADAY] %s skipped: %s (price=%.0f, R/R=%.2f)",
+					sig.Stock.Symbol, result.SkipReason, price, rr)
+			}
+		}
 		return
 	}
 

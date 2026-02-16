@@ -145,14 +145,14 @@ func Load(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil // Use defaults if file doesn't exist
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("reading config file: %w", err)
 		}
-		return nil, fmt.Errorf("reading config file: %w", err)
-	}
-
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file: %w", err)
+		// File doesn't exist — use defaults, fall through to env override
+	} else {
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parsing config file: %w", err)
+		}
 	}
 
 	// Override with environment variables if set

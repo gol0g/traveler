@@ -5,23 +5,23 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi
-ExecStart=/usr/local/bin/traveler --daemon --market crypto --sleep-on-exit=false --data-dir /home/pi/.traveler
+User=junghyun
+Group=junghyun
+WorkingDirectory=/home/junghyun
+ExecStart=/usr/local/bin/traveler --daemon --market crypto --sleep-on-exit=false --trading-capital 100000 --data-dir /home/junghyun/.traveler
 Restart=always
 RestartSec=30
-Environment=HOME=/home/pi
-EnvironmentFile=/home/pi/.traveler/.env
+Environment=HOME=/home/junghyun
+EnvironmentFile=/home/junghyun/.traveler/.env
 
 # Logging
-StandardOutput=append:/home/pi/.traveler/daemon_crypto.log
-StandardError=append:/home/pi/.traveler/daemon_crypto.log
+StandardOutput=append:/home/junghyun/.traveler/daemon_crypto.log
+StandardError=append:/home/junghyun/.traveler/daemon_crypto.log
 
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/home/pi/.traveler
+ReadWritePaths=/home/junghyun/.traveler
 
 [Install]
 WantedBy=multi-user.target
