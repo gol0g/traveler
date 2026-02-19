@@ -32,7 +32,7 @@ func DefaultStockMetaConfig(market string) StockMetaConfig {
 			Market:       "kr",
 			BenchmarkSym: "069500",
 			Bull:         []string{"breakout", "pullback"},
-			Sideways:     []string{"mean-reversion", "pullback", "oversold"},
+			Sideways:     []string{"mean-reversion", "oversold"},
 			Bear:         []string{"oversold"},
 			MaxHoldOverride: map[string]int{
 				"breakout": 20,
@@ -44,7 +44,7 @@ func DefaultStockMetaConfig(market string) StockMetaConfig {
 		Market:       "us",
 		BenchmarkSym: "SPY",
 		Bull:         []string{"breakout"},
-		Sideways:     []string{"mean-reversion", "pullback", "oversold"},
+		Sideways:     []string{"mean-reversion", "oversold"},
 		Bear:         []string{"oversold"},
 	}
 }
@@ -68,17 +68,18 @@ func NewStockMetaStrategy(cfg StockMetaConfig, p provider.Provider) *StockMetaSt
 		regime:   NewRegimeDetectorForSymbol(p, cfg.BenchmarkSym),
 		provider: p,
 	}
-	s.bull = s.buildStrategies(cfg.Bull)
-	s.sideways = s.buildStrategies(cfg.Sideways)
-	s.bear = s.buildStrategies(cfg.Bear)
+	s.bull = s.buildStrategies(cfg.Bull, RegimeBull)
+	s.sideways = s.buildStrategies(cfg.Sideways, RegimeSideways)
+	s.bear = s.buildStrategies(cfg.Bear, RegimeBear)
 	return s
 }
 
-// buildStrategies creates Strategy instances from a list of strategy names
-func (s *StockMetaStrategy) buildStrategies(names []string) []Strategy {
+// buildStrategies creates Strategy instances from a list of strategy names.
+// regime parameter allows creating regime-specific configs (e.g., relaxed conditions for sideways).
+func (s *StockMetaStrategy) buildStrategies(names []string, regime Regime) []Strategy {
 	var strats []Strategy
 	for _, name := range names {
-		strat := s.createStrategy(name)
+		strat := s.createStrategy(name, regime)
 		if strat != nil {
 			strats = append(strats, strat)
 		}
@@ -86,15 +87,21 @@ func (s *StockMetaStrategy) buildStrategies(names []string) []Strategy {
 	return strats
 }
 
-// createStrategy creates a single strategy by name with market-appropriate config.
+// createStrategy creates a single strategy by name with market/regime-appropriate config.
 // MarketRegimeSymbol is left empty so sub-strategies skip their own regime check —
 // the meta strategy's regime detection is authoritative.
-func (s *StockMetaStrategy) createStrategy(name string) Strategy {
+// For sideways regime, strategy conditions are relaxed to produce more signals.
+func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy {
 	isKR := s.config.Market == "kr"
+	isSideways := regime == RegimeSideways
 
 	switch name {
 	case "pullback":
 		cfg := DefaultPullbackConfig()
+		if isSideways {
+			cfg.RequireUptrend = false // sideways: MA50 상승추세 불요
+			cfg.MaxRSI = 60            // sideways: RSI 60까지 허용 (기본 50)
+		}
 		if isKR {
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000
@@ -111,6 +118,11 @@ func (s *StockMetaStrategy) createStrategy(name string) Strategy {
 
 	case "mean-reversion":
 		cfg := DefaultMeanReversionConfig()
+		if isSideways {
+			cfg.RSIOversold = 35        // sideways: RSI 35까지 완화 (기본 30)
+			cfg.BBTouchTolerance = 0.02 // sideways: BB 하단 2% 허용 (기본 1%)
+			cfg.RequireUptrend = false  // sideways: MA200 상승추세 불요
+		}
 		if isKR {
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000

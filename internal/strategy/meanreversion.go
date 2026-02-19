@@ -14,8 +14,8 @@ import (
 
 // MeanReversionConfig holds configuration for the mean reversion strategy
 type MeanReversionConfig struct {
-	RSIOversold      float64 // RSI threshold for oversold (default 30)
-	BBTouchTolerance float64 // How close to BB lower counts as "touch" (e.g., 0.01 = 1%)
+	RSIOversold      float64 // RSI threshold for oversold (default 30, sideways: 40)
+	BBTouchTolerance float64 // How close to BB lower counts as "touch" (default 0.01, sideways: 0.02)
 
 	// Quality filters
 	MinPrice          float64
@@ -25,6 +25,9 @@ type MeanReversionConfig struct {
 	// Market regime filter: broad market must be above MA20
 	// US: "SPY", KR: "069500" (KODEX 200)
 	MarketRegimeSymbol string
+
+	// Sideways mode relaxation (set by StockMetaStrategy for sideways regime)
+	RequireUptrend bool // Require close > MA200 (default true, sideways: false)
 }
 
 // DefaultMeanReversionConfig returns default configuration
@@ -36,6 +39,8 @@ func DefaultMeanReversionConfig() MeanReversionConfig {
 		MinPrice:          5.0,
 		MaxTickerLength:   4,
 		MinDailyDollarVol: 500000,
+
+		RequireUptrend: true,
 	}
 }
 
@@ -217,8 +222,11 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 		inUptrend, volumeIncrease, deeplyOversold,
 	)
 
-	// 필수 4조건: RSI 과매도 + BB 하단 + 반전 캔들 + 장기 상승 추세
-	if !rsiOversold || !atBBLower || !hasReversal || !inUptrend {
+	// 필수 조건: RSI 과매도 + BB 하단 + 반전 캔들 + (장기 상승 추세 — sideways에서는 면제)
+	if !rsiOversold || !atBBLower || !hasReversal {
+		return nil, nil
+	}
+	if s.config.RequireUptrend && !inUptrend {
 		return nil, nil
 	}
 

@@ -26,6 +26,10 @@ type PullbackConfig struct {
 	// Market regime filter: broad market must be above MA20
 	// US: "SPY", KR: "069500" (KODEX 200)
 	MarketRegimeSymbol string
+
+	// Sideways mode relaxations (set by StockMetaStrategy for sideways regime)
+	RequireUptrend bool    // Require price > MA50 + trend confirmation (default true)
+	MaxRSI         float64 // Maximum RSI for entry (default 50)
 }
 
 // DefaultPullbackConfig returns default configuration
@@ -39,6 +43,10 @@ func DefaultPullbackConfig() PullbackConfig {
 		MinPrice:         5.0,     // $5 minimum (no penny stocks)
 		MaxTickerLength:  4,       // Exclude 5+ letter tickers (OTC, warrants)
 		MinDailyDollarVol: 500000, // $500K daily volume minimum
+
+		// Uptrend requirement (relaxed in sideways regime)
+		RequireUptrend: true,
+		MaxRSI:         50,
 	}
 }
 
@@ -237,8 +245,12 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	details["bullish_candle"] = boolToFloat(bullishCandle)
 	details["long_lower_shadow"] = boolToFloat(longLowerShadow)
 
-	// Required: RSI < 50 (room to run, not overbought)
-	rsiOK := ind.RSI14 < 50
+	// Required: RSI below threshold (default 50, relaxed to 60 in sideways)
+	maxRSI := s.config.MaxRSI
+	if maxRSI == 0 {
+		maxRSI = 50
+	}
+	rsiOK := ind.RSI14 < maxRSI
 	details["rsi14"] = ind.RSI14
 
 	// Required: Price bouncing (today's low > yesterday's low)
@@ -251,22 +263,30 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		rsiOK, bouncing, details["price_vs_ma50_pct"],
 	)
 
-	// Determine signal type — ALL conditions must be met
+	// Uptrend check: required by default, skipped in sideways regime
+	uptrendOK := !s.config.RequireUptrend || (aboveMA50 && trendConfirmed)
+
+	// Determine signal type — ALL required conditions must be met
 	signalType := SignalHold
 	reason := ""
 
-	if aboveMA50 && trendConfirmed && touchedMA20 && hasReversalSign && volumePattern && bouncing && rsiOK {
+	if uptrendOK && touchedMA20 && hasReversalSign && volumePattern && bouncing && rsiOK {
 		signalType = SignalBuy
-		reason = fmt.Sprintf("Pullback to MA20 (%.1f%% >MA50, slope %.2f%%, RSI %.0f), vol OK (pb:%.1fx, rev:%.1fx), ",
-			details["price_vs_ma50_pct"], ind.MA50Slope, ind.RSI14, pullbackAvgVol/ind.AvgVol, volumeRatio)
+		if s.config.RequireUptrend {
+			reason = fmt.Sprintf("Pullback to MA20 (%.1f%% >MA50, slope %.2f%%, RSI %.0f), vol OK (pb:%.1fx, rev:%.1fx), ",
+				details["price_vs_ma50_pct"], ind.MA50Slope, ind.RSI14, pullbackAvgVol/ind.AvgVol, volumeRatio)
+		} else {
+			reason = fmt.Sprintf("Pullback to MA20 (RSI %.0f), vol OK (pb:%.1fx, rev:%.1fx), ",
+				ind.RSI14, pullbackAvgVol/ind.AvgVol, volumeRatio)
+		}
 		if bullishCandle {
 			reason += "bullish candle, bouncing"
 		} else {
 			reason += "long lower shadow, bouncing"
 		}
-	} else if !aboveMA50 {
+	} else if s.config.RequireUptrend && !aboveMA50 {
 		reason = fmt.Sprintf("Not in uptrend (%.1f%% below MA50)", details["price_vs_ma50_pct"])
-	} else if !trendConfirmed {
+	} else if s.config.RequireUptrend && !trendConfirmed {
 		reason = fmt.Sprintf("Trend not confirmed (MA50 slope: %.2f%%, MA20 vs MA50: %.1f%%)",
 			ind.MA50Slope, (ind.MA20-ind.MA50)/ind.MA50*100)
 	} else if !touchedMA20 {
@@ -278,7 +298,7 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	} else if !bouncing {
 		reason = "Not bouncing (today's low <= yesterday's low)"
 	} else if !rsiOK {
-		reason = fmt.Sprintf("RSI too high (%.0f >= 50)", ind.RSI14)
+		reason = fmt.Sprintf("RSI too high (%.0f >= %.0f)", ind.RSI14, maxRSI)
 	}
 
 	// Only return signal if it's a buy
