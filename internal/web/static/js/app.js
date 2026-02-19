@@ -49,18 +49,27 @@ class TravelerApp {
         // Update capital label and defaults
         const capitalLabel = document.querySelector('label[for="capitalInput"], label');
         const capitalInput = document.getElementById('capitalInput');
-        if (market === 'kr' || market === 'crypto') {
+        const isSim = market.startsWith('sim-');
+        if (market === 'kr' || market === 'sim-kr' || market === 'crypto') {
             if (capitalLabel) capitalLabel.textContent = market === 'crypto' ? 'Capital (₩):' : 'Capital:';
             if (capitalInput && parseFloat(capitalInput.value) < 10000) {
-                capitalInput.value = 1000000; // Default ₩1,000,000
+                capitalInput.value = 1000000;
                 this.capital = 1000000;
             }
         } else {
             if (capitalLabel) capitalLabel.textContent = 'Capital ($):';
             if (capitalInput && parseFloat(capitalInput.value) >= 10000) {
-                capitalInput.value = 200; // Default $200
+                capitalInput.value = 200;
                 this.capital = 200;
             }
+        }
+
+        // sim 마켓에서는 스캔 버튼 비활성화
+        const scanBtn = document.getElementById('startScan');
+        if (scanBtn) {
+            scanBtn.disabled = isSim;
+            scanBtn.style.opacity = isSim ? '0.4' : '1';
+            scanBtn.title = isSim ? 'Scan runs automatically via daemon' : '';
         }
 
         // Reload data for active tab
@@ -74,7 +83,7 @@ class TravelerApp {
     }
 
     isKR() {
-        return this.market === 'kr';
+        return this.market === 'kr' || this.market === 'sim-kr';
     }
 
     isCrypto() {
@@ -83,7 +92,11 @@ class TravelerApp {
 
     // KRW currency (both KR stocks and crypto use Korean Won)
     isKRW() {
-        return this.market === 'kr' || this.market === 'crypto';
+        return this.market === 'kr' || this.market === 'sim-kr' || this.market === 'crypto';
+    }
+
+    isSim() {
+        return this.market === 'sim-us' || this.market === 'sim-kr';
     }
 
     // Returns market query string (e.g. '?market=kr', '&market=crypto', or '')
@@ -577,6 +590,7 @@ class TravelerApp {
         document.getElementById('summaryCards').classList.add('hidden');
         document.getElementById('controls').classList.add('hidden');
         document.getElementById('signalsSection').classList.add('hidden');
+        document.getElementById('regimeBar').classList.add('hidden');
     }
 
     recalculate() {
@@ -1054,10 +1068,57 @@ class TravelerApp {
             meta.push(data.scan_time || '');
             document.getElementById('scanMeta').textContent = meta.filter(Boolean).join(' | ');
             document.getElementById('recalculateBtn').classList.remove('hidden');
+
+            // Regime display
+            this.updateRegimeBar(data);
         } catch (err) {
             this.showLoading(false);
             alert('Failed to load scan result: ' + err.message);
         }
+    }
+
+    updateRegimeBar(data) {
+        const bar = document.getElementById('regimeBar');
+        if (!data.regime) {
+            bar.classList.add('hidden');
+            return;
+        }
+        bar.classList.remove('hidden');
+
+        const badge = document.getElementById('regimeBadge');
+        const regime = data.regime.toUpperCase();
+        badge.textContent = regime;
+        badge.className = 'px-3 py-1 rounded-full text-sm font-bold ';
+        if (data.regime === 'bull') {
+            badge.className += 'bg-green-900 text-green-300 border border-green-700';
+        } else if (data.regime === 'bear') {
+            badge.className += 'bg-red-900 text-red-300 border border-red-700';
+        } else {
+            badge.className += 'bg-yellow-900 text-yellow-300 border border-yellow-700';
+        }
+
+        // Benchmark info
+        const bench = document.getElementById('regimeBenchmark');
+        if (data.benchmark_price > 0) {
+            const fmt = this.isKR() ? '₩' + Math.round(data.benchmark_price).toLocaleString()
+                      : this.isCrypto() ? '₩' + Math.round(data.benchmark_price).toLocaleString()
+                      : '$' + data.benchmark_price.toFixed(2);
+            const ma20 = this.isKR() || this.isCrypto()
+                ? Math.round(data.benchmark_ma20).toLocaleString()
+                : data.benchmark_ma20.toFixed(2);
+            const ma50 = this.isKR() || this.isCrypto()
+                ? Math.round(data.benchmark_ma50).toLocaleString()
+                : data.benchmark_ma50.toFixed(2);
+            const priceVsMa20 = data.benchmark_price > data.benchmark_ma20 ? '>' : '<';
+            const priceVsMa50 = data.benchmark_price > data.benchmark_ma50 ? '>' : '<';
+            bench.innerHTML = `Price ${fmt} ${priceVsMa20} MA20 ${ma20} | ${priceVsMa50} MA50 ${ma50} | RSI ${data.benchmark_rsi.toFixed(1)}`;
+        } else {
+            bench.textContent = '';
+        }
+
+        // Active strategies
+        const strats = document.getElementById('regimeStrategies');
+        strats.textContent = (data.active_strategies || []).join(', ');
     }
 
     showLoading(show, title, detail) {
@@ -1108,7 +1169,10 @@ class TravelerApp {
         const winRate = summary.win_rate || 0;
         const pnl = summary.total_realized_pnl || 0;
         const commission = summary.total_commission || 0;
-        const netPnl = summary.net_pnl || 0;
+        // Net = Realized - Commission (반올림 후 계산하여 표시 일관성 보장)
+        const netPnl = this.isKRW()
+            ? Math.round(pnl) - Math.round(commission)
+            : parseFloat((pnl - commission).toFixed(2));
 
         document.getElementById('histTotalTrades').textContent = total;
         document.getElementById('histBuys').textContent = buys;

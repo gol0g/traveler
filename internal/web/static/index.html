@@ -7,7 +7,7 @@
     <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/css/style.css?v=15">
+    <link rel="stylesheet" href="/css/style.css?v=19">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Header -->
@@ -20,6 +20,9 @@
                     <button class="market-btn active px-3 py-1 rounded-md text-sm font-medium transition-colors" data-market="us">US</button>
                     <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="kr">KR</button>
                     <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="crypto">Crypto</button>
+                    <span class="border-l border-gray-600 mx-0.5"></span>
+                    <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="sim-us">SIM-US</button>
+                    <button class="market-btn px-3 py-1 rounded-md text-sm font-medium transition-colors text-gray-400" data-market="sim-kr">SIM-KR</button>
                 </div>
             </div>
         </div>
@@ -85,6 +88,21 @@
                         Recalculate
                     </button>
                     <span id="scanMeta" class="text-xs text-gray-500 ml-auto"></span>
+                </div>
+            </div>
+
+            <!-- Market Regime -->
+            <div id="regimeBar" class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700 hidden">
+                <div class="flex items-center gap-4 flex-wrap">
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-400 text-sm">Regime</span>
+                        <span id="regimeBadge" class="px-3 py-1 rounded-full text-sm font-bold"></span>
+                    </div>
+                    <div id="regimeBenchmark" class="text-xs text-gray-400"></div>
+                    <div class="flex items-center gap-2 ml-auto">
+                        <span class="text-gray-400 text-xs">Active:</span>
+                        <span id="regimeStrategies" class="text-xs text-gray-300"></span>
+                    </div>
                 </div>
             </div>
 
@@ -253,12 +271,87 @@
         <div id="panelStrategy" class="tab-panel hidden">
             <div class="mb-6">
                 <h2 class="text-xl font-bold mb-1">Trading System</h2>
-                <p class="text-gray-400 text-sm">멀티 전략 스캔 + 펀더멘털 필터 + 적응형 유니버스 확장 + 자동 포지션 무효화</p>
+                <p class="text-gray-400 text-sm">레짐별 전략 선택 + 멀티 전략 스캔 + 펀더멘털 필터 + 적응형 유니버스 확장 + 자동 포지션 무효화</p>
+            </div>
+
+            <!-- ===== Regime-Based Strategy Selection ===== -->
+            <h3 class="text-lg font-semibold mb-3">Regime-Based Strategy Selection</h3>
+            <div class="strategy-card mb-8" style="border-top-color: #6366f1;">
+                <p class="text-gray-300 text-sm mb-4">시장 레짐(Bull/Sideways/Bear)을 자동 감지하여 해당 레짐에 최적화된 전략만 실행합니다. US/KR 각각 백테스트 최적화로 도출된 구성을 사용합니다.</p>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                    <div>
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">레짐 감지 기준 (SPY / KODEX200)</h4>
+                        <ul class="strategy-conditions">
+                            <li><span class="condition-tag" style="background:rgba(34,197,94,0.15);color:#4ade80;">Bull</span> Price > MA20 & MA50, RSI > 45, MA20 slope > 0</li>
+                            <li><span class="condition-tag" style="background:rgba(234,179,8,0.15);color:#facc15;">Sideways</span> Bull/Bear 조건에 해당하지 않는 상태</li>
+                            <li><span class="condition-tag" style="background:rgba(239,68,68,0.15);color:#f87171;">Bear</span> Price < MA20 & MA50, RSI < 40</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">US 최적 구성 (breakout-bull)</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-green-400">Bull</span><span>breakout</span></div>
+                            <div class="guide-row"><span class="text-yellow-400">Sideways</span><span>mean-reversion, pullback, oversold</span></div>
+                            <div class="guide-row"><span class="text-red-400">Bear</span><span>oversold</span></div>
+                        </div>
+                        <p class="text-gray-500 text-xs mt-2">Sharpe 1.18, +5.2% (120일 백테스트)</p>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">KR 최적 구성 (extended-hold)</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-green-400">Bull</span><span>breakout, pullback</span></div>
+                            <div class="guide-row"><span class="text-yellow-400">Sideways</span><span>mean-reversion, pullback, oversold</span></div>
+                            <div class="guide-row"><span class="text-red-400">Bear</span><span>oversold</span></div>
+                        </div>
+                        <p class="text-gray-500 text-xs mt-2">Sharpe 0.76, +6.2% (120일 백테스트). Breakout 보유 20일.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== Exit System ===== -->
+            <h3 class="text-lg font-semibold mb-3">Exit System</h3>
+            <div class="strategy-card mb-8" style="border-top-color: #f97316;">
+                <p class="text-gray-300 text-sm mb-4">모든 전략에 공통 적용되는 3단계 청산 시스템. T1에서 리스크 제거, T2에서 이익 극대화, 타임스탑으로 자본 회전.</p>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                        <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-2">1. Stop Loss</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">역할</span><span>손실 제한 (진입 즉시 활성)</span></div>
+                            <div class="guide-row"><span class="text-gray-400">수준</span><span>ATR 기반 동적 계산</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Floor</span><span>진입가 × 0.95 (-5%)</span></div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-green-400 uppercase tracking-wider mb-2">2. Target 1 (50% 청산)</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">역할</span><span>리스크 제거 (절반 수익 확보)</span></div>
+                            <div class="guide-row"><span class="text-gray-400">동작</span><span>50% 매도 + 스탑 → 본전</span></div>
+                            <div class="guide-row"><span class="text-gray-400">수준</span><span>Risk × 1.5R</span></div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-green-400 uppercase tracking-wider mb-2">3. Target 2 (전량 청산)</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">역할</span><span>이익 극대화 (나머지 50%)</span></div>
+                            <div class="guide-row"><span class="text-gray-400">수준</span><span>Risk × 2.5~3.0R</span></div>
+                            <div class="guide-row"><span class="text-gray-400">트레일링</span><span>인프라 구축됨 (현재 비활성)</span></div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-2">4. Time Stop</h4>
+                        <div class="strategy-guide">
+                            <div class="guide-row"><span class="text-gray-400">Breakout</span><span>15일 (KR 20일)</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Pullback</span><span>7일</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Mean-Rev</span><span>5일</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Oversold</span><span>5일</span></div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- ===== Strategies ===== -->
             <h3 class="text-lg font-semibold mb-3">Strategies</h3>
-            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
+            <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-8">
                 <!-- Pullback -->
                 <div class="strategy-card strategy-card-pullback">
                     <div class="flex items-center gap-3 mb-4">
@@ -380,6 +473,36 @@
 
                     <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
                     <p class="text-gray-400 text-xs">당일 종가 기준 청산 (1일 보유). 손절가 이탈 시 즉시 청산.</p>
+                </div>
+
+                <!-- Oversold -->
+                <div class="strategy-card" style="border-top-color: #22d3ee;">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge strategy-oversold text-sm">OVERSOLD</span>
+                        <span class="text-gray-400 text-sm">과매도 반등</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">극단적 과매도 상태에서 단기 반등을 노리는 역추세 전략. Bear 레짐에서 유일하게 활성화.</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> RSI(2) < 10 (극단적 과매도)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 > MA200 (장기 추세 건재)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 3일 연속 하락 (패닉 매도 확인)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 거래량 급증 (셀링 클라이맥스)</li>
+                        <li><span class="condition-tag condition-support">보조</span> BB하단 이탈 (극단적 이격)</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>진입가 × 0.95 또는 최근 저점 하회</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>MA5 (단기 평균 회귀)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>MA20 (중기 평균 회귀)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유</span><span>최대 5일 (단기 반등)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">레짐</span><span>Bear에서 유일 활성 전략</span></div>
+                    </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
+                    <p class="text-gray-400 text-xs">RSI(2) > 70 회복 시 수익 실현. 5일 후 자동 타임스탑.</p>
                 </div>
             </div>
 
@@ -645,7 +768,7 @@
         </div>
     </div>
 
-    <script src="/js/chart.js?v=15"></script>
-    <script src="/js/app.js?v=15"></script>
+    <script src="/js/chart.js?v=19"></script>
+    <script src="/js/app.js?v=19"></script>
 </body>
 </html>

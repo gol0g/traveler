@@ -54,9 +54,17 @@ type Server struct {
 	brokerCrypto   broker.Broker
 	providerCrypto provider.Provider
 
+	// 모의투자 시장 지원
+	brokerSimUS  broker.Broker
+	brokerSimKR  broker.Broker
+	historySimUS *trader.TradeHistory
+	historySimKR *trader.TradeHistory
+
 	scan             scanState
 	scanKR           scanState
 	scanCrypto       scanState
+	scanSimUS        scanState
+	scanSimKR        scanState
 	scanMu           sync.RWMutex
 	scanCancel       context.CancelFunc
 	scanKRCancel     context.CancelFunc
@@ -73,6 +81,14 @@ func (s *Server) SetKoreanMarket(b broker.Broker, p provider.Provider) {
 func (s *Server) SetCryptoMarket(b broker.Broker, p provider.Provider) {
 	s.brokerCrypto = b
 	s.providerCrypto = p
+}
+
+// SetSimMarkets 모의투자 브로커/히스토리 설정
+func (s *Server) SetSimMarkets(bUS, bKR broker.Broker, hUS, hKR *trader.TradeHistory) {
+	s.brokerSimUS = bUS
+	s.brokerSimKR = bKR
+	s.historySimUS = hUS
+	s.historySimKR = hKR
 }
 
 // NewServer creates a new web server
@@ -190,6 +206,10 @@ func (s *Server) getScanState(market string) scanState {
 		return s.scanKR
 	case "crypto":
 		return s.scanCrypto
+	case "sim-us":
+		return s.scanSimUS
+	case "sim-kr":
+		return s.scanSimKR
 	default:
 		return s.scan
 	}
@@ -271,20 +291,29 @@ func (s *Server) tryLoadFromDisk(market string) json.RawMessage {
 		return nil
 	}
 	// 메모리에 캐시
+	msg := fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
 	s.scanMu.Lock()
 	switch market {
 	case "kr":
 		s.scanKR.Status = "done"
 		s.scanKR.Result = data
-		s.scanKR.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+		s.scanKR.Message = msg
 	case "crypto":
 		s.scanCrypto.Status = "done"
 		s.scanCrypto.Result = data
-		s.scanCrypto.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+		s.scanCrypto.Message = msg
+	case "sim-us":
+		s.scanSimUS.Status = "done"
+		s.scanSimUS.Result = data
+		s.scanSimUS.Message = msg
+	case "sim-kr":
+		s.scanSimKR.Status = "done"
+		s.scanSimKR.Result = data
+		s.scanSimKR.Message = msg
 	default:
 		s.scan.Status = "done"
 		s.scan.Result = data
-		s.scan.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
+		s.scan.Message = msg
 	}
 	s.scanMu.Unlock()
 	log.Printf("[WEB] Loaded %s scan result from disk (%s)", market, path)
@@ -300,6 +329,10 @@ func (s *Server) scanResultPath(market string) string {
 		return filepath.Join(s.dataDir, "last_scan_kr.json")
 	case "crypto":
 		return filepath.Join(s.dataDir, "last_scan_crypto.json")
+	case "sim-us":
+		return filepath.Join(s.dataDir, "sim_us", "last_scan_us.json")
+	case "sim-kr":
+		return filepath.Join(s.dataDir, "sim_kr", "last_scan_kr.json")
 	default:
 		return filepath.Join(s.dataDir, "last_scan_us.json")
 	}
@@ -316,8 +349,8 @@ func (s *Server) saveScanResultToDisk(data json.RawMessage, market string) {
 }
 
 func (s *Server) loadScanResultFromDisk() {
-	// Load US, KR, and crypto results — store them separately
-	for _, market := range []string{"us", "kr", "crypto"} {
+	// Load US, KR, crypto, and sim results — store them separately
+	for _, market := range []string{"us", "kr", "crypto", "sim-us", "sim-kr"} {
 		path := s.scanResultPath(market)
 		if path == "" {
 			continue
@@ -333,23 +366,30 @@ func (s *Server) loadScanResultFromDisk() {
 		if time.Since(info.ModTime()) > 24*time.Hour {
 			continue
 		}
+		loadMsg := fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
 		switch market {
 		case "kr":
 			s.scanKR.Status = "done"
 			s.scanKR.Result = data
-			s.scanKR.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
-			log.Printf("[WEB] Loaded KR scan result from %s", path)
+			s.scanKR.Message = loadMsg
 		case "crypto":
 			s.scanCrypto.Status = "done"
 			s.scanCrypto.Result = data
-			s.scanCrypto.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
-			log.Printf("[WEB] Loaded Crypto scan result from %s", path)
+			s.scanCrypto.Message = loadMsg
+		case "sim-us":
+			s.scanSimUS.Status = "done"
+			s.scanSimUS.Result = data
+			s.scanSimUS.Message = loadMsg
+		case "sim-kr":
+			s.scanSimKR.Status = "done"
+			s.scanSimKR.Result = data
+			s.scanSimKR.Message = loadMsg
 		default:
 			s.scan.Status = "done"
 			s.scan.Result = data
-			s.scan.Message = fmt.Sprintf("Loaded from disk (%s)", info.ModTime().Format("15:04"))
-			log.Printf("[WEB] Loaded US scan result from %s", path)
+			s.scan.Message = loadMsg
 		}
+		log.Printf("[WEB] Loaded %s scan result from %s", market, path)
 	}
 
 	// Migrate old single file if exists

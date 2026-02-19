@@ -25,6 +25,12 @@ type ActivePosition struct {
 	MaxHoldDays   int    // 최대 보유 거래일
 	Intraday      bool   // 장중 매매 포지션 (장 마감 전 강제 청산)
 	sellFailCount int    // 매도 실패 횟수 (무한 재시도 방지)
+
+	// Trailing stop (activated after T1 hit)
+	UseTrailingStop    bool
+	TrailingATR        float64
+	TrailingMultiplier float64
+	HighestSinceT1     float64
 }
 
 // SellCallback 매도 발생 시 호출되는 콜백 (invested, sold 금액)
@@ -98,6 +104,45 @@ func (m *Monitor) RegisterPositionWithPlan(symbol string, quantity float64, entr
 
 	log.Printf("[MONITOR] Registered %s: strategy=%s, entry=$%.2f, stop=$%.2f, T1=$%.2f, T2=$%.2f, maxDays=%d",
 		symbol, strategy, entryPrice, stopLoss, target1, target2, maxHoldDays)
+}
+
+// SetTrailingStop 트레일링 스탑 설정 (RegisterPositionWithPlan 이후 호출)
+func (m *Monitor) SetTrailingStop(symbol string, useTrailing bool, atr, multiplier float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pos, ok := m.positions[symbol]; ok {
+		pos.UseTrailingStop = useTrailing
+		pos.TrailingATR = atr
+		pos.TrailingMultiplier = multiplier
+	}
+}
+
+// SetHighestSinceT1 복원용: T1 이후 최고가 설정
+func (m *Monitor) SetHighestSinceT1(symbol string, highest float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pos, ok := m.positions[symbol]; ok {
+		pos.HighestSinceT1 = highest
+	}
+}
+
+// SetTarget1Hit 복원용: T1 도달 상태 설정
+func (m *Monitor) SetTarget1Hit(symbol string, hit bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pos, ok := m.positions[symbol]; ok {
+		pos.Target1Hit = hit
+	}
+}
+
+// UpdateTargets 타겟 가격 업데이트 (구조적 레벨 재계산용)
+func (m *Monitor) UpdateTargets(symbol string, target1, target2 float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pos, ok := m.positions[symbol]; ok {
+		pos.Target1 = target1
+		pos.Target2 = target2
+	}
 }
 
 // UnregisterPosition 포지션 등록 해제
@@ -188,20 +233,58 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			continue
 		}
 
-		// 손절 체크
+		// 손절 체크 (trailing stop 포함)
 		if currentPrice <= active.StopLoss {
-			log.Printf("[STOP LOSS] %s hit stop at $%.2f (current: $%.2f)",
-				symbol, active.StopLoss, currentPrice)
-			m.executeSell(ctx, symbol, active.Quantity, "stop_loss", currentPrice)
+			reason := "stop_loss"
+			if active.Target1Hit && active.UseTrailingStop {
+				reason = "trailing_stop"
+			}
+			log.Printf("[STOP] %s hit %s at $%.2f (current: $%.2f)",
+				symbol, reason, active.StopLoss, currentPrice)
+			m.executeSell(ctx, symbol, active.Quantity, reason, currentPrice)
 			continue
 		}
 
-		// Target2 완전 청산 (Target1 이후)
-		if active.Target1Hit && currentPrice >= active.Target2 {
-			log.Printf("[TARGET2] %s hit target2 at $%.2f - closing position",
-				symbol, active.Target2)
-			m.executeSell(ctx, symbol, active.Quantity, "target2", currentPrice)
-			continue
+		// Post-T1: T2 profit taking + trailing stop protection
+		if active.Target1Hit {
+			// T2 check always applies (fixed profit target)
+			if currentPrice >= active.Target2 {
+				log.Printf("[TARGET2] %s hit target2 at $%.2f - closing position",
+					symbol, active.Target2)
+				m.executeSell(ctx, symbol, active.Quantity, "target2", currentPrice)
+				continue
+			}
+
+			// Trailing stop: ratchet up stop loss as price rises
+			if active.UseTrailingStop {
+				if currentPrice > active.HighestSinceT1 {
+					m.mu.Lock()
+					if pos, ok := m.positions[symbol]; ok {
+						pos.HighestSinceT1 = currentPrice
+					}
+					m.mu.Unlock()
+					active.HighestSinceT1 = currentPrice
+				}
+
+				trailingStop := active.HighestSinceT1 - active.TrailingATR*active.TrailingMultiplier
+				if trailingStop < active.EntryPrice {
+					trailingStop = active.EntryPrice
+				}
+
+				if trailingStop > active.StopLoss {
+					m.mu.Lock()
+					if pos, ok := m.positions[symbol]; ok {
+						pos.StopLoss = trailingStop
+					}
+					m.mu.Unlock()
+					active.StopLoss = trailingStop
+
+					// Persist to PlanStore
+					if m.planStore != nil {
+						m.planStore.UpdateTrailingStop(symbol, active.HighestSinceT1, trailingStop)
+					}
+				}
+			}
 		}
 
 		// Target1 도달 - 절반 청산 (또는 1주면 stop을 본전으로 이동)
@@ -218,12 +301,17 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 					continue
 				}
 
-				// Target1 매도 기록
+				// Target1 매도 기록 (수수료 포함 순손익)
 				if m.history != nil {
-					pnl := halfQty * (currentPrice - active.EntryPrice)
+					grossPnl := halfQty * (currentPrice - active.EntryPrice)
+					commRate := CommissionRateByMarket(m.market)
+					buyComm := halfQty * active.EntryPrice * commRate
+					sellComm := halfQty * currentPrice * commRate
+					pnl := grossPnl - buyComm - sellComm
 					pnlPct := 0.0
 					if active.EntryPrice > 0 {
-						pnlPct = (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+						invested := halfQty * active.EntryPrice
+						pnlPct = pnl / invested * 100
 					}
 					m.history.Append(TradeRecord{
 						Market:     m.market,
@@ -279,10 +367,15 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 				}
 
 				if m.history != nil {
-					pnl := sellQty * (currentPrice - active.EntryPrice)
+					grossPnl := sellQty * (currentPrice - active.EntryPrice)
+					commRate := CommissionRateByMarket(m.market)
+					buyComm := sellQty * active.EntryPrice * commRate
+					sellComm := sellQty * currentPrice * commRate
+					pnl := grossPnl - buyComm - sellComm
 					pnlPct := 0.0
 					if active.EntryPrice > 0 {
-						pnlPct = (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+						invested := sellQty * active.EntryPrice
+						pnlPct = pnl / invested * 100
 					}
 					m.history.Append(TradeRecord{
 						Market:     m.market,
@@ -368,12 +461,17 @@ func (m *Monitor) executeSell(ctx context.Context, symbol string, quantity float
 		return
 	}
 
-	// 매매 기록 저장
+	// 매매 기록 저장 (수수료 포함 순손익)
 	if m.history != nil && hasActive {
-		pnl := sellQty * (exitPrice - active.EntryPrice)
+		grossPnl := sellQty * (exitPrice - active.EntryPrice)
+		commRate := CommissionRateByMarket(m.market)
+		buyComm := sellQty * active.EntryPrice * commRate
+		sellComm := sellQty * exitPrice * commRate
+		pnl := grossPnl - buyComm - sellComm
 		pnlPct := 0.0
 		if active.EntryPrice > 0 {
-			pnlPct = (exitPrice - active.EntryPrice) / active.EntryPrice * 100
+			invested := sellQty * active.EntryPrice
+			pnlPct = pnl / invested * 100
 		}
 		m.history.Append(TradeRecord{
 			Market:     m.market,

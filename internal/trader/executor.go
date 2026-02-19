@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"traveler/internal/broker"
 	"traveler/internal/strategy"
@@ -77,6 +78,26 @@ func (e *Executor) Execute(ctx context.Context, signal strategy.Signal) Executio
 
 	result.Result = orderResult
 	result.Success = orderResult.Status != "rejected"
+
+	// 매수 성공 시: 실제 체결가 조회
+	// KIS는 PlaceOrder에서 체결가를 안 줌 (AvgPrice=0) → GetPositions로 조회
+	// Upbit는 PlaceOrder 응답에 AvgPrice가 있으므로 스킵
+	if result.Success && order.Side == broker.OrderSideBuy && orderResult.AvgPrice == 0 {
+		time.Sleep(3 * time.Second) // 체결 대기
+		positions, posErr := e.broker.GetPositions(ctx)
+		if posErr == nil {
+			for _, p := range positions {
+				if p.Symbol == order.Symbol && p.AvgCost > 0 {
+					orderResult.AvgPrice = p.AvgCost
+					orderResult.FilledQty = p.Quantity
+					orderResult.Status = "filled"
+					log.Printf("[EXECUTOR] %s actual fill: $%.2f (order: $%.2f)",
+						order.Symbol, p.AvgCost, order.LimitPrice)
+					break
+				}
+			}
+		}
+	}
 
 	return result
 }

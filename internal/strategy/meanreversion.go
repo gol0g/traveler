@@ -3,7 +3,9 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
+	"sync"
 
 	"traveler/internal/provider"
 	"traveler/internal/symbols"
@@ -19,6 +21,10 @@ type MeanReversionConfig struct {
 	MinPrice          float64
 	MaxTickerLength   int
 	MinDailyDollarVol float64
+
+	// Market regime filter: broad market must be above MA20
+	// US: "SPY", KR: "069500" (KODEX 200)
+	MarketRegimeSymbol string
 }
 
 // DefaultMeanReversionConfig returns default configuration
@@ -43,6 +49,11 @@ func DefaultMeanReversionConfig() MeanReversionConfig {
 type MeanReversionStrategy struct {
 	config   MeanReversionConfig
 	provider provider.Provider
+
+	// Market regime cache (per scan session)
+	regimeMu      sync.Mutex
+	regimeChecked bool
+	regimeOK      bool
 }
 
 // NewMeanReversionStrategy creates a new mean reversion strategy
@@ -63,8 +74,63 @@ func (s *MeanReversionStrategy) Description() string {
 	return "Mean Reversion - Buy oversold stocks bouncing off Bollinger lower band"
 }
 
+// ResetRegimeCache resets the cached regime check (call at start of each scan cycle)
+func (s *MeanReversionStrategy) ResetRegimeCache() {
+	s.regimeMu.Lock()
+	s.regimeChecked = false
+	s.regimeOK = false
+	s.regimeMu.Unlock()
+}
+
+// checkMarketRegime checks if the broad market is above MA20.
+// Result is cached for the entire scan session.
+func (s *MeanReversionStrategy) checkMarketRegime(ctx context.Context) bool {
+	s.regimeMu.Lock()
+	defer s.regimeMu.Unlock()
+
+	if s.regimeChecked {
+		return s.regimeOK
+	}
+
+	s.regimeChecked = true
+	s.regimeOK = true // default to true if no symbol configured or on error
+
+	sym := s.config.MarketRegimeSymbol
+	if sym == "" {
+		return s.regimeOK
+	}
+
+	candles, err := s.provider.GetDailyCandles(ctx, sym, 30)
+	if err != nil {
+		log.Printf("[MEAN-REV] regime check: failed to fetch %s: %v (allowing entries)", sym, err)
+		return s.regimeOK
+	}
+
+	if len(candles) < 20 {
+		log.Printf("[MEAN-REV] regime check: insufficient %s data (%d candles)", sym, len(candles))
+		return s.regimeOK
+	}
+
+	ma20 := CalculateMA(candles, 20)
+	lastClose := candles[len(candles)-1].Close
+	s.regimeOK = lastClose > ma20
+
+	if !s.regimeOK {
+		log.Printf("[MEAN-REV] regime BEARISH: %s %.2f < MA20 %.2f — skipping mean-reversion entries", sym, lastClose, ma20)
+	} else {
+		log.Printf("[MEAN-REV] regime OK: %s %.2f > MA20 %.2f", sym, lastClose, ma20)
+	}
+
+	return s.regimeOK
+}
+
 // Analyze analyzes a stock for mean reversion opportunity
 func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) (*Signal, error) {
+	// Market regime filter: skip all entries if broad market is below MA20
+	if !s.checkMarketRegime(ctx) {
+		return nil, nil
+	}
+
 	// Pre-filter: Ticker length (skip for Korean 6-digit symbols)
 	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength && !symbols.IsKoreanSymbol(stock.Symbol) {
 		return nil, fmt.Errorf("ticker too long: %s", stock.Symbol)

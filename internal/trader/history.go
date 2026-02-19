@@ -37,7 +37,7 @@ type TradeRecord struct {
 	Strategy   string    `json:"strategy,omitempty"`
 	Reason     string    `json:"reason"`               // signal, stop_loss, target1, target2, time_stop, invalidation
 	EntryPrice float64   `json:"entry_price,omitempty"` // 매도 시 진입가
-	PnL        float64   `json:"pnl,omitempty"`         // 매도 시 실현손익 (수수료 미포함)
+	PnL        float64   `json:"pnl,omitempty"`         // 매도 시 실현손익 (수수료 포함 순손익)
 	PnLPct     float64   `json:"pnl_pct,omitempty"`     // 매도 시 수익률%
 }
 
@@ -205,7 +205,6 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 			if ss.Trades > 0 {
 				ss.WinRate = float64(ss.Wins) / float64(ss.Trades) * 100
 			}
-			ss.NetPnL = ss.PnL - ss.Commission
 			s.ByStrategy[strat] = ss
 		}
 
@@ -230,14 +229,27 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 			}
 		}
 		ms.Commission += r.Commission
-		ms.NetPnL = ms.PnL - ms.Commission
 		s.ByMarket[mkt] = ms
 	}
 
 	if s.SellCount > 0 {
 		s.WinRate = float64(s.WinCount) / float64(s.SellCount) * 100
 	}
-	s.NetPnL = s.TotalRealizedPnL - s.TotalCommission
+
+	// PnL 필드는 이미 수수료 차감된 순손익(net)
+	// 표시용으로 gross/net 분리: Realized(gross) = Net + Commission
+	s.NetPnL = s.TotalRealizedPnL
+	s.TotalRealizedPnL += s.TotalCommission
+
+	for k, ms := range s.ByMarket {
+		ms.NetPnL = ms.PnL
+		ms.PnL += ms.Commission // gross
+		s.ByMarket[k] = ms
+	}
+	for k, ss := range s.ByStrategy {
+		ss.NetPnL = ss.PnL
+		s.ByStrategy[k] = ss
+	}
 
 	return s
 }

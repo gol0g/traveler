@@ -288,7 +288,7 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 
 	// Calculate trading guide
 	probability := calculatePullbackProbability(strength, ind.RSI14, volumeRatio, bouncing)
-	guide := s.calculateTradeGuide(today.Close, ind.MA20, ind.ATR14, probability)
+	guide := s.calculateTradeGuide(today.Close, ind.MA20, ind.ATR14, probability, candles)
 
 	return &Signal{
 		Stock:       stock,
@@ -303,35 +303,76 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 }
 
 // calculateTradeGuide generates actionable trade guidance
-func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, atr, winRate float64) *TradeGuide {
-	// ATR 기반 손절: 변동성에 맞춰 조절
-	atrStop := currentPrice - atr*1.5  // 1.5 ATR
-	ma20Stop := ma20 * 0.98            // MA20 -2% (추세 이탈 기준)
-	stopLoss := math.Max(atrStop, ma20Stop) // 둘 중 보수적(높은) 쪽
+func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, atr, winRate float64, candles []model.Candle) *TradeGuide {
+	// === 손절: 하이브리드 (ATR + MA20 + 구조적 스윙로우) ===
+	atrStop := currentPrice - atr*1.5
+	ma20Stop := ma20 * 0.98
+	stopLoss := math.Max(atrStop, ma20Stop)
 
-	// 최소 보장: 진입가 -5% 이하로는 안 내려감
+	// 구조적 손절: 가장 가까운 스윙로우 아래 (ATR×0.25 버퍼)
+	structuralStop := FindNearestSupport(candles, currentPrice, 30, 2)
+	if structuralStop > 0 {
+		structuralStop -= atr * 0.25
+		if structuralStop > stopLoss {
+			stopLoss = structuralStop
+		}
+	}
+
+	// Floor: -5%
 	minStop := currentPrice * 0.95
 	if stopLoss < minStop {
 		stopLoss = minStop
 	}
 
 	stopLossPct := (currentPrice - stopLoss) / currentPrice
-
 	riskPerShare := currentPrice - stopLoss
+
+	// === 익절: 로컬 극값 저항선 기반, R-배수 폴백 ===
+	// 가장 가까운 저항 (entry 위 0.5% 이상)
+	nearestRes := FindNearestResistance(candles, currentPrice*1.005, 40, 2)
+
+	// T1: 가장 가까운 저항선 (최소 1R 보상)
+	target1 := 0.0
+	if nearestRes > 0 && (nearestRes-currentPrice) >= riskPerShare {
+		target1 = nearestRes
+	}
+	if target1 <= 0 {
+		// 폴백: 20일 최고점
+		high20, _ := FindSwingHigh(candles, 20)
+		if high20 > currentPrice && (high20-currentPrice) >= riskPerShare {
+			target1 = high20
+		}
+	}
+	if target1 <= 0 {
+		target1 = currentPrice + riskPerShare*1.5 // R-배수 최종 폴백
+	}
+
+	// T2: 다음 저항선 또는 피보나치 확장
+	swingLow, _ := FindSwingLow(candles, 20)
+	target2 := 0.0
+	// 피보나치 1.272 확장 (스윙로우 → T1 레벨)
+	if swingLow > 0 && target1 > swingLow {
+		target2 = FibonacciExtension(swingLow, target1, 0.272)
+	}
+	if target2 <= target1 {
+		target2 = currentPrice + atr*3.0 // ATR 기반 폴백
+	}
+	if target2 <= target1 {
+		target2 = currentPrice + riskPerShare*2.5
+	}
 
 	guide := &TradeGuide{
 		EntryPrice:  currentPrice,
 		EntryType:   "limit",
 		StopLoss:    stopLoss,
 		StopLossPct: stopLossPct * 100,
-
-		// Targets based on R-multiples
-		Target1:    currentPrice + riskPerShare*1.5, // 1.5R
-		Target1Pct: riskPerShare * 1.5 / currentPrice * 100,
-		Target2:    currentPrice + riskPerShare*2.5, // 2.5R
-		Target2Pct: riskPerShare * 2.5 / currentPrice * 100,
-
-		RiskRewardRatio: 2.0, // Targeting 2R
+		Target1:     target1,
+		Target1Pct:  (target1 - currentPrice) / currentPrice * 100,
+		Target2:     target2,
+		Target2Pct:  (target2 - currentPrice) / currentPrice * 100,
+	}
+	if riskPerShare > 0 {
+		guide.RiskRewardRatio = (target1 - currentPrice) / riskPerShare
 	}
 
 	// Position sizing (will be calculated with account balance in CLI)
@@ -345,6 +386,12 @@ func (s *PullbackStrategy) calculateTradeGuide(currentPrice, ma20, atr, winRate 
 			guide.KellyFraction = 0
 		}
 	}
+
+	// Trailing stop: infrastructure ready but disabled for short-term swing trades.
+	// Enable when hold period is extended or for trend-following mode.
+	guide.UseTrailingStop = false
+	guide.TrailingMultiplier = 2.0
+	guide.EntryATR = atr
 
 	return guide
 }

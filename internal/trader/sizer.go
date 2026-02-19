@@ -111,6 +111,13 @@ func (p *PositionSizer) CalculateSize(sig *strategy.Signal) SizingResult {
 	// 5. 리스크 예산 계산
 	riskBudget := p.config.TotalCapital * p.config.RiskPerTrade
 
+	// Bear regime: 리스크 절반 (자본 보존 우선)
+	if sig.Details != nil {
+		if regime, ok := sig.Details["regime"]; ok && regime == -1 {
+			riskBudget *= 0.5
+		}
+	}
+
 	// 6. Stop-distance 기반 수량 계산 (핵심!)
 	// qty = floor(riskBudget / stopDistance)
 	qtyByRisk := math.Floor(riskBudget / stopDistance)
@@ -251,10 +258,10 @@ func AdjustConfigForBalance(balance float64) SizerConfig {
 		cfg.MinRiskReward = 1.5
 		cfg.MinExpectedReturn = 0.01  // 1%
 	default:
-		// 고액: 약간 보수적
+		// 고액: 표준
 		cfg.RiskPerTrade = 0.01      // 1%
 		cfg.MaxPositions = 5
-		cfg.MinRiskReward = 2.0      // R/R 기준 높임
+		cfg.MinRiskReward = 1.5      // R/R 기준 (대형주 ORB 호환)
 		cfg.MinExpectedReturn = 0.01  // 1%
 	}
 

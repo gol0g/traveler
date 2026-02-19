@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"traveler/internal/broker"
@@ -75,6 +76,10 @@ type Daemon struct {
 	// 장중 매매
 	intradayScanner *strategy.IntradayScanner
 	intradaySymbols []string // 장중 스캔 대상 종목
+
+	// Wind-down mode (daily target reached → stop new orders, keep monitoring)
+	windDown    chan struct{}
+	windingDown bool
 }
 
 // NewDaemon 생성자
@@ -198,8 +203,10 @@ func (d *Daemon) Run() error {
 			}
 		}
 		d.capital = NewCapitalTracker(dataDir, d.config.TradingCapital)
-		tradingCapital = d.capital.GetCurrentCapital()
-		log.Printf("[DAEMON] Trading capital: ₩%.0f (account: ₩%.0f)", tradingCapital, balance.TotalEquity)
+		capState := d.capital.GetState()
+		tradingCapital = capState.CurrentCapital + capState.TotalInvested
+		log.Printf("[DAEMON] Trading capital: ₩%.0f (cash=₩%.0f, invested=₩%.0f, account=₩%.0f)",
+			tradingCapital, capState.CurrentCapital, capState.TotalInvested, balance.TotalEquity)
 	}
 
 	// 3. 일일 트래커 시작
@@ -279,11 +286,32 @@ func (d *Daemon) Run() error {
 				if plan := planStore.Get(p.Symbol); plan != nil {
 					log.Printf("  → Restored plan: strategy=%s, stop=$%.2f, T1=$%.2f, T2=$%.2f, maxDays=%d",
 						plan.Strategy, plan.StopLoss, plan.Target1, plan.Target2, plan.MaxHoldDays)
-					d.autoTrader.GetMonitor().RegisterPositionWithPlan(
+					mon := d.autoTrader.GetMonitor()
+					mon.RegisterPositionWithPlan(
 						p.Symbol, p.Quantity, plan.EntryPrice,
 						plan.StopLoss, plan.Target1, plan.Target2,
 						plan.Strategy, plan.MaxHoldDays, plan.EntryTime,
 					)
+					// Restore trailing stop state
+					if plan.UseTrailingStop {
+						mon.SetTrailingStop(p.Symbol, true, plan.TrailingATR, plan.TrailingMultiplier)
+						if plan.HighestSinceT1 > 0 {
+							// Also restore HighestSinceT1 for T1-already-hit positions
+							mon.SetHighestSinceT1(p.Symbol, plan.HighestSinceT1)
+						}
+					}
+					// Restore T1 hit state
+					if plan.Target1Hit {
+						mon.SetTarget1Hit(p.Symbol, true)
+					}
+					// Restore Intraday flag for force close
+					if plan.Strategy == "intraday_orb" || plan.Strategy == "intraday_dip" {
+						for _, pos := range mon.GetActivePositions() {
+							if pos.Symbol == p.Symbol {
+								pos.Intraday = true
+							}
+						}
+					}
 					continue
 				}
 			}
@@ -319,6 +347,9 @@ func (d *Daemon) Run() error {
 			}
 		}
 	}
+
+	// 8.5. 기존 포지션 타겟 재계산 (구조적 레벨 기반)
+	d.recalculateTargets(planStore)
 
 	// 9. 전략 무효화 체크 (전일 데이터 기반, 프리마켓에서 가능)
 	d.runInvalidationCheck()
@@ -372,7 +403,12 @@ func (d *Daemon) Run() error {
 					if r.Result != nil {
 						orderID = r.Result.OrderID
 					}
-					investAmount := r.Order.Quantity * r.Order.LimitPrice
+					// 실제 체결가 사용 (있으면)
+					actualPrice := r.Order.LimitPrice
+					if r.Result != nil && r.Result.AvgPrice > 0 {
+						actualPrice = r.Result.AvgPrice
+					}
+					investAmount := r.Order.Quantity * actualPrice
 					if r.Order.Amount > 0 {
 						investAmount = r.Order.Amount // 시장가 매수: KRW 금액
 					}
@@ -380,7 +416,7 @@ func (d *Daemon) Run() error {
 						Symbol:   r.Order.Symbol,
 						Side:     string(r.Order.Side),
 						Quantity: r.Order.Quantity,
-						Price:    r.Order.LimitPrice,
+						Price:    actualPrice,
 						Amount:   investAmount,
 						OrderID:  orderID,
 						Reason:   "signal",
@@ -394,7 +430,7 @@ func (d *Daemon) Run() error {
 							Symbol:   r.Order.Symbol,
 							Side:     "buy",
 							Quantity: r.Order.Quantity,
-							Price:    r.Order.LimitPrice,
+							Price:    actualPrice,
 							Strategy: r.Signal.Strategy,
 							Reason:   "signal",
 						})
@@ -420,6 +456,7 @@ func (d *Daemon) mainLoop() error {
 	defer monitorTicker.Stop()
 
 	// 장중 매매 초기화
+	d.windDown = make(chan struct{})
 	d.initIntraday()
 
 	// 장중 스캔 루프 (별도 고루틴)
@@ -441,14 +478,31 @@ func (d *Daemon) mainLoop() error {
 		}
 
 		// 종료 조건 체크
-		if shouldStop, reason := d.checkStopConditions(); shouldStop {
-			// 장중 포지션 강제 청산
-			if d.autoTrader != nil {
-				d.autoTrader.GetMonitor().ForceCloseIntraday(d.ctx)
-			}
-			<-intradayDone
-			return d.shutdown(reason)
+		shouldStop, reason := d.checkStopConditions()
+		if !shouldStop {
+			continue
 		}
+
+		// Wind-down mode: 일일 목표 달성 시 신규 진입 중지, 기존 포지션 모니터링 유지
+		// (장중 포지션 강제청산 X — 개별 손절/익절로 퇴출)
+		if !d.windingDown && strings.HasPrefix(reason, "target reached") {
+			log.Printf("[DAEMON] %s — entering wind-down mode (no new orders, keep monitoring)", reason)
+			close(d.windDown) // intradayLoop에 신호 → 신규 진입 중지
+			d.windingDown = true
+			continue
+		}
+
+		// Wind-down 중에는 장 마감만 hard stop
+		if d.windingDown && !strings.HasPrefix(reason, "market_closed") {
+			continue // target_reached 반복 무시
+		}
+
+		// Hard stop: 장 마감 또는 기타 사유
+		if d.autoTrader != nil {
+			d.autoTrader.GetMonitor().ForceCloseIntraday(d.ctx)
+		}
+		<-intradayDone
+		return d.shutdown(reason)
 	}
 }
 
@@ -459,42 +513,55 @@ func (d *Daemon) runMonitorCycle() {
 		d.autoTrader.GetMonitor().CheckPositions(d.ctx)
 	}
 
-	// 현재 포지션 조회
-	positions, err := d.broker.GetPositions(d.ctx)
-	if err != nil {
+	// P&L 계산: CapitalTracker 모드 vs 전체 계좌 모드
+	if d.capital != nil {
+		// CapitalTracker 모드: 데몬이 관리하는 포지션만 PnL 추적
+		// (수동 매수한 BTC/ETH 등은 제외)
+		daemonSymbols := make(map[string]bool)
+		if d.autoTrader != nil {
+			for _, pos := range d.autoTrader.GetMonitor().GetActivePositions() {
+				daemonSymbols[pos.Symbol] = true
+			}
+		}
+
+		positions, err := d.broker.GetPositions(d.ctx)
+		if err != nil {
+			return
+		}
+
+		var unrealizedPnL float64
+		for _, p := range positions {
+			if daemonSymbols[p.Symbol] {
+				unrealizedPnL += p.UnrealizedPnL
+			}
+		}
+
+		capState := d.capital.GetState()
+		daemonEquity := capState.CurrentCapital + capState.TotalInvested + unrealizedPnL
+		d.tracker.UpdatePnL(capState.RealizedPnL, unrealizedPnL, daemonEquity)
 		return
 	}
 
-	// P&L 계산
-	var unrealizedPnL float64
-	for _, p := range positions {
-		unrealizedPnL += p.UnrealizedPnL
-	}
-
-	// 잔고 조회
+	// 전체 계좌 모드 (US/KR 주식)
+	// GetBalance()는 positions + buying power를 동시에 반환 — 한 번만 호출
 	balance, err := d.broker.GetBalance(d.ctx)
 	if err != nil {
 		return
 	}
 
-	// 미체결 주문 조회 (예약금은 손실이 아님)
-	pendingOrders, _ := d.broker.GetPendingOrders(d.ctx)
-	var pendingValue float64
-	for _, order := range pendingOrders {
-		if order.Side == broker.OrderSideBuy {
-			unfilledQty := order.Quantity - order.FilledQty
-			pendingValue += unfilledQty * order.Price
-		}
+	var unrealizedPnL float64
+	for _, p := range balance.Positions {
+		unrealizedPnL += p.UnrealizedPnL
 	}
 
-	// 총 자산 = 현금 + 보유 주식 + 미체결 주문 예약금
-	totalEquity := balance.TotalEquity + pendingValue
-
-	// 실현 손익 = 총 자산 - 시작 잔고 - 미실현 손익
+	// TotalEquity = 보유 포지션 평가액 + BuyingPower(가용 현금)
+	// 주의: pendingValue를 더하지 않음. KIS API의 BuyingPower는 미체결 주문
+	// 예약금을 차감한 값이지만, 주문 직후에는 API 업데이트 지연으로 차감이
+	// 안 됐을 수 있음. pendingValue를 더하면 이중 계산 → 허위 PnL 발생
+	// (Bug #009: SMCI $30.43 주문 → 19.5% 허위 PnL → 22초 만에 강제청산)
+	totalEquity := balance.TotalEquity
 	state := d.tracker.GetState()
 	realizedPnL := totalEquity - state.StartingBalance - unrealizedPnL
-
-	// 트래커 업데이트
 	d.tracker.UpdatePnL(realizedPnL, unrealizedPnL, totalEquity)
 }
 
@@ -508,49 +575,54 @@ type daemonScanResult struct {
 	AvgProb              float64
 	FundamentalsFiltered int
 	ScanTime             time.Duration
+
+	// Market regime info
+	Regime           string
+	ActiveStrategies []string
+	BenchmarkPrice   float64
+	BenchmarkMA20    float64
+	BenchmarkMA50    float64
+	BenchmarkRSI     float64
 }
 
 // adaptiveScan 적응형 멀티 전략 스캔
 func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 	var strategies []strategy.Strategy
+	var regimeInfo strategy.RegimeInfo
+	var activeStrats []string
 
 	if d.isCrypto() {
 		// 크립토: 레짐 인식 메타전략 (Bull→VolatilityBreakout, Sideways→RangeTrading, Bear→skip)
 		meta := strategy.NewCryptoMetaStrategy(d.provider)
 		strategies = []strategy.Strategy{meta}
+		regimeInfo = meta.GetRegimeInfo(d.ctx)
+		switch regimeInfo.Regime {
+		case strategy.RegimeBull:
+			activeStrats = []string{"volatility-breakout"}
+		case strategy.RegimeSideways:
+			activeStrats = []string{"range-trading"}
+		case strategy.RegimeBear:
+			activeStrats = []string{"(none)"}
+		}
 	} else {
-		// 주식 전략 (US/KR)
-		pullbackCfg := strategy.DefaultPullbackConfig()
-		if d.isKR() {
-			pullbackCfg.MarketRegimeSymbol = "069500" // KODEX 200 (KOSPI 추종 ETF)
-		} else {
-			pullbackCfg.MarketRegimeSymbol = "SPY"
-		}
-		pullback := strategy.NewPullbackStrategy(pullbackCfg, d.provider)
-
-		breakoutCfg := strategy.DefaultBreakoutConfig()
-		breakout := strategy.NewBreakoutStrategy(breakoutCfg, d.provider)
-
-		meanRevCfg := strategy.DefaultMeanReversionConfig()
-		meanRev := strategy.NewMeanReversionStrategy(meanRevCfg, d.provider)
-
-		oversoldCfg := strategy.DefaultOversoldConfig()
-		if d.isKR() {
-			oversoldCfg.MarketRegimeSymbol = "069500"
-		} else {
-			oversoldCfg.MarketRegimeSymbol = "SPY"
-		}
-		oversold := strategy.NewOversoldStrategy(oversoldCfg, d.provider)
-
-		strategies = []strategy.Strategy{pullback, meanRev, breakout, oversold}
+		// 주식 (US/KR): 레짐 인식 메타전략 — 레짐별 최적 전략 자동 선택
+		metaCfg := strategy.DefaultStockMetaConfig(d.config.Market)
+		meta := strategy.NewStockMetaStrategy(metaCfg, d.provider)
+		strategies = []strategy.Strategy{meta}
+		regimeInfo = meta.GetRegimeInfo(d.ctx)
+		activeStrats = meta.GetActiveStrategyNames(d.ctx)
+		log.Printf("[DAEMON] Stock meta strategy: %s (bull=%v, sideways=%v, bear=%v)",
+			metaCfg.Name, metaCfg.Bull, metaCfg.Sideways, metaCfg.Bear)
 	}
+	log.Printf("[DAEMON] Regime: %s (benchmark=%s, price=%.2f, MA20=%.2f, RSI=%.1f), active=%v",
+		regimeInfo.Regime, regimeInfo.Symbol, regimeInfo.Price, regimeInfo.MA20, regimeInfo.RSI14, activeStrats)
 	stratNames := make([]string, len(strategies))
 	for i, s := range strategies {
 		stratNames[i] = s.Name()
 	}
 	log.Printf("[DAEMON] Multi-strategy scan (%d strategies: %v)", len(strategies), stratNames)
 
-	// 스캔 함수: 종목별로 모든 전략 실행, 가장 강한 신호만 유지
+	// 스캔 함수: 메타전략이 레짐 감지 + 전략 선택 + 시그널 선택을 모두 처리
 	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
 		var signals []strategy.Signal
 		total := len(stocks)
@@ -559,7 +631,6 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 				log.Printf("[DAEMON] Scan progress: %d/%d", i+1, total)
 			}
 
-			// 모든 전략으로 분석, 가장 강한 신호 유지
 			var best *strategy.Signal
 			for _, strat := range strategies {
 				sig, err := strat.Analyze(ctx, stock)
@@ -655,6 +726,12 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		Expansions:           result.Expansions,
 		AvgProb:              result.Quality.AvgProb,
 		FundamentalsFiltered: fundamentalsFiltered,
+		Regime:           string(regimeInfo.Regime),
+		ActiveStrategies: activeStrats,
+		BenchmarkPrice:   regimeInfo.Price,
+		BenchmarkMA20:    regimeInfo.MA20,
+		BenchmarkMA50:    regimeInfo.MA50,
+		BenchmarkRSI:     regimeInfo.RSI14,
 	}, nil
 }
 
@@ -817,6 +894,12 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 		"expansions":            sr.Expansions,
 		"avg_prob":              sr.AvgProb,
 		"fundamentals_filtered": sr.FundamentalsFiltered,
+		"regime":                sr.Regime,
+		"active_strategies":     sr.ActiveStrategies,
+		"benchmark_price":       sr.BenchmarkPrice,
+		"benchmark_ma20":        sr.BenchmarkMA20,
+		"benchmark_ma50":        sr.BenchmarkMA50,
+		"benchmark_rsi":         sr.BenchmarkRSI,
 	}
 
 	data, err := json.Marshal(resp)
@@ -911,8 +994,8 @@ func (d *Daemon) selectIntradayUniverse(capital float64) []string {
 			allSymbols = append(allSymbols, symbols.GetUniverse(u)...)
 		}
 	} else {
-		// US: 가격 필터링 필요 — 상위 100종목에서 저가만
-		for _, u := range []symbols.Universe{symbols.UniverseNasdaq100, symbols.UniverseSP500} {
+		// US: nasdaq100 + SP500 + midcap (자본이 크면 더 많은 종목 커버)
+		for _, u := range []symbols.Universe{symbols.UniverseNasdaq100, symbols.UniverseSP500, symbols.UniverseMidCap} {
 			allSymbols = append(allSymbols, symbols.GetUniverse(u)...)
 		}
 	}
@@ -927,6 +1010,12 @@ func (d *Daemon) selectIntradayUniverse(capital float64) []string {
 		}
 	}
 
+	// 자본에 따라 종목 수 조정
+	maxSymbols := 50
+	if capital >= 10000 {
+		maxSymbols = 80
+	}
+
 	// 가격 필터링 (현재가 조회)
 	var affordable []string
 	for _, sym := range unique {
@@ -938,8 +1027,7 @@ func (d *Daemon) selectIntradayUniverse(capital float64) []string {
 			affordable = append(affordable, sym)
 		}
 
-		// 최대 50종목
-		if len(affordable) >= 50 {
+		if len(affordable) >= maxSymbols {
 			break
 		}
 
@@ -957,24 +1045,39 @@ func (d *Daemon) runIntradayLoop() {
 		return
 	}
 
-	// 1단계: 종목 초기화 (전일 종가 설정)
-	log.Printf("[INTRADAY] Initializing %d symbols with previous close...", len(d.intradaySymbols))
-	for _, sym := range d.intradaySymbols {
-		price, err := d.broker.GetQuote(d.ctx, sym)
-		if err != nil || price <= 0 {
-			continue
+	// 크립토: 하락장이면 인트라데이 ORB 비활성화 (상방 돌파 전략은 bear에서 역효과)
+	if d.isCrypto() {
+		rd := strategy.NewRegimeDetector(d.provider)
+		regime := rd.Detect(d.ctx)
+		if regime == strategy.RegimeBear {
+			log.Println("[INTRADAY] Regime=bear, skipping intraday ORB (upside breakout ineffective in bear market)")
+			return
 		}
-		d.intradayScanner.InitSymbol(sym, price)
+		log.Printf("[INTRADAY] Regime=%s, proceeding with intraday ORB", regime)
 	}
 
-	// 2단계: OR 수집 (장 시작 후 30분간 매 1분마다 가격 수집)
-	log.Println("[INTRADAY] Starting Opening Range collection...")
-	d.collectOpeningRange()
+	// 1단계: 종목 초기화 (전일 OHLC 설정 — 구조적 타겟용)
+	log.Printf("[INTRADAY] Initializing %d symbols with previous close...", len(d.intradaySymbols))
+	for _, sym := range d.intradaySymbols {
+		candles, err := d.provider.GetDailyCandles(d.ctx, sym, 2)
+		if err != nil || len(candles) == 0 {
+			continue
+		}
+		prev := candles[len(candles)-1]
+		d.intradayScanner.InitSymbol(sym, prev.Close, prev.High, prev.Low)
+	}
 
-	// OR 완료
-	d.intradayScanner.FinalizeOR()
-	orbSymbols := d.intradayScanner.GetORBSymbols()
-	log.Printf("[INTRADAY] OR collection done. %d symbols with valid ORB range", len(orbSymbols))
+	// 2단계: OR 수집 (ORB가 활성화된 경우만)
+	cfg := strategy.DefaultIntradayConfig()
+	if cfg.ORBEnabled {
+		log.Println("[INTRADAY] Starting Opening Range collection...")
+		d.collectOpeningRange()
+		d.intradayScanner.FinalizeOR()
+		orbSymbols := d.intradayScanner.GetORBSymbols()
+		log.Printf("[INTRADAY] OR collection done. %d symbols with valid ORB range", len(orbSymbols))
+	} else {
+		log.Println("[INTRADAY] ORB disabled, skipping OR collection")
+	}
 
 	// 3단계: 장중 스캔 루프 (5분 간격)
 	scanInterval := strategy.DefaultIntradayConfig().ScanInterval
@@ -988,6 +1091,9 @@ func (d *Daemon) runIntradayLoop() {
 	for {
 		select {
 		case <-d.ctx.Done():
+			return
+		case <-d.windDown:
+			log.Println("[INTRADAY] Wind-down signal received, stopping new orders")
 			return
 		case <-ticker.C:
 			// 장 마감 임박 체크
@@ -1110,7 +1216,12 @@ func (d *Daemon) executeIntradaySignals() {
 	for _, r := range results {
 		if r.Success {
 			sym := r.Order.Symbol
-			investAmount := r.Order.Quantity * r.Order.LimitPrice
+			// 실제 체결가 사용 (있으면)
+			actualPrice := r.Order.LimitPrice
+			if r.Result != nil && r.Result.AvgPrice > 0 {
+				actualPrice = r.Result.AvgPrice
+			}
+			investAmount := r.Order.Quantity * actualPrice
 			if r.Order.Amount > 0 {
 				investAmount = r.Order.Amount // 시장가 매수: KRW 금액
 			}
@@ -1142,11 +1253,186 @@ func (d *Daemon) executeIntradaySignals() {
 					Symbol:   sym,
 					Side:     "buy",
 					Quantity: r.Order.Quantity,
-					Price:    r.Order.LimitPrice,
+					Price:    actualPrice,
 					Strategy: r.Signal.Strategy,
 					Reason:   "intraday_signal",
 				})
 			}
+		}
+	}
+}
+
+// recalculateTargets 기존 포지션의 T1/T2를 구조적 레벨로 재계산
+func (d *Daemon) recalculateTargets(planStore *trader.PlanStore) {
+	if planStore == nil {
+		return
+	}
+	plans := planStore.GetAll()
+	if len(plans) == 0 {
+		return
+	}
+
+	log.Printf("[DAEMON] Recalculating targets for %d positions...", len(plans))
+	mon := d.autoTrader.GetMonitor()
+
+	for _, plan := range plans {
+		if plan.Target1Hit {
+			continue // T1 이미 도달한 포지션은 건드리지 않음
+		}
+
+		candles, err := d.provider.GetDailyCandles(d.ctx, plan.Symbol, 70)
+		if err != nil || len(candles) < 20 {
+			log.Printf("[RECALC] %s: insufficient data, keeping old targets", plan.Symbol)
+			continue
+		}
+
+		ind := strategy.CalculateIndicators(candles)
+		oldT1, oldT2 := plan.Target1, plan.Target2
+		entry := plan.EntryPrice
+
+		switch {
+		case plan.Strategy == "mean-reversion" || plan.Strategy == "rsi-contrarian" || plan.Strategy == "range-trading":
+			// 이미 구조적 (MA20, BB상단) — skip
+			continue
+
+		case plan.Strategy == "pullback" || plan.Strategy == "oversold":
+			riskPerShare := entry - plan.StopLoss
+			if riskPerShare <= 0 {
+				riskPerShare = entry * 0.02
+			}
+
+			// 구조적 손절: 스윙로우 기반 업데이트
+			structuralStop := strategy.FindNearestSupport(candles, entry, 30, 2)
+			if structuralStop > 0 {
+				newStop := structuralStop - ind.ATR14*0.25
+				if newStop > plan.StopLoss && newStop < entry*0.99 {
+					plan.StopLoss = newStop
+					riskPerShare = entry - newStop
+				}
+			}
+
+			// T1: 가장 가까운 로컬 저항 (최소 1R)
+			nearestRes := strategy.FindNearestResistance(candles, entry*1.005, 40, 2)
+			if nearestRes > 0 && (nearestRes-entry) >= riskPerShare {
+				plan.Target1 = nearestRes
+			} else {
+				swingHigh, _ := strategy.FindSwingHigh(candles, 20)
+				if swingHigh > entry && (swingHigh-entry) >= riskPerShare {
+					plan.Target1 = swingHigh
+				} else {
+					plan.Target1 = entry + riskPerShare*1.5
+				}
+			}
+
+			// T2: 피보나치 1.272 확장
+			swingLow, _ := strategy.FindSwingLow(candles, 20)
+			plan.Target2 = 0
+			if swingLow > 0 && plan.Target1 > swingLow {
+				plan.Target2 = strategy.FibonacciExtension(swingLow, plan.Target1, 0.272)
+			}
+			if plan.Target2 <= plan.Target1 || plan.Target2 <= 0 {
+				plan.Target2 = entry + ind.ATR14*3.0
+			}
+			if plan.Target2 <= plan.Target1 {
+				plan.Target2 = entry + riskPerShare*2.5
+			}
+
+		case plan.Strategy == "breakout" || plan.Strategy == "volume-spike":
+			riskPerShare := entry - plan.StopLoss
+			if riskPerShare <= 0 {
+				riskPerShare = entry * 0.02
+			}
+			breakoutLevel := plan.BreakoutLevel
+			if breakoutLevel <= 0 {
+				breakoutLevel = strategy.CalculateHighestHigh(candles, 20)
+			}
+
+			// 구조적 손절
+			structuralStop := strategy.FindNearestSupport(candles, breakoutLevel, 30, 2)
+			if structuralStop > 0 {
+				newStop := structuralStop - ind.ATR14*0.25
+				if newStop > plan.StopLoss && newStop < entry*0.99 {
+					plan.StopLoss = newStop
+					riskPerShare = entry - newStop
+				}
+			}
+
+			// T1: 측정이동 50% 또는 가장 가까운 저항
+			consolidationLow := strategy.CalculateLowestLow(candles, 20)
+			measuredMove := 0.0
+			if consolidationLow > 0 && breakoutLevel > consolidationLow {
+				measuredMove = breakoutLevel - consolidationLow
+			}
+			plan.Target1 = 0
+			if measuredMove > 0 {
+				plan.Target1 = breakoutLevel + measuredMove*0.5
+			}
+			nearestRes := strategy.FindNearestResistance(candles, entry*1.005, 60, 2)
+			if nearestRes > 0 && (nearestRes-entry) >= riskPerShare*1.5 {
+				if plan.Target1 <= 0 || nearestRes < plan.Target1 {
+					plan.Target1 = nearestRes
+				}
+			}
+			if plan.Target1 <= 0 || (plan.Target1-entry) < riskPerShare*1.5 {
+				plan.Target1 = entry + riskPerShare*1.5
+			}
+
+			// T2: 측정이동 100% 또는 피보나치 1.618
+			plan.Target2 = 0
+			if measuredMove > 0 {
+				plan.Target2 = breakoutLevel + measuredMove
+			}
+			if plan.Target2 <= plan.Target1 && consolidationLow > 0 && breakoutLevel > consolidationLow {
+				plan.Target2 = strategy.FibonacciExtension(consolidationLow, breakoutLevel, 0.618)
+			}
+			if plan.Target2 <= plan.Target1 || plan.Target2 <= 0 {
+				plan.Target2 = entry + ind.ATR14*3.0
+			}
+			if plan.Target2 <= plan.Target1 {
+				plan.Target2 = entry + riskPerShare*3.0
+			}
+
+		case plan.Strategy == "intraday_orb" || plan.Strategy == "intraday_dip":
+			// ORB/DipBuy: 전일 고점 기반
+			if len(candles) >= 1 {
+				prev := candles[len(candles)-1]
+				riskPerShare := entry - plan.StopLoss
+				if riskPerShare <= 0 {
+					continue
+				}
+				rangeWidth := riskPerShare * 2 // OR range ≈ 2× risk (stop = OR mid)
+
+				rangeT1 := entry + rangeWidth
+				plan.Target1 = rangeT1
+				if prev.High > entry && prev.High < rangeT1 {
+					plan.Target1 = prev.High
+				}
+				// 구조적 T1이 수수료를 못 커버하면 재계산 건너뜀 (기존 타겟 유지)
+				if (plan.Target1-entry)/entry < 0.01 {
+					plan.Target1 = oldT1
+					plan.Target2 = oldT2
+					continue
+				}
+
+				rangeT2 := entry + rangeWidth*1.5
+				plan.Target2 = rangeT2
+				if prev.High > plan.Target1 {
+					plan.Target2 = prev.High
+				}
+				if plan.Target2 <= plan.Target1 {
+					plan.Target2 = rangeT2
+				}
+			}
+
+		default:
+			continue
+		}
+
+		if plan.Target1 != oldT1 || plan.Target2 != oldT2 {
+			planStore.Save(plan)
+			mon.UpdateTargets(plan.Symbol, plan.Target1, plan.Target2)
+			log.Printf("[RECALC] %s (%s): T1 $%.2f→$%.2f, T2 $%.2f→$%.2f",
+				plan.Symbol, plan.Strategy, oldT1, plan.Target1, oldT2, plan.Target2)
 		}
 	}
 }
@@ -1199,8 +1485,18 @@ func (d *Daemon) generatePlanFromAnalysis(symbol string, avgCost float64, quanti
 			stopLoss = avgCost * 0.97
 		}
 		riskPerShare := avgCost - stopLoss
-		target1 = avgCost + riskPerShare*1.5
-		target2 = avgCost + riskPerShare*3.0
+		// Measured move T1, Fib 1.618 T2
+		swingLow, _ := strategy.FindSwingLow(candles, 20)
+		if swingLow > 0 && breakoutLevel > swingLow {
+			target1 = breakoutLevel + (breakoutLevel - swingLow)
+			target2 = strategy.FibonacciExtension(swingLow, breakoutLevel, 0.618)
+		}
+		if target1 <= 0 || (target1-avgCost) < riskPerShare*0.5 {
+			target1 = avgCost + riskPerShare*1.5
+		}
+		if target2 <= target1 {
+			target2 = avgCost + riskPerShare*3.0
+		}
 
 	default: // pullback
 		// 손절: MA20 아래 or 진입가 -3%
@@ -1212,8 +1508,19 @@ func (d *Daemon) generatePlanFromAnalysis(symbol string, avgCost float64, quanti
 		if riskPerShare <= 0 {
 			riskPerShare = avgCost * 0.02
 		}
-		target1 = avgCost + riskPerShare*1.5
-		target2 = avgCost + riskPerShare*2.5
+		// Swing high T1, Fib 1.272 T2
+		swingHigh, _ := strategy.FindSwingHigh(candles, 20)
+		swingLow, _ := strategy.FindSwingLow(candles, 20)
+		target1 = swingHigh
+		if target1 <= 0 || (target1-avgCost) < riskPerShare*0.5 {
+			target1 = avgCost + riskPerShare*1.5
+		}
+		if swingLow > 0 && swingHigh > swingLow {
+			target2 = strategy.FibonacciExtension(swingLow, swingHigh, 0.272)
+		}
+		if target2 <= target1 {
+			target2 = avgCost + riskPerShare*2.5
+		}
 	}
 
 	maxDays := trader.GetMaxHoldDays(strategyName)

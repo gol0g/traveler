@@ -108,12 +108,18 @@ func (t *AutoTrader) ExecuteSignals(ctx context.Context, signals []strategy.Sign
 		results = append(results, result)
 
 		if result.Success {
+			// 실제 체결가 사용 (있으면)
+			actualEntryPrice := sig.Guide.EntryPrice
+			if result.Result != nil && result.Result.AvgPrice > 0 {
+				actualEntryPrice = result.Result.AvgPrice
+			}
+
 			if result.Order.Type == broker.OrderTypeMarket {
 				log.Printf("[EXECUTED] %s: MARKET BUY ₩%.0f",
 					sig.Stock.Symbol, result.Order.Amount)
 			} else {
 				log.Printf("[EXECUTED] %s: BUY %.0f shares @ $%.2f",
-					sig.Stock.Symbol, result.Order.Quantity, result.Order.LimitPrice)
+					sig.Stock.Symbol, result.Order.Quantity, actualEntryPrice)
 			}
 
 			// 모니터링 등록 (전략 정보 포함)
@@ -122,7 +128,7 @@ func (t *AutoTrader) ExecuteSignals(ctx context.Context, signals []strategy.Sign
 				t.monitor.RegisterPositionWithPlan(
 					sig.Stock.Symbol,
 					sig.Guide.PositionSize,
-					sig.Guide.EntryPrice,
+					actualEntryPrice,
 					sig.Guide.StopLoss,
 					sig.Guide.Target1,
 					sig.Guide.Target2,
@@ -131,19 +137,28 @@ func (t *AutoTrader) ExecuteSignals(ctx context.Context, signals []strategy.Sign
 					time.Now(),
 				)
 
+				// Trailing stop 설정
+				if sig.Guide.UseTrailingStop {
+					t.monitor.SetTrailingStop(sig.Stock.Symbol,
+						true, sig.Guide.EntryATR, sig.Guide.TrailingMultiplier)
+				}
+
 				// PlanStore에 저장
 				if t.planStore != nil {
 					plan := &PositionPlan{
-						Symbol:      sig.Stock.Symbol,
-						Strategy:    sig.Strategy,
-						EntryPrice:  sig.Guide.EntryPrice,
-						Quantity:    sig.Guide.PositionSize,
-						StopLoss:    sig.Guide.StopLoss,
-						Target1:     sig.Guide.Target1,
-						Target2:     sig.Guide.Target2,
-						Target1Hit:  false,
-						EntryTime:   time.Now(),
-						MaxHoldDays: maxDays,
+						Symbol:             sig.Stock.Symbol,
+						Strategy:           sig.Strategy,
+						EntryPrice:         actualEntryPrice,
+						Quantity:           sig.Guide.PositionSize,
+						StopLoss:           sig.Guide.StopLoss,
+						Target1:            sig.Guide.Target1,
+						Target2:            sig.Guide.Target2,
+						Target1Hit:         false,
+						EntryTime:          time.Now(),
+						MaxHoldDays:        maxDays,
+						UseTrailingStop:    sig.Guide.UseTrailingStop,
+						TrailingATR:        sig.Guide.EntryATR,
+						TrailingMultiplier: sig.Guide.TrailingMultiplier,
 					}
 
 					// Breakout: store breakout level for invalidation check

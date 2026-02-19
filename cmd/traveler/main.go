@@ -23,6 +23,7 @@ import (
 	"traveler/internal/backtest"
 	"traveler/internal/broker"
 	"traveler/internal/broker/kis"
+	"traveler/internal/broker/sim"
 	"traveler/internal/broker/upbit"
 	"traveler/internal/config"
 	"traveler/internal/daemon"
@@ -70,6 +71,8 @@ var (
 	tradingCapital  float64 // 자동매매 전용 자본 (0=전체 잔고)
 	marketFlag      string  // 시장: us, kr
 	forceScan       bool    // 강제 스캔 (이미 매매했어도)
+	simMode         bool    // 모의투자 모드
+	simCapital      float64 // 모의투자 가상 자본
 )
 
 func main() {
@@ -123,6 +126,8 @@ Examples:
 	rootCmd.Flags().StringVar(&marketFlag, "market", "us", "market: us, kr, crypto")
 	rootCmd.Flags().Float64Var(&tradingCapital, "trading-capital", 0, "earmarked trading capital for daemon (0=use full balance)")
 	rootCmd.Flags().BoolVar(&forceScan, "force-scan", false, "force scan even if already traded today")
+	rootCmd.Flags().BoolVar(&simMode, "sim", false, "simulation mode: paper trading with virtual capital")
+	rootCmd.Flags().Float64Var(&simCapital, "sim-capital", 0, "virtual capital for sim mode (default: US $100000, KR ₩50000000)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -347,7 +352,50 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	var daemonBroker broker.Broker
 	var daemonProvider provider.Provider = p
 
-	if isCrypto {
+	// DataDir 해결
+	resolvedDir := resolveDataDir()
+
+	if simMode {
+		// 모의투자 모드: SimBroker 사용, 데이터 디렉토리 분리
+		simDataDir := filepath.Join(resolvedDir, "sim_"+marketFlag)
+		if err := os.MkdirAll(simDataDir, 0755); err != nil {
+			return fmt.Errorf("create sim data dir: %w", err)
+		}
+
+		// 기본 가상 자본 설정
+		if simCapital <= 0 {
+			switch marketFlag {
+			case "kr":
+				simCapital = 50000000 // ₩5천만
+			default:
+				simCapital = 100000 // $100K
+			}
+		}
+
+		// sim 모드에서도 시장별 provider 설정 (가격 데이터용)
+		var simProvider provider.Provider = p
+		if isKR && cfg.KIS.Domestic.AppKey != "" {
+			krCreds := kis.Credentials{
+				AppKey:    cfg.KIS.Domestic.AppKey,
+				AppSecret: cfg.KIS.Domestic.AppSecret,
+				AccountNo: cfg.KIS.Domestic.AccountNo,
+			}
+			simProvider = provider.NewKISProvider(krCreds)
+		} else if isCrypto {
+			loadEnvFile()
+			simProvider = provider.NewUpbitProvider()
+		}
+
+		daemonBroker = sim.NewSimBroker(marketFlag, simCapital, simProvider, simDataDir)
+		daemonProvider = simProvider
+		resolvedDir = simDataDir // plans, history, logs 모두 sim 디렉토리로
+		fmt.Printf(" Mode:            SIMULATION (paper trading)\n")
+		if marketFlag == "kr" {
+			fmt.Printf(" Virtual Capital: ₩%.0f\n", simCapital)
+		} else {
+			fmt.Printf(" Virtual Capital: $%.0f\n", simCapital)
+		}
+	} else if isCrypto {
 		// 크립토 시장 모드
 		loadEnvFile()
 		upbitBroker := upbit.NewClient()
@@ -385,9 +433,6 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 		return fmt.Errorf("broker not ready")
 	}
 	_ = daemonProvider // used below
-
-	// DataDir 해결 및 로그 파일 설정
-	resolvedDir := resolveDataDir()
 	logFile, err := setupLogging(resolvedDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
@@ -463,6 +508,8 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 			server.SetCryptoMarket(cryptoBroker, provider.NewUpbitProvider())
 			log.Printf("[DAEMON] Crypto market connected for web UI")
 		}
+		// 모의투자 sim 디렉토리가 있으면 SimBroker 등록
+		registerSimMarkets(server, p, resolvedDir)
 		go func() {
 			if err := server.Start(webPort); err != nil {
 				log.Printf("[DAEMON] Web server error: %v", err)
@@ -532,6 +579,9 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 		fmt.Println("Upbit crypto broker connected")
 	}
 
+	// 모의투자 sim 디렉토리가 있으면 SimBroker 등록
+	registerSimMarkets(server, p, resolveDataDir())
+
 	go func() {
 		<-sigChan
 		fmt.Println("\nShutting down web server...")
@@ -541,6 +591,30 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 	}()
 
 	return server.Start(webPort)
+}
+
+// registerSimMarkets detects sim data directories and registers SimBroker instances with the web server.
+func registerSimMarkets(server *web.Server, p provider.Provider, dataDir string) {
+	simUSDir := filepath.Join(dataDir, "sim_us")
+	simKRDir := filepath.Join(dataDir, "sim_kr")
+
+	var bUS, bKR broker.Broker
+	var hUS, hKR *trader.TradeHistory
+
+	if _, err := os.Stat(simUSDir); err == nil {
+		bUS = sim.NewSimBroker("us", 0, p, simUSDir)
+		hUS, _ = trader.NewTradeHistory(simUSDir)
+		log.Printf("[WEB] SIM-US market registered (data: %s)", simUSDir)
+	}
+	if _, err := os.Stat(simKRDir); err == nil {
+		bKR = sim.NewSimBroker("kr", 0, p, simKRDir)
+		hKR, _ = trader.NewTradeHistory(simKRDir)
+		log.Printf("[WEB] SIM-KR market registered (data: %s)", simKRDir)
+	}
+
+	if bUS != nil || bKR != nil {
+		server.SetSimMarkets(bUS, bKR, hUS, hKR)
+	}
 }
 
 func runMorningDipStrategy(ctx context.Context, stocks []model.Stock, fallbackProvider *provider.FallbackProvider, cfg *config.Config) error {

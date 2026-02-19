@@ -19,31 +19,12 @@ import (
 	"traveler/pkg/model"
 )
 
-// createMarketAwareStrategies creates strategies with market-specific configs (regime filter etc.)
+// createMarketAwareStrategies creates a regime-aware meta strategy for stock markets (US/KR).
+// Uses StockMetaStrategy with optimized regime-strategy mapping, matching the daemon.
 func createMarketAwareStrategies(p provider.Provider, market string) []strategy.Strategy {
-	pullbackCfg := strategy.DefaultPullbackConfig()
-	if market == "kr" {
-		pullbackCfg.MarketRegimeSymbol = "069500" // KODEX 200
-	} else {
-		pullbackCfg.MarketRegimeSymbol = "SPY"
-	}
-	pullback := strategy.NewPullbackStrategy(pullbackCfg, p)
-
-	breakoutCfg := strategy.DefaultBreakoutConfig()
-	breakout := strategy.NewBreakoutStrategy(breakoutCfg, p)
-
-	meanRevCfg := strategy.DefaultMeanReversionConfig()
-	meanRev := strategy.NewMeanReversionStrategy(meanRevCfg, p)
-
-	oversoldCfg := strategy.DefaultOversoldConfig()
-	if market == "kr" {
-		oversoldCfg.MarketRegimeSymbol = "069500"
-	} else {
-		oversoldCfg.MarketRegimeSymbol = "SPY"
-	}
-	oversold := strategy.NewOversoldStrategy(oversoldCfg, p)
-
-	return []strategy.Strategy{pullback, meanRev, breakout, oversold}
+	metaCfg := strategy.DefaultStockMetaConfig(market)
+	meta := strategy.NewStockMetaStrategy(metaCfg, p)
+	return []strategy.Strategy{meta}
 }
 
 // ScanRequest represents a scan request
@@ -68,6 +49,14 @@ type ScanResponse struct {
 	Expansions    int              `json:"expansions,omitempty"`
 	AvgProb              float64          `json:"avg_prob,omitempty"`
 	FundamentalsFiltered int              `json:"fundamentals_filtered,omitempty"`
+
+	// Market regime info
+	Regime           string   `json:"regime,omitempty"`            // "bull", "sideways", "bear"
+	ActiveStrategies []string `json:"active_strategies,omitempty"` // strategies active for this regime
+	BenchmarkPrice   float64  `json:"benchmark_price,omitempty"`
+	BenchmarkMA20    float64  `json:"benchmark_ma20,omitempty"`
+	BenchmarkMA50    float64  `json:"benchmark_ma50,omitempty"`
+	BenchmarkRSI     float64  `json:"benchmark_rsi,omitempty"`
 }
 
 // SignalWithChart extends Signal with chart data and fundamentals
@@ -111,6 +100,10 @@ func (s *Server) getBrokerForMarket(market string) broker.Broker {
 		return s.brokerKR
 	case "crypto":
 		return s.brokerCrypto
+	case "sim-us":
+		return s.brokerSimUS
+	case "sim-kr":
+		return s.brokerSimKR
 	default:
 		return s.broker
 	}
@@ -119,7 +112,7 @@ func (s *Server) getBrokerForMarket(market string) broker.Broker {
 // getProviderForMarket returns the provider for the given market
 func (s *Server) getProviderForMarket(market string) provider.Provider {
 	switch market {
-	case "kr":
+	case "kr", "sim-kr":
 		return s.providerKR
 	case "crypto":
 		return s.providerCrypto
@@ -163,6 +156,13 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	market := r.URL.Query().Get("market")
 	if market == "" {
 		market = "us"
+	}
+
+	// sim 마켓은 스캔 불가 (데몬이 자동 실행, 웹은 결과만 표시)
+	if market == "sim-us" || market == "sim-kr" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "Scan not available for simulation markets"})
+		return
 	}
 
 	// Check if scan already running for this market
@@ -244,6 +244,11 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 	cachedProvider := provider.NewCachingProvider(s.provider, 250)
 
 	strategies := createMarketAwareStrategies(cachedProvider, "us")
+	meta := strategies[0].(*strategy.StockMetaStrategy)
+	regimeInfo := meta.GetRegimeInfo(ctx)
+	activeStrats := meta.GetActiveStrategyNames(ctx)
+	log.Printf("[WEB] US regime: %s (benchmark=%s, price=%.2f, MA20=%.2f, RSI=%.1f), strategies=%v",
+		regimeInfo.Regime, regimeInfo.Symbol, regimeInfo.Price, regimeInfo.MA20, regimeInfo.RSI14, activeStrats)
 	totalScanned := 0
 	totalFound := 0
 
@@ -375,6 +380,12 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 		Expansions:           result.Expansions,
 		AvgProb:              result.Quality.AvgProb,
 		FundamentalsFiltered: fundamentalsFiltered,
+		Regime:           string(regimeInfo.Regime),
+		ActiveStrategies: activeStrats,
+		BenchmarkPrice:   regimeInfo.Price,
+		BenchmarkMA20:    regimeInfo.MA20,
+		BenchmarkMA50:    regimeInfo.MA50,
+		BenchmarkRSI:     regimeInfo.RSI14,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -403,6 +414,11 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 
 	cachedProvider := provider.NewCachingProvider(s.providerKR, 250)
 	strategies := createMarketAwareStrategies(cachedProvider, "kr")
+	metaKR := strategies[0].(*strategy.StockMetaStrategy)
+	regimeInfoKR := metaKR.GetRegimeInfo(ctx)
+	activeStratsKR := metaKR.GetActiveStrategyNames(ctx)
+	log.Printf("[WEB] KR regime: %s (benchmark=%s, price=%.0f, MA20=%.0f, RSI=%.1f), strategies=%v",
+		regimeInfoKR.Regime, regimeInfoKR.Symbol, regimeInfoKR.Price, regimeInfoKR.MA20, regimeInfoKR.RSI14, activeStratsKR)
 	totalScanned := 0
 	totalFound := 0
 
@@ -540,6 +556,12 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 		Expansions:           result.Expansions,
 		AvgProb:              result.Quality.AvgProb,
 		FundamentalsFiltered: fundamentalsFiltered,
+		Regime:           string(regimeInfoKR.Regime),
+		ActiveStrategies: activeStratsKR,
+		BenchmarkPrice:   regimeInfoKR.Price,
+		BenchmarkMA20:    regimeInfoKR.MA20,
+		BenchmarkMA50:    regimeInfoKR.MA50,
+		BenchmarkRSI:     regimeInfoKR.RSI14,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -580,8 +602,11 @@ func (s *Server) runCryptoScanAsync(ctx context.Context, cancel context.CancelFu
 	totalFound := 0
 
 	// Crypto: regime-aware meta strategy (Bull→VolatilityBreakout, Sideways→RangeTrading, Bear→skip)
-	meta := strategy.NewCryptoMetaStrategy(cachedProvider)
-	strategies := []strategy.Strategy{meta}
+	cryptoMeta := strategy.NewCryptoMetaStrategy(cachedProvider)
+	cryptoRegimeInfo := cryptoMeta.GetRegimeInfo(ctx)
+	log.Printf("[WEB] Crypto regime: %s (benchmark=%s, price=%.0f, MA20=%.0f, RSI=%.1f)",
+		cryptoRegimeInfo.Regime, cryptoRegimeInfo.Symbol, cryptoRegimeInfo.Price, cryptoRegimeInfo.MA20, cryptoRegimeInfo.RSI14)
+	strategies := []strategy.Strategy{cryptoMeta}
 
 	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
 		var signals []strategy.Signal
@@ -662,19 +687,34 @@ func (s *Server) runCryptoScanAsync(ctx context.Context, cancel context.CancelFu
 	log.Printf("[WEB] Crypto Scan complete: %d signals from %v in %s",
 		len(signals), result.UniversesUsed, scanTime.Round(time.Second))
 
+	var cryptoActiveStrats []string
+	switch cryptoRegimeInfo.Regime {
+	case strategy.RegimeBull:
+		cryptoActiveStrats = []string{"volatility-breakout"}
+	case strategy.RegimeSideways:
+		cryptoActiveStrats = []string{"range-trading"}
+	case strategy.RegimeBear:
+		cryptoActiveStrats = []string{"(none — bear skip)"}
+	}
 	resp := ScanResponse{
-		Strategy:      "multi-crypto",
-		TotalScanned:  result.ScannedCount,
-		SignalsFound:  len(signals),
-		Signals:       signals,
-		ScanTime:      scanTime.Round(time.Second).String(),
-		Capital:       capital,
-		TotalInvest:   totalInvest,
-		TotalRisk:     totalRisk,
-		UniversesUsed: result.UniversesUsed,
-		Decision:      result.Decision,
-		Expansions:    result.Expansions,
-		AvgProb:       result.Quality.AvgProb,
+		Strategy:         "multi-crypto",
+		TotalScanned:     result.ScannedCount,
+		SignalsFound:     len(signals),
+		Signals:          signals,
+		ScanTime:         scanTime.Round(time.Second).String(),
+		Capital:          capital,
+		TotalInvest:      totalInvest,
+		TotalRisk:        totalRisk,
+		UniversesUsed:    result.UniversesUsed,
+		Decision:         result.Decision,
+		Expansions:       result.Expansions,
+		AvgProb:          result.Quality.AvgProb,
+		Regime:           string(cryptoRegimeInfo.Regime),
+		ActiveStrategies: cryptoActiveStrats,
+		BenchmarkPrice:   cryptoRegimeInfo.Price,
+		BenchmarkMA20:    cryptoRegimeInfo.MA20,
+		BenchmarkMA50:    cryptoRegimeInfo.MA50,
+		BenchmarkRSI:     cryptoRegimeInfo.RSI14,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -750,14 +790,13 @@ func (s *Server) handleStock(w http.ResponseWriter, r *http.Request) {
 		strat := strategy.NewCryptoMetaStrategy(prov)
 		signal, _ = strat.Analyze(ctx, stock)
 	} else {
-		// Stock: use pullback
-		pullbackCfg := strategy.DefaultPullbackConfig()
+		// Stock: use regime-aware meta strategy (matching daemon)
+		market := "us"
 		if symbols.IsKoreanSymbol(symbol) {
-			pullbackCfg.MarketRegimeSymbol = "069500"
-		} else {
-			pullbackCfg.MarketRegimeSymbol = "SPY"
+			market = "kr"
 		}
-		strat := strategy.NewPullbackStrategy(pullbackCfg, prov)
+		metaCfg := strategy.DefaultStockMetaConfig(market)
+		strat := strategy.NewStockMetaStrategy(metaCfg, prov)
 		signal, _ = strat.Analyze(ctx, stock)
 	}
 
@@ -1103,10 +1142,33 @@ func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
 		market = "us"
 	}
 
-	// 디스크에서 최신 데이터 리로드
-	s.history.Reload()
+	// sim 마켓은 별도 history 인스턴스 사용
+	hist := s.history
+	filterMarket := market
+	switch market {
+	case "sim-us":
+		hist = s.historySimUS
+		filterMarket = "us"
+	case "sim-kr":
+		hist = s.historySimKR
+		filterMarket = "kr"
+	}
+	if hist == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"records": []interface{}{},
+			"summary": trader.TradeSummary{
+				ByStrategy: map[string]trader.StrategySummary{},
+				ByMarket:   map[string]trader.MarketSummary{},
+			},
+		})
+		return
+	}
 
-	records := s.history.GetAll(market)
+	// 디스크에서 최신 데이터 리로드
+	hist.Reload()
+
+	records := hist.GetAll(filterMarket)
 	// 종목명 보강
 	for i := range records {
 		if records[i].Name == "" {
@@ -1117,7 +1179,7 @@ func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	summary := s.history.Summary(market)
+	summary := hist.Summary(filterMarket)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

@@ -35,7 +35,7 @@ type IntradayConfig struct {
 // DefaultIntradayConfig 기본 설정
 func DefaultIntradayConfig() IntradayConfig {
 	return IntradayConfig{
-		ORBEnabled:     true,
+		ORBEnabled:     false,
 		ORBCollectMin:  30,
 		ORBMinRange:    0.3,
 		ORBMaxRange:    5.0,
@@ -67,8 +67,10 @@ type SymbolState struct {
 	// 가격 이력 (DipBuy용)
 	Prices []PriceSnapshot
 
-	// 전일 종가 (일중 변동률 계산)
+	// 전일 OHLC (일중 변동률 + 구조적 타겟)
 	PrevClose float64
+	PrevHigh  float64 // 전일 고가 (ORB 타겟용)
+	PrevLow   float64 // 전일 저가
 
 	// 시그널 발생 여부 (중복 방지)
 	ORBTriggered    bool
@@ -100,13 +102,15 @@ func NewIntradayScanner(cfg IntradayConfig, capital float64) *IntradayScanner {
 	}
 }
 
-// InitSymbol 종목 초기화 (전일 종가 설정)
-func (s *IntradayScanner) InitSymbol(symbol string, prevClose float64) {
+// InitSymbol 종목 초기화 (전일 OHLC 설정)
+func (s *IntradayScanner) InitSymbol(symbol string, prevClose, prevHigh, prevLow float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.states[symbol] = &SymbolState{
 		PrevClose: prevClose,
+		PrevHigh:  prevHigh,
+		PrevLow:   prevLow,
 		ORHigh:    0,
 		ORLow:     math.MaxFloat64,
 		Prices:    make([]PriceSnapshot, 0, 64),
@@ -239,14 +243,34 @@ func (s *IntradayScanner) checkORB(symbol string, state *SymbolState, currentPri
 	entry := currentPrice
 	rangeWidth := state.ORHigh - state.ORLow
 	stop := state.ORLow + rangeWidth*0.5 // OR 중간
-	target1 := entry + rangeWidth         // 레인지 폭만큼
-	target2 := entry + rangeWidth*1.5
 
-	// 최소 R/R 체크
+	// Structure-based targets: 전일 고점을 저항선으로 활용
+	// 최소 기대수익률: 수수료(왕복 0.5%) + 마진(0.5%) = 1%
+	minTargetPrice := entry * 1.01
+
+	rangeTarget1 := entry + rangeWidth
+	target1 := rangeTarget1
+	if state.PrevHigh > entry && state.PrevHigh < rangeTarget1 {
+		target1 = state.PrevHigh // 전일 고점이 더 가까운 저항
+	}
+
+	rangeTarget2 := entry + rangeWidth*1.5
+	target2 := rangeTarget2
+	if state.PrevHigh > target1 {
+		target2 = state.PrevHigh // 전일 고점이 T1보다 위에 있으면 T2로
+	}
+	if target2 <= target1 {
+		target2 = rangeTarget2
+	}
+
+	// 수수료 + R/R 게이트: 구조적 T1이 수수료를 못 커버하면 진입 자체를 차단
 	risk := entry - stop
 	reward := target1 - entry
 	if risk <= 0 || reward/risk < 1.0 {
 		return nil
+	}
+	if target1 < minTargetPrice {
+		return nil // 구조적 천장이 수수료를 못 커버 → 트레이드 가치 없음
 	}
 
 	stopPct := (entry - stop) / entry * 100

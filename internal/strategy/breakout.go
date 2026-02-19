@@ -3,7 +3,9 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
+	"sync"
 
 	"traveler/internal/provider"
 	"traveler/internal/symbols"
@@ -25,6 +27,10 @@ type BreakoutConfig struct {
 	MinPrice          float64
 	MaxTickerLength   int
 	MinDailyDollarVol float64
+
+	// Market regime filter: broad market must be above MA20
+	// US: "SPY", KR: "069500" (KODEX 200)
+	MarketRegimeSymbol string
 }
 
 // DefaultBreakoutConfig returns default configuration
@@ -54,6 +60,11 @@ func DefaultBreakoutConfig() BreakoutConfig {
 type BreakoutStrategy struct {
 	config   BreakoutConfig
 	provider provider.Provider
+
+	// Market regime cache (per scan session)
+	regimeMu      sync.Mutex
+	regimeChecked bool
+	regimeOK      bool
 }
 
 // NewBreakoutStrategy creates a new breakout strategy
@@ -74,8 +85,63 @@ func (s *BreakoutStrategy) Description() string {
 	return "Breakout - Buy 20-day high breakouts with volume confirmation"
 }
 
+// ResetRegimeCache resets the cached regime check (call at start of each scan cycle)
+func (s *BreakoutStrategy) ResetRegimeCache() {
+	s.regimeMu.Lock()
+	s.regimeChecked = false
+	s.regimeOK = false
+	s.regimeMu.Unlock()
+}
+
+// checkMarketRegime checks if the broad market is above MA20.
+// Result is cached for the entire scan session.
+func (s *BreakoutStrategy) checkMarketRegime(ctx context.Context) bool {
+	s.regimeMu.Lock()
+	defer s.regimeMu.Unlock()
+
+	if s.regimeChecked {
+		return s.regimeOK
+	}
+
+	s.regimeChecked = true
+	s.regimeOK = true // default to true if no symbol configured or on error
+
+	sym := s.config.MarketRegimeSymbol
+	if sym == "" {
+		return s.regimeOK
+	}
+
+	candles, err := s.provider.GetDailyCandles(ctx, sym, 30)
+	if err != nil {
+		log.Printf("[BREAKOUT] regime check: failed to fetch %s: %v (allowing entries)", sym, err)
+		return s.regimeOK
+	}
+
+	if len(candles) < 20 {
+		log.Printf("[BREAKOUT] regime check: insufficient %s data (%d candles)", sym, len(candles))
+		return s.regimeOK
+	}
+
+	ma20 := CalculateMA(candles, 20)
+	lastClose := candles[len(candles)-1].Close
+	s.regimeOK = lastClose > ma20
+
+	if !s.regimeOK {
+		log.Printf("[BREAKOUT] regime BEARISH: %s %.2f < MA20 %.2f — skipping breakout entries", sym, lastClose, ma20)
+	} else {
+		log.Printf("[BREAKOUT] regime OK: %s %.2f > MA20 %.2f", sym, lastClose, ma20)
+	}
+
+	return s.regimeOK
+}
+
 // Analyze analyzes a stock for breakout opportunity
 func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Signal, error) {
+	// Market regime filter: skip all entries if broad market is below MA20
+	if !s.checkMarketRegime(ctx) {
+		return nil, nil
+	}
+
 	// Pre-filter: Ticker length (skip for Korean 6-digit symbols)
 	if s.config.MaxTickerLength > 0 && len(stock.Symbol) > s.config.MaxTickerLength && !symbols.IsKoreanSymbol(stock.Symbol) {
 		return nil, fmt.Errorf("ticker too long: %s", stock.Symbol)
@@ -188,7 +254,7 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		highestHigh, volumeRatio, details["price_vs_ma50_pct"])
 
 	probability := calculateBreakoutProbability(strength, volumeRatio, priorConsolidation, rsiNotOverbought)
-	guide := s.calculateTradeGuide(today.Close, highestHigh, ind.ATR14)
+	guide := s.calculateTradeGuide(today.Close, highestHigh, ind.ATR14, candles)
 
 	return &Signal{
 		Stock:       stock,
@@ -203,36 +269,79 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 }
 
 // calculateTradeGuide generates trading guidance for breakout
-func (s *BreakoutStrategy) calculateTradeGuide(currentPrice, breakoutLevel, atr float64) *TradeGuide {
-	// ATR 기반 손절: 변동성에 맞춰 조절
-	atrStop := currentPrice - atr*2.0       // 2.0 ATR (breakout은 변동 큼)
-	breakoutStop := breakoutLevel * 0.97     // breakout 레벨 -3%
+func (s *BreakoutStrategy) calculateTradeGuide(currentPrice, breakoutLevel, atr float64, candles []model.Candle) *TradeGuide {
+	// === 손절: 하이브리드 (ATR + breakout레벨 + 구조적 스윙로우) ===
+	atrStop := currentPrice - atr*2.0
+	breakoutStop := breakoutLevel * 0.97
 	stopLoss := math.Max(atrStop, breakoutStop)
 
-	// 최소 보장: -5% floor
+	// 구조적 손절: breakout 레벨 아래 가장 가까운 스윙로우
+	structuralStop := FindNearestSupport(candles, breakoutLevel, 30, 2)
+	if structuralStop > 0 {
+		structuralStop -= atr * 0.25
+		if structuralStop > stopLoss {
+			stopLoss = structuralStop
+		}
+	}
+
 	minStop := currentPrice * 0.95
 	if stopLoss < minStop {
 		stopLoss = minStop
 	}
 
 	stopLossPct := (currentPrice - stopLoss) / currentPrice
-
 	riskPerShare := currentPrice - stopLoss
 
-	// Breakouts can run far - wider targets
-	target1 := currentPrice + riskPerShare*1.5
-	target2 := currentPrice + riskPerShare*3.0
+	// === 익절: 측정이동(Measured Move) + 구조적 저항 ===
+	consolidationLow := CalculateLowestLow(candles, 20)
+	measuredMove := 0.0
+	if consolidationLow > 0 && breakoutLevel > consolidationLow {
+		measuredMove = breakoutLevel - consolidationLow
+	}
+
+	// T1: 측정이동 50% 또는 가장 가까운 저항
+	target1 := 0.0
+	if measuredMove > 0 {
+		target1 = breakoutLevel + measuredMove*0.5
+	}
+	// 구조적 저항이 더 가까우면 사용 (최소 1.5R)
+	nearestRes := FindNearestResistance(candles, currentPrice*1.005, 60, 2)
+	if nearestRes > 0 && (nearestRes-currentPrice) >= riskPerShare*1.5 {
+		if target1 <= 0 || nearestRes < target1 {
+			target1 = nearestRes
+		}
+	}
+	if target1 <= 0 || (target1-currentPrice) < riskPerShare*1.5 {
+		target1 = currentPrice + riskPerShare*1.5
+	}
+
+	// T2: 측정이동 100% 또는 피보나치 1.618 확장
+	target2 := 0.0
+	if measuredMove > 0 {
+		target2 = breakoutLevel + measuredMove
+	}
+	if target2 <= target1 && consolidationLow > 0 && breakoutLevel > consolidationLow {
+		target2 = FibonacciExtension(consolidationLow, breakoutLevel, 0.618)
+	}
+	if target2 <= target1 {
+		target2 = currentPrice + atr*3.0
+	}
+	if target2 <= target1 {
+		target2 = currentPrice + riskPerShare*3.0
+	}
 
 	guide := &TradeGuide{
-		EntryPrice:      currentPrice,
-		EntryType:       "limit",
-		StopLoss:        stopLoss,
-		StopLossPct:     stopLossPct * 100,
-		Target1:         target1,
-		Target1Pct:      riskPerShare * 1.5 / currentPrice * 100,
-		Target2:         target2,
-		Target2Pct:      riskPerShare * 3.0 / currentPrice * 100,
-		RiskRewardRatio: 2.25,
+		EntryPrice:  currentPrice,
+		EntryType:   "limit",
+		StopLoss:    stopLoss,
+		StopLossPct: stopLossPct * 100,
+		Target1:     target1,
+		Target1Pct:  (target1 - currentPrice) / currentPrice * 100,
+		Target2:     target2,
+		Target2Pct:  (target2 - currentPrice) / currentPrice * 100,
+	}
+	if riskPerShare > 0 {
+		guide.RiskRewardRatio = (target1 - currentPrice) / riskPerShare
 	}
 
 	// Kelly fraction
@@ -243,6 +352,12 @@ func (s *BreakoutStrategy) calculateTradeGuide(currentPrice, breakoutLevel, atr 
 	if guide.KellyFraction < 0 {
 		guide.KellyFraction = 0
 	}
+
+	// Trailing stop: infrastructure ready but disabled for short-term swing trades.
+	// Enable when hold period is extended or for trend-following mode.
+	guide.UseTrailingStop = false
+	guide.TrailingMultiplier = 2.5
+	guide.EntryATR = atr
 
 	return guide
 }

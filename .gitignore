@@ -47,3 +47,26 @@ kr_scan_result.json
 
 # Bug/issue reports (local only)
 bug/
+
+# SSH/deploy temp files
+*.txt
+!README.txt
+
+# Screenshots
+*.png
+
+# ARM64 cross-compiled binary
+traveler-arm64
+
+# Claude Code
+.claude/
+
+# Old sentinel files
+sentinel_*.go
+sentinel_*.json
+sentinel_*.txt
+
+# Temp test files
+test/
+th.json
+*.etl

@@ -39,7 +39,8 @@ func NewCryptoMetaStrategy(p provider.Provider) *CryptoMetaStrategy {
 			NewVolumeSpikeStrategy(p),
 		},
 		bear: []Strategy{
-			NewRSIContrarianStrategy(p, 20), // Extreme oversold only
+			NewWBottomStrategy(p),           // W-Bottom with confluence scoring
+			NewRSIContrarianStrategy(p, 20), // Extreme oversold only (fallback)
 		},
 	}
 }
@@ -123,6 +124,11 @@ func (s *CryptoMetaStrategy) Analyze(ctx context.Context, stock model.Stock) (*S
 // GetCurrentRegime returns the current cached regime (for external display)
 func (s *CryptoMetaStrategy) GetCurrentRegime(ctx context.Context) Regime {
 	return s.regime.Detect(ctx)
+}
+
+// GetRegimeInfo returns detailed regime info with benchmark indicators
+func (s *CryptoMetaStrategy) GetRegimeInfo(ctx context.Context) RegimeInfo {
+	return s.regime.DetectWithInfo(ctx)
 }
 
 func regimeLabel(r Regime) string {

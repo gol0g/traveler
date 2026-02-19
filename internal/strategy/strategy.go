@@ -39,6 +39,11 @@ type TradeGuide struct {
 
 	// Kelly
 	KellyFraction float64 `json:"kelly_fraction"`
+
+	// Trailing stop (activated after T1 hit)
+	UseTrailingStop    bool    `json:"use_trailing_stop"`
+	TrailingMultiplier float64 `json:"trailing_multiplier"` // ATR multiplier (e.g., 3.0, 2.5)
+	EntryATR           float64 `json:"entry_atr"`           // ATR14 at entry
 }
 
 // Signal represents a trading signal from a strategy

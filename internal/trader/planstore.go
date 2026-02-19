@@ -23,6 +23,12 @@ type PositionPlan struct {
 	EntryTime   time.Time `json:"entry_time"`
 	MaxHoldDays int       `json:"max_hold_days"` // trading days
 
+	// Trailing stop (activated after T1 hit)
+	UseTrailingStop    bool    `json:"use_trailing_stop,omitempty"`
+	TrailingATR        float64 `json:"trailing_atr,omitempty"`        // ATR at entry
+	TrailingMultiplier float64 `json:"trailing_multiplier,omitempty"` // ATR × N
+	HighestSinceT1     float64 `json:"highest_since_t1,omitempty"`   // Highest price since T1
+
 	// Strategy invalidation fields
 	BreakoutLevel        float64 `json:"breakout_level,omitempty"`         // breakout: 20D high at entry
 	ConsecutiveDaysBelow int     `json:"consecutive_days_below,omitempty"` // pullback: days close < MA20
@@ -40,6 +46,7 @@ var strategyMaxHoldDays = map[string]int{
 	"range-trading":       5,
 	"rsi-contrarian":      5,
 	"volume-spike":        3,
+	"wbottom":             15, // W-Bottom: pattern completion ~15 calendar days
 }
 
 // GetMaxHoldDays returns the max hold days for a strategy.
@@ -142,6 +149,17 @@ func (ps *PlanStore) Get(symbol string) *PositionPlan {
 	return ps.plans[symbol]
 }
 
+// GetAll returns all plans
+func (ps *PlanStore) GetAll() []*PositionPlan {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	result := make([]*PositionPlan, 0, len(ps.plans))
+	for _, p := range ps.plans {
+		result = append(result, p)
+	}
+	return result
+}
+
 // Delete removes a plan
 func (ps *PlanStore) Delete(symbol string) error {
 	ps.mu.Lock()
@@ -166,6 +184,19 @@ func (ps *PlanStore) UpdateTarget1Hit(symbol string, remainingQty float64, newSt
 		plan.StopLoss = newStopLoss
 		log.Printf("[PLANSTORE] Updated %s: target1 hit, qty=%.0f, new stop=$%.2f",
 			symbol, remainingQty, newStopLoss)
+		return ps.persist()
+	}
+	return nil
+}
+
+// UpdateTrailingStop updates trailing stop state (HighestSinceT1 and StopLoss)
+func (ps *PlanStore) UpdateTrailingStop(symbol string, highestSinceT1, newStopLoss float64) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	if plan, ok := ps.plans[symbol]; ok {
+		plan.HighestSinceT1 = highestSinceT1
+		plan.StopLoss = newStopLoss
 		return ps.persist()
 	}
 	return nil
