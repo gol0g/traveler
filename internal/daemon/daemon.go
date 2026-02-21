@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"traveler/internal/ai"
 	"traveler/internal/broker"
 	"traveler/internal/provider"
 	"traveler/internal/strategy"
@@ -77,6 +78,9 @@ type Daemon struct {
 	intradayScanner *strategy.IntradayScanner
 	intradaySymbols []string // 장중 스캔 대상 종목
 
+	// AI signal filter
+	aiClient *ai.GeminiClient
+
 	// Wind-down mode (daily target reached → stop new orders, keep monitoring)
 	windDown    chan struct{}
 	windingDown bool
@@ -109,6 +113,11 @@ func NewDaemon(cfg Config, b broker.Broker, p provider.Provider) *Daemon {
 		ctx:      ctx,
 		cancel:   cancel,
 	}
+}
+
+// SetAIClient sets the Gemini AI client for signal filtering
+func (d *Daemon) SetAIClient(c *ai.GeminiClient) {
+	d.aiClient = c
 }
 
 // isKR 한국 시장 모드 여부
@@ -574,6 +583,8 @@ type daemonScanResult struct {
 	Expansions           int
 	AvgProb              float64
 	FundamentalsFiltered int
+	AIFiltered           int
+	AIRejections         []ai.AIRejection
 	ScanTime             time.Duration
 
 	// Market regime info
@@ -591,9 +602,14 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 	var regimeInfo strategy.RegimeInfo
 	var activeStrats []string
 
+	// Capital tier 결정
+	tradingCap := d.config.Sizer.TotalCapital
+	capitalTier := strategy.GetCapitalTier(d.config.Market, tradingCap)
+	log.Printf("[DAEMON] Capital tier: %s (capital=%.0f, market=%s)", capitalTier, tradingCap, d.config.Market)
+
 	if d.isCrypto() {
-		// 크립토: 레짐 인식 메타전략 (Bull→VolatilityBreakout, Sideways→RangeTrading, Bear→skip)
-		meta := strategy.NewCryptoMetaStrategy(d.provider)
+		// 크립토: 레짐 인식 메타전략 — capital tier에 따라 BTC-only 또는 full
+		meta := strategy.NewCryptoMetaStrategy(d.provider, tradingCap)
 		strategies = []strategy.Strategy{meta}
 		regimeInfo = meta.GetRegimeInfo(d.ctx)
 		switch regimeInfo.Regime {
@@ -604,9 +620,12 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		case strategy.RegimeBear:
 			activeStrats = []string{"(none)"}
 		}
+		if capitalTier == "btc-only" {
+			activeStrats = []string{"crypto-trend"}
+		}
 	} else {
-		// 주식 (US/KR): 레짐 인식 메타전략 — 레짐별 최적 전략 자동 선택
-		metaCfg := strategy.DefaultStockMetaConfig(d.config.Market)
+		// 주식 (US/KR): 레짐 인식 메타전략 — capital tier에 따라 ETF 또는 개별주
+		metaCfg := strategy.DefaultStockMetaConfig(d.config.Market, tradingCap)
 		meta := strategy.NewStockMetaStrategy(metaCfg, d.provider)
 		strategies = []strategy.Strategy{meta}
 		regimeInfo = meta.GetRegimeInfo(d.ctx)
@@ -652,8 +671,23 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 	adaptiveCfg.Verbose = true
 	scanner := trader.NewAdaptiveScanner(adaptiveCfg, d.config.Sizer, scanFunc)
 
-	// 마켓별 유니버스 티어
-	if d.isCrypto() {
+	// 마켓별 유니버스 티어 — capital tier에 따라 ETF 또는 기존 유니버스
+	if capitalTier == "etf" || capitalTier == "btc-only" {
+		if d.isCrypto() {
+			// BTC-only: crypto-top10에서 BTC만 스캔
+			scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+				return trader.GetCryptoUniverseTiers(balance)
+			})
+		} else if d.isKR() {
+			scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+				return trader.GetKRETFTiers(balance)
+			})
+		} else {
+			scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+				return trader.GetUSETFTiers(balance)
+			})
+		}
+	} else if d.isCrypto() {
 		scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
 			return trader.GetCryptoUniverseTiers(balance)
 		})
@@ -714,6 +748,20 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		return nil, err
 	}
 
+	// AI signal filter + SL/TP optimization (after fundamentals, before sizing)
+	var aiFiltered int
+	var aiRejections []ai.AIRejection
+	if d.aiClient != nil && len(result.Signals) > 0 {
+		before := len(result.Signals)
+		regime := string(regimeInfo.Regime)
+		result.Signals, aiRejections = d.aiClient.FilterSignals(d.ctx, result.Signals, regime, d.config.Market)
+		aiFiltered = before - len(result.Signals)
+
+		if len(result.Signals) > 0 {
+			result.Signals = d.aiClient.OptimizeGuides(d.ctx, result.Signals, regime, d.config.Market)
+		}
+	}
+
 	// 포지션 사이징 적용
 	sizer := trader.NewPositionSizer(d.config.Sizer)
 	sized := sizer.ApplyToSignals(result.Signals)
@@ -726,6 +774,8 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		Expansions:           result.Expansions,
 		AvgProb:              result.Quality.AvgProb,
 		FundamentalsFiltered: fundamentalsFiltered,
+		AIFiltered:           aiFiltered,
+		AIRejections:         aiRejections,
 		Regime:           string(regimeInfo.Regime),
 		ActiveStrategies: activeStrats,
 		BenchmarkPrice:   regimeInfo.Price,
@@ -894,7 +944,9 @@ func (d *Daemon) saveScanResultForWeb(sr *daemonScanResult) {
 		"expansions":            sr.Expansions,
 		"avg_prob":              sr.AvgProb,
 		"fundamentals_filtered": sr.FundamentalsFiltered,
-		"regime":                sr.Regime,
+		"ai_filtered":          sr.AIFiltered,
+		"ai_rejections":        sr.AIRejections,
+		"regime":               sr.Regime,
 		"active_strategies":     sr.ActiveStrategies,
 		"benchmark_price":       sr.BenchmarkPrice,
 		"benchmark_ma20":        sr.BenchmarkMA20,

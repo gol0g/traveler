@@ -118,6 +118,7 @@ class TravelerApp {
         document.getElementById('panelPositions').classList.toggle('hidden', tab !== 'positions');
         document.getElementById('panelHistory').classList.toggle('hidden', tab !== 'history');
         document.getElementById('panelStrategy').classList.toggle('hidden', tab !== 'strategy');
+        document.getElementById('panelDca').classList.toggle('hidden', tab !== 'dca');
 
         // Load data for specific tabs
         if (tab === 'positions') {
@@ -129,6 +130,11 @@ class TravelerApp {
 
         if (tab === 'history') {
             this.loadTradeHistory();
+        }
+
+        if (tab === 'dca') {
+            this.loadDCAStatus();
+            this.loadDCAFearGreed();
         }
     }
 
@@ -574,7 +580,9 @@ class TravelerApp {
             details: signal.details || signal.Details || {},
             guide: signal.guide || signal.Guide || null,
             candles: signal.candles || signal.Candles || [],
-            fundamentals: signal.fundamentals || signal.Fundamentals || null
+            fundamentals: signal.fundamentals || signal.Fundamentals || null,
+            ai_reason: signal.ai_reason || '',
+            ai_optimize_reason: signal.ai_optimize_reason || ''
         };
     }
 
@@ -632,7 +640,9 @@ class TravelerApp {
                 }
             } else {
                 if (this.capital < 500) {
-                    riskPct = 2; maxPosPct = 0.30;
+                    riskPct = 5; maxPosPct = 0.90; // ETF tier: concentrated
+                } else if (this.capital < 5000) {
+                    riskPct = 1; maxPosPct = 0.20;
                 } else {
                     riskPct = 1; maxPosPct = 0.20;
                 }
@@ -720,7 +730,9 @@ class TravelerApp {
                 'oversold': 'bg-cyan-600',
                 'range-trading': 'bg-sky-600',
                 'rsi-contrarian': 'bg-violet-600',
-                'volume-spike': 'bg-orange-500'
+                'volume-spike': 'bg-orange-500',
+                'etf-momentum': 'bg-blue-600',
+                'crypto-trend': 'bg-emerald-600'
             };
             // Parse regime from strategy name like "volatility-breakout(bull)"
             const regimeMatch = strategyName.match(/^(.+)\((bull|sideways|bear)\)$/);
@@ -755,6 +767,7 @@ class TravelerApp {
                 <td class="px-4 py-3 text-red-400">${this.formatMoney(riskAmount)}</td>
                 <td class="px-4 py-3 text-green-400">${probability.toFixed(0)}%</td>
                 <td class="px-4 py-3">${fundHTML}</td>
+                <td class="px-4 py-3">${signal.ai_reason ? '<span class="bg-purple-600 px-1.5 py-0.5 rounded text-xs" title="' + (signal.ai_reason || '').replace(/"/g, '&quot;') + '">PASS</span>' : '<span class="text-gray-600 text-xs">-</span>'}${signal.ai_optimize_reason ? ' <span class="bg-purple-900 text-purple-300 px-1.5 py-0.5 rounded text-xs" title="' + (signal.ai_optimize_reason || '').replace(/"/g, '&quot;') + '">OPT</span>' : ''}</td>
                 <td class="px-4 py-3">
                     <button class="detail-btn bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm" data-symbol="${symbol}">
                         Detail
@@ -825,6 +838,30 @@ class TravelerApp {
             document.getElementById('fundROE').textContent = `${roe.toFixed(1)}%`;
         } else {
             fundSection.classList.add('hidden');
+        }
+
+        // AI Analysis section
+        const aiSection = document.getElementById('modalAI');
+        const aiFilterDiv = document.getElementById('modalAIFilter');
+        const aiOptDiv = document.getElementById('modalAIOptimize');
+        const aiReason = signal.ai_reason || '';
+        const aiOptReason = signal.ai_optimize_reason || '';
+        if (aiReason || aiOptReason) {
+            aiSection.classList.remove('hidden');
+            if (aiReason) {
+                aiFilterDiv.classList.remove('hidden');
+                document.getElementById('modalAIFilterText').textContent = aiReason;
+            } else {
+                aiFilterDiv.classList.add('hidden');
+            }
+            if (aiOptReason) {
+                aiOptDiv.classList.remove('hidden');
+                document.getElementById('modalAIOptimizeText').textContent = aiOptReason;
+            } else {
+                aiOptDiv.classList.add('hidden');
+            }
+        } else {
+            aiSection.classList.add('hidden');
         }
 
         this.updateModalInvestment(guide.position_size || guide.PositionSize || 0);
@@ -1065,9 +1102,25 @@ class TravelerApp {
             if (data.avg_prob > 0) meta.push(`avg ${data.avg_prob.toFixed(0)}% prob`);
             if (data.expansions > 0) meta.push(`${data.expansions}x expanded`);
             if (data.fundamentals_filtered > 0) meta.push(`${data.fundamentals_filtered} rejected by fundamentals`);
+            if (data.ai_filtered > 0) meta.push(`🤖 ${data.ai_filtered} rejected by AI`);
             meta.push(data.scan_time || '');
             document.getElementById('scanMeta').textContent = meta.filter(Boolean).join(' | ');
             document.getElementById('recalculateBtn').classList.remove('hidden');
+
+            // AI Rejections list
+            const rejSection = document.getElementById('aiRejectionsSection');
+            const rejList = document.getElementById('aiRejectionsList');
+            if (data.ai_rejections && data.ai_rejections.length > 0) {
+                rejSection.classList.remove('hidden');
+                rejList.innerHTML = data.ai_rejections.map(r =>
+                    `<div class="flex items-center gap-2 text-sm">
+                        <span class="text-red-400 font-medium w-24">${r.symbol}</span>
+                        <span class="text-gray-400">${r.reason}</span>
+                    </div>`
+                ).join('');
+            } else {
+                rejSection.classList.add('hidden');
+            }
 
             // Regime display
             this.updateRegimeBar(data);
@@ -1118,7 +1171,8 @@ class TravelerApp {
 
         // Active strategies
         const strats = document.getElementById('regimeStrategies');
-        strats.textContent = (data.active_strategies || []).join(', ');
+        const tierLabel = data.capital_tier ? ` [${data.capital_tier.toUpperCase()} tier]` : '';
+        strats.textContent = (data.active_strategies || []).join(', ') + tierLabel;
     }
 
     showLoading(show, title, detail) {
@@ -1169,10 +1223,8 @@ class TravelerApp {
         const winRate = summary.win_rate || 0;
         const pnl = summary.total_realized_pnl || 0;
         const commission = summary.total_commission || 0;
-        // Net = Realized - Commission (반올림 후 계산하여 표시 일관성 보장)
-        const netPnl = this.isKRW()
-            ? Math.round(pnl) - Math.round(commission)
-            : parseFloat((pnl - commission).toFixed(2));
+        // Net PnL은 서버에서 직접 계산 (실현 거래 수수료만 반영)
+        const netPnl = summary.net_pnl || 0;
 
         document.getElementById('histTotalTrades').textContent = total;
         document.getElementById('histBuys').textContent = buys;
@@ -1339,6 +1391,151 @@ class TravelerApp {
             return qty.toFixed(8);
         }
         return Math.floor(qty).toString();
+    }
+
+    // ==================== DCA Methods ====================
+
+    async loadDCAStatus() {
+        try {
+            const resp = await fetch('/api/dca/status');
+            const result = await resp.json();
+
+            const inactive = document.getElementById('dcaInactive');
+            const cards = document.querySelectorAll('#panelDca > .grid, #panelDca > .bg-gray-800');
+
+            if (!result.active || !result.data) {
+                inactive.classList.remove('hidden');
+                cards.forEach(el => { if (el !== inactive) el.classList.add('hidden'); });
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            cards.forEach(el => el.classList.remove('hidden'));
+
+            const d = result.data;
+
+            // F&G display
+            const fgValue = document.getElementById('dcaFGValue');
+            const fgLabel = document.getElementById('dcaFGLabel');
+            const fgFill = document.getElementById('dcaFGFill');
+            fgValue.textContent = d.fear_greed || '-';
+            fgLabel.textContent = d.fg_label || '-';
+            fgFill.style.width = `${d.fear_greed || 50}%`;
+            fgFill.className = 'h-2 rounded-full transition-all ' + this.fgColor(d.fear_greed);
+
+            // Summary cards
+            document.getElementById('dcaTotalInvested').textContent = `₩${Math.round(d.total_invested || 0).toLocaleString()}`;
+            document.getElementById('dcaCycles').textContent = d.total_dca_cycles || 0;
+            document.getElementById('dcaCurrentValue').textContent = `₩${Math.round(d.current_value || 0).toLocaleString()}`;
+
+            const pnl = d.unrealized_pnl || 0;
+            const pnlPct = d.unrealized_pct || 0;
+            const pnlEl = document.getElementById('dcaPnL');
+            pnlEl.textContent = `${pnl >= 0 ? '+' : ''}₩${Math.round(pnl).toLocaleString()} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`;
+            pnlEl.className = `text-sm mt-1 ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+            // Next DCA
+            if (d.next_dca_time) {
+                const next = new Date(d.next_dca_time);
+                document.getElementById('dcaNextTime').textContent = next.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            }
+            document.getElementById('dcaMultiplier').textContent = `Multiplier: ${(d.current_multiplier || 1).toFixed(2)}x`;
+
+            // Assets table
+            this.renderDCAAssets(d.assets || []);
+
+            // History table
+            this.renderDCAHistory(d.history || []);
+        } catch (e) {
+            console.error('DCA status error:', e);
+        }
+    }
+
+    fgColor(value) {
+        if (value <= 24) return 'bg-red-600';
+        if (value <= 44) return 'bg-orange-500';
+        if (value <= 55) return 'bg-yellow-500';
+        if (value <= 74) return 'bg-green-500';
+        return 'bg-green-400';
+    }
+
+    renderDCAAssets(assets) {
+        const tbody = document.getElementById('dcaAssetsTable');
+        if (!assets.length) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-500 py-4">No assets yet</td></tr>';
+            return;
+        }
+        tbody.innerHTML = assets.map(a => {
+            const pnlClass = (a.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400';
+            const devClass = Math.abs(a.deviation || 0) > 15 ? 'text-yellow-400 font-bold' : 'text-gray-300';
+            const name = (a.symbol || '').replace('KRW-', '');
+            return `<tr class="border-b border-gray-700 hover:bg-gray-750">
+                <td class="py-2 px-2 font-medium">${name}</td>
+                <td class="py-2 px-2 text-right">${(a.target_pct || 0).toFixed(0)}%</td>
+                <td class="py-2 px-2 text-right">${(a.current_pct || 0).toFixed(1)}%</td>
+                <td class="py-2 px-2 text-right ${devClass}">${(a.deviation || 0) >= 0 ? '+' : ''}${(a.deviation || 0).toFixed(1)}%</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(a.total_invested || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(a.current_value || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(a.avg_cost || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(a.current_price || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right ${pnlClass}">${(a.pnl || 0) >= 0 ? '+' : ''}₩${Math.round(a.pnl || 0).toLocaleString()} (${(a.pnl_pct || 0) >= 0 ? '+' : ''}${(a.pnl_pct || 0).toFixed(1)}%)</td>
+            </tr>`;
+        }).join('');
+    }
+
+    renderDCAHistory(history) {
+        const tbody = document.getElementById('dcaHistoryTable');
+        if (!history.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No history yet</td></tr>';
+            return;
+        }
+        // Show newest first
+        const sorted = [...history].reverse();
+        tbody.innerHTML = sorted.map(h => {
+            const date = new Date(h.timestamp);
+            const dateStr = date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
+            const fgClass = this.fgColor(h.fear_greed).replace('bg-', 'text-').replace('-600', '-400').replace('-500', '-400');
+            return `<tr class="border-b border-gray-700">
+                <td class="py-2 px-2">${dateStr}</td>
+                <td class="py-2 px-2 text-right ${fgClass}">${h.fear_greed} <span class="text-gray-500 text-xs">${h.fg_label || ''}</span></td>
+                <td class="py-2 px-2 text-right">${(h.multiplier || 1).toFixed(2)}x</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(h.total_amount || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-center">${(h.buys || []).length}</td>
+                <td class="py-2 px-2 text-center">${(h.sells || []).length}</td>
+                <td class="py-2 px-2 text-center">${h.rebalanced ? '✓' : '-'}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    async loadDCAFearGreed() {
+        try {
+            const resp = await fetch('/api/dca/feargreed');
+            const data = await resp.json();
+
+            if (data.error) return;
+
+            // Render F&G history bars
+            const container = document.getElementById('dcaFGHistory');
+            if (!data.history || !data.history.length) {
+                container.innerHTML = '<span class="text-gray-500 text-sm">No historical data</span>';
+                return;
+            }
+
+            const bars = data.history.reverse().map(d => {
+                const height = Math.max(d.value, 5);
+                const color = this.fgColor(d.value).replace('bg-', 'bg-');
+                const date = new Date(d.timestamp * 1000);
+                const label = `${date.getMonth()+1}/${date.getDate()}`;
+                return `<div class="flex flex-col items-center flex-1 min-w-0" title="${d.classification}: ${d.value}">
+                    <div class="w-full ${color} rounded-t" style="height:${height}%"></div>
+                    <div class="text-gray-600 text-xs mt-1 truncate w-full text-center">${label}</div>
+                </div>`;
+            }).join('');
+
+            container.innerHTML = bars;
+        } catch (e) {
+            console.error('F&G fetch error:', e);
+        }
     }
 }
 

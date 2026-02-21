@@ -22,10 +22,42 @@ type StockMetaConfig struct {
 	MaxHoldOverride map[string]int    // strategy name → override max hold days
 }
 
-// DefaultStockMetaConfig returns the optimized config for a market.
-// US: "breakout-bull" — breakout only in bull, diversified in sideways, oversold in bear.
-// KR: "extended-hold" — breakout+pullback in bull, diversified sideways, oversold in bear, breakout hold extended to 20 days.
-func DefaultStockMetaConfig(market string) StockMetaConfig {
+// DefaultStockMetaConfig returns the optimized config for a market and capital level.
+// Capital tiers:
+//   - ETF tier (US < $500, KR < ₩500K): ETF momentum only (GEM/TQQQ/KODEX timing)
+//   - Hybrid tier: ETF + individual stocks
+//   - Full tier: Current individual stock strategies
+func DefaultStockMetaConfig(market string, capital ...float64) StockMetaConfig {
+	// Capital tier 결정
+	cap := 0.0
+	if len(capital) > 0 {
+		cap = capital[0]
+	}
+	tier := GetCapitalTier(market, cap)
+
+	// ETF tier: ETF 전략만 사용
+	if tier == "etf" {
+		if market == "kr" {
+			return StockMetaConfig{
+				Name:         "kr-etf-timing",
+				Market:       "kr",
+				BenchmarkSym: "069500",
+				Bull:         []string{"etf-momentum"},
+				Sideways:     []string{"etf-momentum"},
+				Bear:         []string{"etf-momentum"},
+			}
+		}
+		return StockMetaConfig{
+			Name:         "us-etf-momentum",
+			Market:       "us",
+			BenchmarkSym: "SPY",
+			Bull:         []string{"etf-momentum", "etf-tqqq-sma"},
+			Sideways:     []string{"etf-momentum", "etf-tqqq-sma"},
+			Bear:         []string{"etf-momentum"}, // Bear에서는 TQQQ 제외 (SMA 하회 시 자동 skip)
+		}
+	}
+
+	// Full / Hybrid tier: 기존 로직
 	if market == "kr" {
 		return StockMetaConfig{
 			Name:         "extended-hold",
@@ -105,6 +137,11 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 		if isKR {
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000
+			// KR bull: 풀백 허용 범위 확대
+			if regime == RegimeBull {
+				cfg.MA20TouchTolerance = 0.04 // 2% → 4%
+				cfg.MaxRSI = 60               // 50 → 60
+			}
 		}
 		return NewPullbackStrategy(cfg, s.provider)
 
@@ -113,6 +150,12 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 		if isKR {
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000
+			// KR bull: 수렴 필수 해제 + 필터 완화
+			if regime == RegimeBull {
+				cfg.RequireConsolidation = false // 수렴 없어도 시그널 (probability 감소)
+				cfg.KRVolumeMultiple = 1.5       // 2.0 → 1.5 (US와 동일)
+				cfg.KRMinBreakoutPct = 0.5       // 1.5% → 0.5%
+			}
 		}
 		return NewBreakoutStrategy(cfg, s.provider)
 
@@ -136,6 +179,15 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 			cfg.MinDailyDollarVol = 500000000
 		}
 		return NewOversoldStrategy(cfg, s.provider)
+
+	case "etf-momentum":
+		if isKR {
+			return NewETFMomentumStrategy(ETFMomentumConfig{Mode: ETFModeKRTiming, Market: "kr"}, s.provider)
+		}
+		return NewETFMomentumStrategy(ETFMomentumConfig{Mode: ETFModeGEM, Market: "us"}, s.provider)
+
+	case "etf-tqqq-sma":
+		return NewETFMomentumStrategy(ETFMomentumConfig{Mode: ETFModeTQQQSMA, Market: "us"}, s.provider)
 
 	default:
 		log.Printf("[STOCK-META] Unknown strategy: %s", name)

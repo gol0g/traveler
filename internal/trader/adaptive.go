@@ -347,11 +347,12 @@ func AdjustConfigForKRBalance(balance float64) SizerConfig {
 	}
 
 	switch {
-	case balance < 500000: // 50만원 미만: 공격적 + 분산
-		cfg.RiskPerTrade = 0.03
-		cfg.MaxPositionPct = 0.30
-		cfg.MaxPositions = 5
-		cfg.MinRiskReward = 1.5
+	case balance < 500000: // 50만원 미만: ETF tier — 집중 투자
+		cfg.RiskPerTrade = 0.05
+		cfg.MaxPositionPct = 0.90    // ETF 집중
+		cfg.MaxPositions = 2
+		cfg.MinRiskReward = 1.0
+		cfg.MinExpectedReturn = 0.005
 	case balance < 5000000: // 500만원 미만: 적극적
 		cfg.RiskPerTrade = 0.02
 		cfg.MaxPositionPct = 0.25
@@ -378,6 +379,20 @@ func GetCryptoUniverseTiers(balance float64) []UniverseTier {
 	return []UniverseTier{
 		{Name: "crypto-top10", Universe: symbols.UniverseCryptoTop10, Priority: 1},
 		{Name: "crypto-top30", Universe: symbols.UniverseCryptoTop30, Priority: 2},
+	}
+}
+
+// GetUSETFTiers returns ETF-only universe tiers for US
+func GetUSETFTiers(balance float64) []UniverseTier {
+	return []UniverseTier{
+		{Name: "us-etf", Universe: symbols.UniverseUSETF, Priority: 1},
+	}
+}
+
+// GetKRETFTiers returns ETF-only universe tiers for KR
+func GetKRETFTiers(balance float64) []UniverseTier {
+	return []UniverseTier{
+		{Name: "kr-etf", Universe: symbols.UniverseKRETF, Priority: 1},
 	}
 }
 

@@ -5,19 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=pi
-Group=pi
-WorkingDirectory=/home/pi
-ExecStart=/usr/local/bin/traveler --daemon --market kr --sleep-on-exit=false --data-dir /home/pi/.traveler
+User=junghyun
+Group=junghyun
+WorkingDirectory=/home/junghyun
+ExecStart=/usr/local/bin/traveler --daemon --market kr --sleep-on-exit=false --data-dir /home/junghyun/.traveler
 TimeoutStartSec=7200
-Environment=HOME=/home/pi
-EnvironmentFile=/home/pi/.traveler/.env
+Environment=HOME=/home/junghyun
+EnvironmentFile=/home/junghyun/.traveler/.env
 
 # Logging
-StandardOutput=append:/home/pi/.traveler/daemon_kr.log
-StandardError=append:/home/pi/.traveler/daemon_kr.log
+StandardOutput=append:/home/junghyun/.traveler/daemon_kr.log
+StandardError=append:/home/junghyun/.traveler/daemon_kr.log
 
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/home/pi/.traveler
+ReadWritePaths=/home/junghyun/.traveler

@@ -24,8 +24,30 @@ type CryptoMetaStrategy struct {
 	bear        []Strategy // Bear regime strategies (conservative only)
 }
 
-// NewCryptoMetaStrategy creates a new crypto meta strategy
-func NewCryptoMetaStrategy(p provider.Provider) *CryptoMetaStrategy {
+// NewCryptoMetaStrategy creates a new crypto meta strategy.
+// Capital tier:
+//   - < ₩200K (btc-only): BTC trend following only (EMA12/50)
+//   - ₩200K-₩1M (extended): BTC trend + existing strategies for top alts
+//   - ≥ ₩1M (full): Full multi-strategy
+func NewCryptoMetaStrategy(p provider.Provider, capital ...float64) *CryptoMetaStrategy {
+	cap := 0.0
+	if len(capital) > 0 {
+		cap = capital[0]
+	}
+	tier := GetCapitalTier("crypto", cap)
+
+	if tier == "btc-only" {
+		// 소액: BTC 트렌드 팔로잉만 — 모든 레짐에서 동일
+		trend := NewCryptoTrendStrategy(p)
+		return &CryptoMetaStrategy{
+			regime:   NewRegimeDetector(p),
+			bull:     []Strategy{trend},
+			sideways: []Strategy{trend},
+			bear:     []Strategy{trend},
+		}
+	}
+
+	// extended/full: 기존 로직
 	vbCfg := DefaultVolatilityBreakoutConfig()
 	return &CryptoMetaStrategy{
 		regime: NewRegimeDetector(p),

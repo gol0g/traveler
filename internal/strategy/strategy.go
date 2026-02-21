@@ -58,6 +58,8 @@ type Signal struct {
 	Technical   *model.TechnicalAnalysis `json:"technical,omitempty"`
 	Guide       *TradeGuide              `json:"guide,omitempty"` // Trading guide
 	Candles     []model.Candle           `json:"candles,omitempty"` // Chart data for web UI
+	AIReason         string              `json:"ai_reason,omitempty"`          // AI filter pass reason
+	AIOptimizeReason string              `json:"ai_optimize_reason,omitempty"` // AI SL/TP optimization reasoning
 }
 
 // Strategy defines the interface for trading strategies

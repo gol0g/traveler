@@ -101,8 +101,14 @@ func (rd *RegimeDetector) DetectWithInfo(ctx context.Context) RegimeInfo {
 func (rd *RegimeDetector) calculate(ctx context.Context) Regime {
 	candles, err := rd.provider.GetDailyCandles(ctx, rd.symbol, 55)
 	if err != nil {
-		log.Printf("[REGIME] Failed to get %s candles: %v, defaulting to sideways", rd.symbol, err)
-		return RegimeSideways
+		// 토큰 rate limit 등 일시적 오류 시 3초 후 1회 재시도
+		log.Printf("[REGIME] First attempt failed for %s: %v, retrying in 3s...", rd.symbol, err)
+		time.Sleep(3 * time.Second)
+		candles, err = rd.provider.GetDailyCandles(ctx, rd.symbol, 55)
+		if err != nil {
+			log.Printf("[REGIME] Retry failed for %s: %v, defaulting to sideways", rd.symbol, err)
+			return RegimeSideways
+		}
 	}
 
 	if len(candles) < 50 {

@@ -23,6 +23,9 @@ type BreakoutConfig struct {
 	KRVolumeMultiple float64 // KR: higher volume threshold (default 2.0x)
 	KRMinBreakoutPct float64 // KR: minimum breakout % above 20d high (default 1.5%)
 
+	// 수렴 필수 여부 (default true, bull에서 false로 완화 가능)
+	RequireConsolidation bool
+
 	// Quality filters
 	MinPrice          float64
 	MaxTickerLength   int
@@ -48,6 +51,8 @@ func DefaultBreakoutConfig() BreakoutConfig {
 		MinPrice:          5.0,
 		MaxTickerLength:   4,
 		MinDailyDollarVol: 500000,
+
+		RequireConsolidation: true,
 	}
 }
 
@@ -244,9 +249,12 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		return nil, nil
 	}
 
-	// 수렴 필수: 수렴 없는 돌파는 허위 돌파 가능성 높음 (US/KR 모두 적용)
+	// 수렴 체크: RequireConsolidation=true이면 필수, false이면 probability 감소
 	if !priorConsolidation {
-		return nil, nil
+		if s.config.RequireConsolidation {
+			return nil, nil
+		}
+		// 수렴 없으면 허위 돌파 위험 → probability 30% 감소
 	}
 	details["prior_consolidation"] = boolToFloat(priorConsolidation)
 
@@ -254,6 +262,9 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		highestHigh, volumeRatio, details["price_vs_ma50_pct"])
 
 	probability := calculateBreakoutProbability(strength, volumeRatio, priorConsolidation, rsiNotOverbought)
+	if !priorConsolidation {
+		probability *= 0.7
+	}
 	guide := s.calculateTradeGuide(today.Close, highestHigh, ind.ATR14, candles)
 
 	return &Signal{

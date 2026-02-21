@@ -47,6 +47,8 @@ var strategyMaxHoldDays = map[string]int{
 	"rsi-contrarian":      5,
 	"volume-spike":        3,
 	"wbottom":             15, // W-Bottom: pattern completion ~15 calendar days
+	"etf-momentum":       25, // ETF monthly rotation (~1 month trading days)
+	"crypto-trend":       60, // BTC trend following (weeks to months)
 }
 
 // GetMaxHoldDays returns the max hold days for a strategy.

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"traveler/internal/ai"
 	"traveler/internal/broker"
 	"traveler/internal/config"
 	"traveler/internal/provider"
@@ -55,10 +56,15 @@ type Server struct {
 	providerCrypto provider.Provider
 
 	// 모의투자 시장 지원
-	brokerSimUS  broker.Broker
-	brokerSimKR  broker.Broker
-	historySimUS *trader.TradeHistory
-	historySimKR *trader.TradeHistory
+	brokerSimUS    broker.Broker
+	brokerSimKR    broker.Broker
+	historySimUS   *trader.TradeHistory
+	historySimKR   *trader.TradeHistory
+	planStoreSimUS *trader.PlanStore
+	planStoreSimKR *trader.PlanStore
+
+	// AI signal filter
+	aiClient *ai.GeminiClient
 
 	scan             scanState
 	scanKR           scanState
@@ -83,12 +89,31 @@ func (s *Server) SetCryptoMarket(b broker.Broker, p provider.Provider) {
 	s.providerCrypto = p
 }
 
-// SetSimMarkets 모의투자 브로커/히스토리 설정
+// SetAIClient sets the Gemini AI client for signal filtering
+func (s *Server) SetAIClient(c *ai.GeminiClient) {
+	s.aiClient = c
+}
+
+// SetSimMarkets 모의투자 브로커/히스토리/planStore 설정
 func (s *Server) SetSimMarkets(bUS, bKR broker.Broker, hUS, hKR *trader.TradeHistory) {
 	s.brokerSimUS = bUS
 	s.brokerSimKR = bKR
 	s.historySimUS = hUS
 	s.historySimKR = hKR
+
+	// sim PlanStore 초기화 (sim 데이터 디렉토리에서 plans.json 읽기)
+	if s.dataDir != "" {
+		if bUS != nil {
+			if ps, err := trader.NewPlanStore(filepath.Join(s.dataDir, "sim_us")); err == nil {
+				s.planStoreSimUS = ps
+			}
+		}
+		if bKR != nil {
+			if ps, err := trader.NewPlanStore(filepath.Join(s.dataDir, "sim_kr")); err == nil {
+				s.planStoreSimKR = ps
+			}
+		}
+	}
 }
 
 // NewServer creates a new web server
@@ -145,6 +170,8 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/balance", s.handleBalance)
 	mux.HandleFunc("/api/orders", s.handleOrders)
 	mux.HandleFunc("/api/trade-history", s.handleTradeHistory)
+	mux.HandleFunc("/api/dca/status", s.handleDCAStatus)
+	mux.HandleFunc("/api/dca/feargreed", s.handleDCAFearGreed)
 
 	// Static files (no-cache to prevent stale JS)
 	staticFS, err := fs.Sub(staticFiles, "static")

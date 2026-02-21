@@ -7,10 +7,13 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"traveler/internal/ai"
 	"traveler/internal/broker"
 	"traveler/internal/provider"
 	"traveler/internal/strategy"
@@ -21,8 +24,9 @@ import (
 
 // createMarketAwareStrategies creates a regime-aware meta strategy for stock markets (US/KR).
 // Uses StockMetaStrategy with optimized regime-strategy mapping, matching the daemon.
-func createMarketAwareStrategies(p provider.Provider, market string) []strategy.Strategy {
-	metaCfg := strategy.DefaultStockMetaConfig(market)
+// capital=0 means unspecified → uses "full" tier (backward compatible).
+func createMarketAwareStrategies(p provider.Provider, market string, capital float64) []strategy.Strategy {
+	metaCfg := strategy.DefaultStockMetaConfig(market, capital)
 	meta := strategy.NewStockMetaStrategy(metaCfg, p)
 	return []strategy.Strategy{meta}
 }
@@ -57,6 +61,13 @@ type ScanResponse struct {
 	BenchmarkMA20    float64  `json:"benchmark_ma20,omitempty"`
 	BenchmarkMA50    float64  `json:"benchmark_ma50,omitempty"`
 	BenchmarkRSI     float64  `json:"benchmark_rsi,omitempty"`
+
+	// Capital tier info
+	CapitalTier      string   `json:"capital_tier,omitempty"`      // "etf", "hybrid", "full", "btc-only", "extended"
+
+	// AI filter info
+	AIFiltered       int             `json:"ai_filtered,omitempty"`       // signals rejected by AI
+	AIRejections     []ai.AIRejection `json:"ai_rejections,omitempty"`    // rejected signals with reasons
 }
 
 // SignalWithChart extends Signal with chart data and fundamentals
@@ -183,11 +194,28 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse capital
+	// Parse capital — query param > broker balance > default
 	capital := s.capital
 	if c := r.URL.Query().Get("capital"); c != "" {
 		if v, err := strconv.ParseFloat(c, 64); err == nil {
 			capital = v
+		}
+	} else {
+		// 실제 브로커 잔고 조회
+		var b broker.Broker
+		switch market {
+		case "kr":
+			b = s.brokerKR
+		case "crypto":
+			b = s.brokerCrypto
+		default:
+			b = s.broker
+		}
+		if b != nil {
+			if bal, err := b.GetBalance(context.Background()); err == nil && bal.TotalEquity > 0 {
+				capital = bal.TotalEquity
+				log.Printf("[WEB] Using actual broker balance for %s: %.2f", market, capital)
+			}
 		}
 	}
 
@@ -243,7 +271,8 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 	// Caching provider: each stock fetched once, shared across strategies
 	cachedProvider := provider.NewCachingProvider(s.provider, 250)
 
-	strategies := createMarketAwareStrategies(cachedProvider, "us")
+	capitalTier := strategy.GetCapitalTier("us", capital)
+	strategies := createMarketAwareStrategies(cachedProvider, "us", capital)
 	meta := strategies[0].(*strategy.StockMetaStrategy)
 	regimeInfo := meta.GetRegimeInfo(ctx)
 	activeStrats := meta.GetActiveStrategyNames(ctx)
@@ -294,6 +323,11 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 	adaptiveCfg.Verbose = true
 	scanner := trader.NewAdaptiveScanner(adaptiveCfg, sizerCfg, scanFunc)
 
+	// ETF tier: route to ETF universe
+	if capitalTier == "etf" {
+		scanner.SetTierFunc(trader.GetUSETFTiers)
+	}
+
 	result, err := scanner.Scan(ctx, &webStockLoader{})
 	if err != nil {
 		log.Printf("[WEB] Scan error: %v", err)
@@ -333,6 +367,20 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 			}
 		}
 		fundCancel()
+	}
+
+	// AI signal filter + SL/TP optimization
+	var aiFilteredCount int
+	var aiRejections []ai.AIRejection
+	if s.aiClient != nil && len(result.Signals) > 0 {
+		s.updateScanProgress("AI analyzing signals...", totalScanned, totalFound)
+		regime := string(regimeInfo.Regime)
+		before := len(result.Signals)
+		result.Signals, aiRejections = s.aiClient.FilterSignals(ctx, result.Signals, regime, "us")
+		aiFilteredCount = before - len(result.Signals)
+		if len(result.Signals) > 0 {
+			result.Signals = s.aiClient.OptimizeGuides(ctx, result.Signals, regime, "us")
+		}
 	}
 
 	s.updateScanProgress("Applying position sizing...", totalScanned, totalFound)
@@ -386,6 +434,9 @@ func (s *Server) runScanAsync(ctx context.Context, cancel context.CancelFunc, ca
 		BenchmarkMA20:    regimeInfo.MA20,
 		BenchmarkMA50:    regimeInfo.MA50,
 		BenchmarkRSI:     regimeInfo.RSI14,
+		CapitalTier:      capitalTier,
+		AIFiltered:       aiFilteredCount,
+		AIRejections:     aiRejections,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -413,7 +464,8 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 	}
 
 	cachedProvider := provider.NewCachingProvider(s.providerKR, 250)
-	strategies := createMarketAwareStrategies(cachedProvider, "kr")
+	capitalTierKR := strategy.GetCapitalTier("kr", capital)
+	strategies := createMarketAwareStrategies(cachedProvider, "kr", capital)
 	metaKR := strategies[0].(*strategy.StockMetaStrategy)
 	regimeInfoKR := metaKR.GetRegimeInfo(ctx)
 	activeStratsKR := metaKR.GetActiveStrategyNames(ctx)
@@ -462,9 +514,13 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 
 	// Override GetUniverseTiers for KR
 	scanner := trader.NewAdaptiveScanner(adaptiveCfg, sizerCfg, scanFunc)
-	scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
-		return trader.GetKRUniverseTiers(balance)
-	})
+	if capitalTierKR == "etf" {
+		scanner.SetTierFunc(trader.GetKRETFTiers)
+	} else {
+		scanner.SetTierFunc(func(balance float64) []trader.UniverseTier {
+			return trader.GetKRUniverseTiers(balance)
+		})
+	}
 
 	result, err := scanner.Scan(ctx, &webStockLoader{korean: true})
 	if err != nil {
@@ -509,6 +565,20 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 			}
 		}
 		fundCancel()
+	}
+
+	// AI signal filter + SL/TP optimization (KR)
+	var aiFilteredKR int
+	var aiRejectionsKR []ai.AIRejection
+	if s.aiClient != nil && len(result.Signals) > 0 {
+		s.updateScanKRProgress("AI analyzing signals...", totalScanned, totalFound)
+		regime := string(regimeInfoKR.Regime)
+		before := len(result.Signals)
+		result.Signals, aiRejectionsKR = s.aiClient.FilterSignals(ctx, result.Signals, regime, "kr")
+		aiFilteredKR = before - len(result.Signals)
+		if len(result.Signals) > 0 {
+			result.Signals = s.aiClient.OptimizeGuides(ctx, result.Signals, regime, "kr")
+		}
 	}
 
 	s.updateScanKRProgress("Applying position sizing...", totalScanned, totalFound)
@@ -562,6 +632,9 @@ func (s *Server) runKRScanAsync(ctx context.Context, cancel context.CancelFunc, 
 		BenchmarkMA20:    regimeInfoKR.MA20,
 		BenchmarkMA50:    regimeInfoKR.MA50,
 		BenchmarkRSI:     regimeInfoKR.RSI14,
+		CapitalTier:      capitalTierKR,
+		AIFiltered:       aiFilteredKR,
+		AIRejections:     aiRejectionsKR,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -602,7 +675,8 @@ func (s *Server) runCryptoScanAsync(ctx context.Context, cancel context.CancelFu
 	totalFound := 0
 
 	// Crypto: regime-aware meta strategy (Bull→VolatilityBreakout, Sideways→RangeTrading, Bear→skip)
-	cryptoMeta := strategy.NewCryptoMetaStrategy(cachedProvider)
+	capitalTierCrypto := strategy.GetCapitalTier("crypto", capital)
+	cryptoMeta := strategy.NewCryptoMetaStrategy(cachedProvider, capital)
 	cryptoRegimeInfo := cryptoMeta.GetRegimeInfo(ctx)
 	log.Printf("[WEB] Crypto regime: %s (benchmark=%s, price=%.0f, MA20=%.0f, RSI=%.1f)",
 		cryptoRegimeInfo.Regime, cryptoRegimeInfo.Symbol, cryptoRegimeInfo.Price, cryptoRegimeInfo.MA20, cryptoRegimeInfo.RSI14)
@@ -661,6 +735,20 @@ func (s *Server) runCryptoScanAsync(ctx context.Context, cancel context.CancelFu
 		return
 	}
 
+	// AI signal filter + SL/TP optimization (Crypto)
+	var aiFilteredCrypto int
+	var aiRejectionsCrypto []ai.AIRejection
+	if s.aiClient != nil && len(result.Signals) > 0 {
+		s.updateScanCryptoProgress("AI analyzing signals...", totalScanned, totalFound)
+		regime := string(cryptoRegimeInfo.Regime)
+		before := len(result.Signals)
+		result.Signals, aiRejectionsCrypto = s.aiClient.FilterSignals(ctx, result.Signals, regime, "crypto")
+		aiFilteredCrypto = before - len(result.Signals)
+		if len(result.Signals) > 0 {
+			result.Signals = s.aiClient.OptimizeGuides(ctx, result.Signals, regime, "crypto")
+		}
+	}
+
 	s.updateScanCryptoProgress("Applying position sizing...", totalScanned, totalFound)
 
 	sizer := trader.NewPositionSizer(sizerCfg)
@@ -715,6 +803,9 @@ func (s *Server) runCryptoScanAsync(ctx context.Context, cancel context.CancelFu
 		BenchmarkMA20:    cryptoRegimeInfo.MA20,
 		BenchmarkMA50:    cryptoRegimeInfo.MA50,
 		BenchmarkRSI:     cryptoRegimeInfo.RSI14,
+		CapitalTier:      capitalTierCrypto,
+		AIFiltered:       aiFilteredCrypto,
+		AIRejections:     aiRejectionsCrypto,
 	}
 
 	respJSON, _ := json.Marshal(resp)
@@ -984,11 +1075,18 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reload PlanStore from disk for freshness
+	// Reload PlanStore from disk for freshness (sim 마켓은 별도 planStore)
 	var plans map[string]*trader.PositionPlan
-	if s.planStore != nil {
-		s.planStore.Reload()
-		plans = s.planStore.All()
+	ps := s.planStore
+	switch market {
+	case "sim-us":
+		ps = s.planStoreSimUS
+	case "sim-kr":
+		ps = s.planStoreSimKR
+	}
+	if ps != nil {
+		ps.Reload()
+		plans = ps.All()
 	}
 
 	// Merge positions with plan data
@@ -1185,5 +1283,71 @@ func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"records": records,
 		"summary": summary,
+	})
+}
+
+// handleDCAStatus returns the current DCA status (read from dca_status.json)
+func (s *Server) handleDCAStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fp := filepath.Join(s.dataDir, "dca_status.json")
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active": false,
+			"error":  "DCA not running",
+		})
+		return
+	}
+
+	// Check freshness (if file is older than 48h, consider DCA inactive)
+	info, _ := os.Stat(fp)
+	active := info != nil && time.Since(info.ModTime()) < 48*time.Hour
+
+	// Write combined response
+	w.Write([]byte(`{"active":`))
+	if active {
+		w.Write([]byte("true"))
+	} else {
+		w.Write([]byte("false"))
+	}
+	w.Write([]byte(`,"data":`))
+	w.Write(data)
+	w.Write([]byte("}"))
+}
+
+// handleDCAFearGreed returns current and historical Fear & Greed data
+func (s *Server) handleDCAFearGreed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fgClient := provider.NewFearGreedClient()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	current, err := fgClient.GetIndex(ctx)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// Get 30-day history
+	history, _ := fgClient.GetHistorical(ctx, 30)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"current": current,
+		"history": history,
 	})
 }

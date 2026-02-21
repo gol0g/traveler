@@ -25,6 +25,7 @@ type SimBroker struct {
 	orderSeq  int                // order ID sequence
 	provider  provider.Provider  // for price data
 	dataDir   string             // directory for sim_state.json
+	readOnly  bool               // true = reload from disk on every read (web viewer mode)
 }
 
 type simPos struct {
@@ -77,6 +78,22 @@ func NewSimBroker(market string, capital float64, prov provider.Provider, dataDi
 	}
 
 	return sb
+}
+
+// SetReadOnly marks this broker as read-only (web viewer mode).
+// In this mode, state is reloaded from disk on every GetBalance/GetPositions call.
+func (sb *SimBroker) SetReadOnly(ro bool) {
+	sb.readOnly = ro
+}
+
+// reloadIfReadOnly reloads state from disk if in read-only mode.
+func (sb *SimBroker) reloadIfReadOnly() {
+	if !sb.readOnly {
+		return
+	}
+	if err := sb.loadState(); err != nil {
+		// state file may not exist yet; ignore
+	}
 }
 
 // --- broker.Broker interface ---
@@ -231,6 +248,10 @@ func (sb *SimBroker) GetOrder(ctx context.Context, orderID string) (*broker.Orde
 }
 
 func (sb *SimBroker) GetBalance(ctx context.Context) (*broker.AccountBalance, error) {
+	sb.mu.Lock()
+	sb.reloadIfReadOnly()
+	sb.mu.Unlock()
+
 	sb.mu.RLock()
 	defer sb.mu.RUnlock()
 
@@ -256,6 +277,10 @@ func (sb *SimBroker) GetBalance(ctx context.Context) (*broker.AccountBalance, er
 }
 
 func (sb *SimBroker) GetPositions(ctx context.Context) ([]broker.Position, error) {
+	sb.mu.Lock()
+	sb.reloadIfReadOnly()
+	sb.mu.Unlock()
+
 	sb.mu.RLock()
 	defer sb.mu.RUnlock()
 

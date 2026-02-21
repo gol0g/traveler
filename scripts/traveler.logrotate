@@ -1,0 +1,33 @@
+# Oneshot daemon logs — copytruncate OK (실행 중이 아닐 때 rotate)
+/home/junghyun/.traveler/daemon.log
+/home/junghyun/.traveler/daemon_us.log
+/home/junghyun/.traveler/daemon_kr.log
+/home/junghyun/.traveler/sim_us/daemon.log
+/home/junghyun/.traveler/sim_kr/daemon.log {
+    su junghyun junghyun
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+
+# Always-on service logs — create + restart (StandardOutput=append: fd 갱신)
+/home/junghyun/.traveler/web.log
+/home/junghyun/.traveler/daemon_crypto.log {
+    su junghyun junghyun
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 junghyun junghyun
+    sharedscripts
+    postrotate
+        systemctl restart traveler-web 2>/dev/null || true
+        systemctl restart traveler-crypto 2>/dev/null || true
+    endscript
+}

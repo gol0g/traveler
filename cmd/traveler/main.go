@@ -19,9 +19,11 @@ import (
 	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 
+	"traveler/internal/ai"
 	"traveler/internal/analyzer"
 	"traveler/internal/backtest"
 	"traveler/internal/broker"
+	"traveler/internal/dca"
 	"traveler/internal/broker/kis"
 	"traveler/internal/broker/sim"
 	"traveler/internal/broker/upbit"
@@ -73,6 +75,8 @@ var (
 	forceScan       bool    // 강제 스캔 (이미 매매했어도)
 	simMode         bool    // 모의투자 모드
 	simCapital      float64 // 모의투자 가상 자본
+	dcaMode         bool    // DCA 장기 투자 모드
+	dcaAmount       float64 // DCA 1회 매수 금액 (KRW)
 )
 
 func main() {
@@ -128,6 +132,8 @@ Examples:
 	rootCmd.Flags().BoolVar(&forceScan, "force-scan", false, "force scan even if already traded today")
 	rootCmd.Flags().BoolVar(&simMode, "sim", false, "simulation mode: paper trading with virtual capital")
 	rootCmd.Flags().Float64Var(&simCapital, "sim-capital", 0, "virtual capital for sim mode (default: US $100000, KR ₩50000000)")
+	rootCmd.Flags().BoolVar(&dcaMode, "dca", false, "DCA long-term investment mode (crypto)")
+	rootCmd.Flags().Float64Var(&dcaAmount, "dca-amount", 10000, "DCA base amount per cycle in KRW")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -179,6 +185,11 @@ func run(cmd *cobra.Command, args []string) error {
 			fmt.Print(p.Name())
 		}
 		fmt.Println()
+	}
+
+	// DCA mode - long-term crypto DCA investing
+	if daemonMode && dcaMode {
+		return runDCAMode()
 	}
 
 	// Daemon mode - fully automated trading (may also start web server)
@@ -470,6 +481,13 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	}
 	d := daemon.NewDaemon(daemonCfg, daemonBroker, daemonProvider)
 
+	// AI signal filter (Gemini)
+	aiClient := ai.NewGeminiClient()
+	if aiClient != nil {
+		d.SetAIClient(aiClient)
+		log.Printf("[AI] Gemini AI signal filter enabled (model: gemini-2.5-flash-lite)")
+	}
+
 	// --web 플래그가 함께 있으면 웹 서버를 백그라운드로 시작
 	if webMode {
 		log.Printf("[DAEMON] Starting web server on port %d", webPort)
@@ -508,6 +526,10 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 			server.SetCryptoMarket(cryptoBroker, provider.NewUpbitProvider())
 			log.Printf("[DAEMON] Crypto market connected for web UI")
 		}
+		// AI signal filter for web
+		if aiClient != nil {
+			server.SetAIClient(aiClient)
+		}
 		// 모의투자 sim 디렉토리가 있으면 SimBroker 등록
 		registerSimMarkets(server, p, resolvedDir)
 		go func() {
@@ -528,6 +550,78 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	}()
 
 	return d.Run()
+}
+
+func runDCAMode() error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER DCA MODE - Long-term Crypto Investment")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	resolvedDir := resolveDataDir()
+
+	// Load .env for Upbit credentials
+	loadEnvFile()
+
+	upbitBroker := upbit.NewClient()
+	if !upbitBroker.IsReady() {
+		return fmt.Errorf("Upbit API credentials required for DCA mode (set UPBIT_ACCESS_KEY/UPBIT_SECRET_KEY)")
+	}
+
+	upbitProvider := provider.NewUpbitProvider()
+
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	log.Printf("[DCA] Data directory: %s", resolvedDir)
+
+	// DCA config
+	dcaCfg := dca.DefaultConfig()
+	if dcaAmount > 0 {
+		dcaCfg.BaseDCAAmount = dcaAmount
+	}
+
+	fmt.Printf(" Base DCA Amount: ₩%.0f\n", dcaCfg.BaseDCAAmount)
+	fmt.Printf(" Interval:        daily\n")
+	fmt.Printf(" Targets:         ")
+	for i, t := range dcaCfg.Targets {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		fmt.Printf("%s %.0f%%", t.Symbol, t.TargetPct*100)
+	}
+	fmt.Println()
+	fmt.Printf(" Fear & Greed:    %v\n", dcaCfg.FearGreedEnabled)
+	fmt.Printf(" EMA50 Overlay:   %v\n", dcaCfg.EMA50Enabled)
+	fmt.Printf(" Rebalancing:     %v (%.0f%% threshold)\n", dcaCfg.RebalanceEnabled, dcaCfg.RebalanceThreshold)
+	fmt.Println()
+
+	// Check balance
+	ctx := context.Background()
+	bal, err := upbitBroker.GetBalance(ctx)
+	if err != nil {
+		log.Printf("[DCA] Warning: could not get balance: %v", err)
+	} else {
+		log.Printf("[DCA] Account balance: ₩%.0f", bal.TotalEquity)
+	}
+
+	dcaDaemon := daemon.NewDCADaemon(dcaCfg, upbitBroker, upbitProvider, resolvedDir)
+
+	// Signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		dcaDaemon.Stop()
+	}()
+
+	return dcaDaemon.Run()
 }
 
 func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
@@ -579,6 +673,13 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 		fmt.Println("Upbit crypto broker connected")
 	}
 
+	// AI signal filter
+	webAIClient := ai.NewGeminiClient()
+	if webAIClient != nil {
+		server.SetAIClient(webAIClient)
+		fmt.Println("Gemini AI signal filter enabled")
+	}
+
 	// 모의투자 sim 디렉토리가 있으면 SimBroker 등록
 	registerSimMarkets(server, p, resolveDataDir())
 
@@ -602,12 +703,16 @@ func registerSimMarkets(server *web.Server, p provider.Provider, dataDir string)
 	var hUS, hKR *trader.TradeHistory
 
 	if _, err := os.Stat(simUSDir); err == nil {
-		bUS = sim.NewSimBroker("us", 0, p, simUSDir)
+		sb := sim.NewSimBroker("us", 0, p, simUSDir)
+		sb.SetReadOnly(true) // web viewer: reload from disk on each read
+		bUS = sb
 		hUS, _ = trader.NewTradeHistory(simUSDir)
 		log.Printf("[WEB] SIM-US market registered (data: %s)", simUSDir)
 	}
 	if _, err := os.Stat(simKRDir); err == nil {
-		bKR = sim.NewSimBroker("kr", 0, p, simKRDir)
+		sb := sim.NewSimBroker("kr", 0, p, simKRDir)
+		sb.SetReadOnly(true)
+		bKR = sb
 		hKR, _ = trader.NewTradeHistory(simKRDir)
 		log.Printf("[WEB] SIM-KR market registered (data: %s)", simKRDir)
 	}

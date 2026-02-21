@@ -7,7 +7,7 @@
     <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="/css/style.css?v=19">
+    <link rel="stylesheet" href="/css/style.css?v=25">
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <!-- Header -->
@@ -32,6 +32,7 @@
             <button class="tab-btn" data-tab="positions">Positions</button>
             <button class="tab-btn" data-tab="history">History</button>
             <button class="tab-btn" data-tab="strategy">Strategy</button>
+            <button class="tab-btn" data-tab="dca">DCA</button>
         </nav>
     </header>
 
@@ -125,6 +126,7 @@
                                 <th class="px-4 py-3 font-medium">Risk</th>
                                 <th class="px-4 py-3 font-medium">Prob%</th>
                                 <th class="px-4 py-3 font-medium">Fundamentals</th>
+                                <th class="px-4 py-3 font-medium">AI</th>
                                 <th class="px-4 py-3 font-medium">Action</th>
                             </tr>
                         </thead>
@@ -133,6 +135,15 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+
+            <!-- AI Rejections -->
+            <div id="aiRejectionsSection" class="bg-gray-800 rounded-xl border border-gray-700 mt-4 hidden">
+                <div class="p-4 border-b border-gray-700 flex items-center gap-2">
+                    <span class="bg-purple-600 px-2 py-0.5 rounded text-xs font-medium">AI</span>
+                    <h2 class="text-sm font-semibold text-gray-300">Rejected by AI</h2>
+                </div>
+                <div id="aiRejectionsList" class="p-4 space-y-1"></div>
             </div>
         </div>
 
@@ -351,7 +362,7 @@
 
             <!-- ===== Strategies ===== -->
             <h3 class="text-lg font-semibold mb-3">Strategies</h3>
-            <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                 <!-- Pullback -->
                 <div class="strategy-card strategy-card-pullback">
                     <div class="flex items-center gap-3 mb-4">
@@ -504,6 +515,68 @@
                     <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
                     <p class="text-gray-400 text-xs">RSI(2) > 70 회복 시 수익 실현. 5일 후 자동 타임스탑.</p>
                 </div>
+
+                <!-- ETF Momentum -->
+                <div class="strategy-card" style="border-top-color: #3b82f6;">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge bg-blue-600 text-sm">ETF MOMENTUM</span>
+                        <span class="text-gray-400 text-sm">소액 전용</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">소액 계좌($500/₩500K 미만)에서 수수료 부담을 최소화하는 ETF 월간 로테이션 전략. Meb Faber SMA 타이밍 기반.</p>
+
+                    <h4 class="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">GEM (US, 월말)</h4>
+                    <ul class="strategy-conditions mb-3">
+                        <li><span class="condition-tag condition-required">규칙</span> SPY 12mo > SHY 12mo? No → SHY (채권)</li>
+                        <li><span class="condition-tag condition-required">규칙</span> Yes → SPY vs VXUS 12mo 비교, 승자 매수</li>
+                        <li><span class="condition-tag condition-support">주기</span> 월말 1회 리밸런싱 (연 2~6회 거래)</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">TQQQ/SMA (US, 매일)</h4>
+                    <ul class="strategy-conditions mb-3">
+                        <li><span class="condition-tag condition-required">규칙</span> QQQ > 200일 SMA → TQQQ 보유</li>
+                        <li><span class="condition-tag condition-required">규칙</span> QQQ < 200일 SMA → 현금 (매도)</li>
+                        <li><span class="condition-tag condition-support">근거</span> Faber TAA (2006), CAGR 23~44%</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">KR ETF 타이밍 (월말)</h4>
+                    <ul class="strategy-conditions mb-3">
+                        <li><span class="condition-tag condition-required">규칙</span> KODEX200 > 200일 SMA → 레버리지(122630)</li>
+                        <li><span class="condition-tag condition-required">규칙</span> KODEX200 < 200일 SMA → 인버스(114800)</li>
+                    </ul>
+
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>8~10% trailing (안전장치)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유</span><span>최대 25일 (월간 rotation)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">자본</span><span>US < $500 / KR < ₩500K</span></div>
+                    </div>
+                </div>
+
+                <!-- Crypto Trend -->
+                <div class="strategy-card" style="border-top-color: #10b981;">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge bg-emerald-600 text-sm">CRYPTO TREND</span>
+                        <span class="text-gray-400 text-sm">BTC 소액 전용</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">크립토 소액 계좌(₩200K 미만)에서 BTC만 집중 거래. EMA 크로스오버 + RSI 필터로 트렌드 팔로잉.</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> BTC EMA12 > EMA50 (상승 추세)</li>
+                        <li><span class="condition-tag condition-required">필수</span> RSI(14) > 40 (하락 추세 제외)</li>
+                        <li><span class="condition-tag condition-required">필수</span> KRW-BTC만 대상 (다른 코인 무시)</li>
+                    </ul>
+
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>2.5 × ATR trailing</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 + 3 × ATR</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 + 5 × ATR</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유</span><span>최대 60일 (트렌드 종료까지)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">자본</span><span>Crypto < ₩200K</span></div>
+                    </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
+                    <p class="text-gray-400 text-xs">EMA12 < EMA50 크로스 시 매도. 60일 타임스탑.</p>
+                </div>
             </div>
 
             <!-- ===== Fundamentals Filter ===== -->
@@ -532,6 +605,35 @@
                             <div class="guide-row"><span class="text-gray-400">ROE</span><span>자기자본수익률</span></div>
                         </div>
                         <p class="text-gray-500 text-xs mt-2">일별 캐시 저장 (3일 후 자동 삭제). API 실패 시 해당 종목은 PASS 처리.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== AI Signal Filter ===== -->
+            <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+                <span>AI Signal Filter</span>
+                <span class="text-xs font-normal px-2 py-0.5 rounded bg-purple-900 text-purple-300">Gemini</span>
+            </h3>
+            <div class="strategy-card mb-8" style="border-top-color: #a855f7;">
+                <p class="text-gray-300 text-sm mb-4">펀더멘털 필터 통과 후, Gemini AI가 알고리즘이 감지할 수 없는 리스크를 평가하여 위험한 시그널을 제거하고 손절/목표가를 최적화합니다.</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-xs font-semibold text-purple-400 uppercase tracking-wider mb-2">Risk Filter (REJECT 기준)</h4>
+                        <ul class="strategy-conditions">
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">AI</span> 실적 발표 / 이벤트 리스크 (어닝 임박)</li>
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">AI</span> 섹터 역풍 (규제, 자금 이탈)</li>
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">AI</span> 매크로 환경 불일치</li>
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">AI</span> 기업 고유 리스크 (펀더멘탈 악화)</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-semibold text-purple-400 uppercase tracking-wider mb-2">SL/TP Optimization</h4>
+                        <ul class="strategy-conditions">
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">최적화</span> 지지/저항선 기반 손절가 조정</li>
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">최적화</span> ATR 기반 변동성 반영 목표가</li>
+                            <li><span class="condition-tag" style="background:rgba(168,85,247,0.15);color:#c084fc;">최적화</span> R/R >= 1.5 유지 검증</li>
+                        </ul>
+                        <p class="text-gray-500 text-xs mt-2">모델: gemini-2.5-flash-lite (무료). API 실패 시 원본 시그널 유지 (graceful degradation).</p>
                     </div>
                 </div>
             </div>
@@ -645,6 +747,99 @@
             </div>
         </div>
 
+        <!-- ==================== DCA TAB ==================== -->
+        <div id="panelDca" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Crypto DCA Investment</h2>
+                <p class="text-gray-400 text-sm">Fear & Greed 티어드 DCA + EMA50 가중 + 리밸런싱</p>
+            </div>
+
+            <!-- DCA Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Fear & Greed</div>
+                    <div class="flex items-center gap-2">
+                        <div id="dcaFGValue" class="text-3xl font-bold">-</div>
+                        <div id="dcaFGLabel" class="text-sm text-gray-400">-</div>
+                    </div>
+                    <div id="dcaFGBar" class="h-2 rounded-full bg-gray-700 mt-2">
+                        <div id="dcaFGFill" class="h-2 rounded-full bg-gray-500 transition-all" style="width:50%"></div>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Invested</div>
+                    <div id="dcaTotalInvested" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="dcaCycles">0</span> cycles</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Current Value</div>
+                    <div id="dcaCurrentValue" class="text-2xl font-bold text-white">-</div>
+                    <div id="dcaPnL" class="text-sm mt-1">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Next DCA</div>
+                    <div id="dcaNextTime" class="text-lg font-bold text-blue-400">-</div>
+                    <div id="dcaMultiplier" class="text-gray-500 text-xs mt-1">Multiplier: -</div>
+                </div>
+            </div>
+
+            <!-- Portfolio Allocation -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Portfolio Allocation</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Asset</th>
+                                <th class="text-right py-2 px-2">Target</th>
+                                <th class="text-right py-2 px-2">Current</th>
+                                <th class="text-right py-2 px-2">Deviation</th>
+                                <th class="text-right py-2 px-2">Invested</th>
+                                <th class="text-right py-2 px-2">Value</th>
+                                <th class="text-right py-2 px-2">Avg Cost</th>
+                                <th class="text-right py-2 px-2">Price</th>
+                                <th class="text-right py-2 px-2">P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dcaAssetsTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- DCA History -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">DCA History</h3>
+                <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="sticky top-0 bg-gray-800">
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Date</th>
+                                <th class="text-right py-2 px-2">F&G</th>
+                                <th class="text-right py-2 px-2">Multiplier</th>
+                                <th class="text-right py-2 px-2">Amount</th>
+                                <th class="text-center py-2 px-2">Buys</th>
+                                <th class="text-center py-2 px-2">Sells</th>
+                                <th class="text-center py-2 px-2">Rebal</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dcaHistoryTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Fear & Greed Chart -->
+            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <h3 class="font-semibold mb-3">Fear & Greed Index (30 Days)</h3>
+                <div id="dcaFGHistory" class="flex items-end gap-1 h-32"></div>
+            </div>
+
+            <!-- DCA inactive message -->
+            <div id="dcaInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">DCA daemon is not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --market crypto --dca</code></p>
+            </div>
+        </div>
+
         <!-- Loading Indicator -->
         <div id="loading" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div class="bg-gray-800 rounded-xl p-8 flex flex-col items-center gap-4 min-w-[280px]">
@@ -755,6 +950,22 @@
                     <p id="modalReason" class="text-gray-300"></p>
                 </div>
 
+                <!-- AI Analysis -->
+                <div id="modalAI" class="bg-gray-700 rounded-lg p-4 hidden border-l-4 border-purple-500">
+                    <h3 class="font-semibold mb-2 flex items-center gap-2">
+                        <span class="bg-purple-600 px-2 py-0.5 rounded text-xs">AI</span>
+                        Gemini Analysis
+                    </h3>
+                    <div id="modalAIFilter" class="mb-2 hidden">
+                        <span class="text-gray-400 text-sm">Filter:</span>
+                        <span id="modalAIFilterText" class="text-purple-300 text-sm ml-1"></span>
+                    </div>
+                    <div id="modalAIOptimize" class="hidden">
+                        <span class="text-gray-400 text-sm">SL/TP Optimization:</span>
+                        <span id="modalAIOptimizeText" class="text-purple-300 text-sm ml-1"></span>
+                    </div>
+                </div>
+
                 <!-- Modal Actions -->
                 <div class="flex gap-3 mt-4">
                     <button id="excludeBtn" class="flex-1 bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg font-medium transition-colors">
@@ -768,7 +979,7 @@
         </div>
     </div>
 
-    <script src="/js/chart.js?v=19"></script>
-    <script src="/js/app.js?v=19"></script>
+    <script src="/js/chart.js?v=25"></script>
+    <script src="/js/app.js?v=25"></script>
 </body>
 </html>

@@ -172,9 +172,18 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 		ByMarket:   make(map[string]MarketSummary),
 	}
 
+	// 실현된 거래(매도)의 수수료만 gross PnL 계산에 사용
+	realizedCommission := 0.0
+	realizedCommByMarket := make(map[string]float64)
+
 	for _, r := range records {
 		s.TotalTrades++
 		s.TotalCommission += r.Commission
+
+		mkt := r.Market
+		if mkt == "" {
+			mkt = "us"
+		}
 
 		if r.Side == "buy" {
 			s.BuyCount++
@@ -188,6 +197,15 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 				s.LossCount++
 			}
 
+			// 실현 수수료: 매도 수수료 + 매수 수수료 (진입가 기반 추정)
+			sellComm := r.Commission
+			buyComm := 0.0
+			if r.EntryPrice > 0 {
+				buyComm = r.EntryPrice * r.Quantity * CommissionRateByMarket(mkt)
+			}
+			realizedCommission += sellComm + buyComm
+			realizedCommByMarket[mkt] += sellComm + buyComm
+
 			// 전략별
 			strat := r.Strategy
 			if strat == "" {
@@ -196,7 +214,7 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 			ss := s.ByStrategy[strat]
 			ss.Trades++
 			ss.PnL += r.PnL
-			ss.Commission += r.Commission
+			ss.Commission += sellComm + buyComm
 			if r.PnL > 0 {
 				ss.Wins++
 			} else if r.PnL < 0 {
@@ -209,10 +227,6 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 		}
 
 		// 마켓별
-		mkt := r.Market
-		if mkt == "" {
-			mkt = "us"
-		}
 		ms := s.ByMarket[mkt]
 		if r.Side == "buy" {
 			ms.BuyCount++
@@ -237,13 +251,13 @@ func (h *TradeHistory) Summary(market string) TradeSummary {
 	}
 
 	// PnL 필드는 이미 수수료 차감된 순손익(net)
-	// 표시용으로 gross/net 분리: Realized(gross) = Net + Commission
+	// gross = net + 실현 거래 수수료만 (매수만 있는 미실현 수수료 제외)
 	s.NetPnL = s.TotalRealizedPnL
-	s.TotalRealizedPnL += s.TotalCommission
+	s.TotalRealizedPnL += realizedCommission
 
 	for k, ms := range s.ByMarket {
 		ms.NetPnL = ms.PnL
-		ms.PnL += ms.Commission // gross
+		ms.PnL += realizedCommByMarket[k] // gross = net + 실현 수수료만
 		s.ByMarket[k] = ms
 	}
 	for k, ss := range s.ByStrategy {

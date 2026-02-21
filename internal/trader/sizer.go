@@ -246,11 +246,12 @@ func AdjustConfigForBalance(balance float64) SizerConfig {
 
 	switch {
 	case balance < 500:
-		// 소액: 적극적 (포지션 수 늘려서 기회 확보)
-		cfg.RiskPerTrade = 0.02      // 2% (적은 금액이라 비율 높여도 절대금액 작음)
-		cfg.MaxPositions = 5         // 3 → 5 (더 많은 기회 확보)
-		cfg.MinRiskReward = 1.5
-		cfg.MinExpectedReturn = 0.015 // 1.5% (소액은 수수료 부담 큼)
+		// ETF tier: 전 자본을 1-2 ETF 포지션에 집중 (ETF는 분산 내장)
+		cfg.RiskPerTrade = 0.05      // 5% (ETF는 단일종목 리스크 낮음)
+		cfg.MaxPositionPct = 0.90    // 90% (ETF 집중 투자)
+		cfg.MaxPositions = 2         // GEM + TQQQ/SMA
+		cfg.MinRiskReward = 1.0      // ETF는 R/R 낮아도 수수료 부담 적음
+		cfg.MinExpectedReturn = 0.005 // 0.5% (장기 보유, 수수료 최소)
 	case balance < 5000:
 		// 중간: 표준
 		cfg.RiskPerTrade = 0.01      // 1%
