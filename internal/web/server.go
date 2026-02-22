@@ -172,6 +172,7 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/trade-history", s.handleTradeHistory)
 	mux.HandleFunc("/api/dca/status", s.handleDCAStatus)
 	mux.HandleFunc("/api/dca/feargreed", s.handleDCAFearGreed)
+	mux.HandleFunc("/api/scalp/status", s.handleScalpStatus)
 
 	// Static files (no-cache to prevent stale JS)
 	staticFS, err := fs.Sub(staticFiles, "static")

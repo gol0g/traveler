@@ -1286,6 +1286,39 @@ func (s *Server) handleTradeHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleScalpStatus returns the current scalping status (read from scalp_status.json)
+func (s *Server) handleScalpStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fp := filepath.Join(s.dataDir, "scalp_status.json")
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active": false,
+			"error":  "Scalp daemon not running",
+		})
+		return
+	}
+
+	info, _ := os.Stat(fp)
+	active := info != nil && time.Since(info.ModTime()) < 1*time.Hour
+
+	w.Write([]byte(`{"active":`))
+	if active {
+		w.Write([]byte("true"))
+	} else {
+		w.Write([]byte("false"))
+	}
+	w.Write([]byte(`,"data":`))
+	w.Write(data)
+	w.Write([]byte("}"))
+}
+
 // handleDCAStatus returns the current DCA status (read from dca_status.json)
 func (s *Server) handleDCAStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

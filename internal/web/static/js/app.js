@@ -119,6 +119,7 @@ class TravelerApp {
         document.getElementById('panelHistory').classList.toggle('hidden', tab !== 'history');
         document.getElementById('panelStrategy').classList.toggle('hidden', tab !== 'strategy');
         document.getElementById('panelDca').classList.toggle('hidden', tab !== 'dca');
+        document.getElementById('panelScalp').classList.toggle('hidden', tab !== 'scalp');
 
         // Load data for specific tabs
         if (tab === 'positions') {
@@ -135,6 +136,10 @@ class TravelerApp {
         if (tab === 'dca') {
             this.loadDCAStatus();
             this.loadDCAFearGreed();
+        }
+
+        if (tab === 'scalp') {
+            this.loadScalpStatus();
         }
     }
 
@@ -1536,6 +1541,150 @@ class TravelerApp {
         } catch (e) {
             console.error('F&G fetch error:', e);
         }
+    }
+
+    // ==================== Scalp Methods ====================
+
+    async loadScalpStatus() {
+        try {
+            const resp = await fetch('/api/scalp/status');
+            const result = await resp.json();
+
+            const inactive = document.getElementById('scalpInactive');
+            const panels = document.querySelectorAll('#panelScalp > .grid, #panelScalp > .bg-gray-800:not(#scalpInactive)');
+
+            if (!result.active || !result.data) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            const d = result.data;
+            const daily = d.daily || {};
+            const total = d.total || {};
+
+            // Win Rate card
+            const wr = total.win_rate || 0;
+            const wrEl = document.getElementById('scalpWinRate');
+            wrEl.textContent = `${wr.toFixed(1)}%`;
+            wrEl.className = `text-3xl font-bold ${wr >= 55 ? 'text-green-400' : wr >= 45 ? 'text-yellow-400' : 'text-red-400'}`;
+            document.getElementById('scalpTotalTrades').textContent = total.trades || 0;
+
+            // Today PnL card
+            const dayPnL = daily.net_pnl || 0;
+            const dayEl = document.getElementById('scalpDailyPnL');
+            dayEl.textContent = `${dayPnL >= 0 ? '+' : ''}₩${Math.round(dayPnL).toLocaleString()}`;
+            dayEl.className = `text-2xl font-bold ${dayPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('scalpDailyTrades').textContent = daily.wins || 0;
+            document.getElementById('scalpDailyLosses').textContent = daily.losses || 0;
+
+            // Total PnL card
+            const totPnL = total.net_pnl || 0;
+            const totEl = document.getElementById('scalpTotalPnL');
+            totEl.textContent = `${totPnL >= 0 ? '+' : ''}₩${Math.round(totPnL).toLocaleString()}`;
+            totEl.className = `text-2xl font-bold ${totPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('scalpStartDate').textContent = total.start_date || '-';
+
+            // Active positions card
+            const positions = d.active_positions || {};
+            const posCount = Object.keys(positions).length;
+            document.getElementById('scalpActiveCount').textContent = posCount;
+            document.getElementById('scalpMaxPositions').textContent = d.max_positions || 3;
+
+            // Positions table
+            this.renderScalpPositions(positions, d.bar_counter || 0);
+
+            // Today stats detail
+            document.getElementById('scalpToday').textContent = daily.date || '-';
+            document.getElementById('scalpDayTradeCount').textContent = daily.trades || 0;
+            const dayTrades = daily.trades || 0;
+            const dayWins = daily.wins || 0;
+            document.getElementById('scalpDayWR').textContent = dayTrades > 0 ? `${(dayWins / dayTrades * 100).toFixed(0)}%` : '0%';
+            document.getElementById('scalpDayGross').textContent = `₩${Math.round(daily.gross_pnl || 0).toLocaleString()}`;
+            document.getElementById('scalpDayComm').textContent = `₩${Math.round(daily.commission || 0).toLocaleString()}`;
+
+            // Lifetime stats
+            const bestEl = document.getElementById('scalpBest');
+            bestEl.textContent = `₩${Math.round(total.best_trade || 0).toLocaleString()}`;
+            bestEl.className = 'text-green-400';
+            const worstEl = document.getElementById('scalpWorst');
+            worstEl.textContent = `₩${Math.round(total.worst_trade || 0).toLocaleString()}`;
+            worstEl.className = 'text-red-400';
+            document.getElementById('scalpWinStreak').textContent = total.win_streak_max || 0;
+            document.getElementById('scalpLoseStreak').textContent = total.lose_streak_max || 0;
+            document.getElementById('scalpTotalGross').textContent = `₩${Math.round(total.gross_pnl || 0).toLocaleString()}`;
+            document.getElementById('scalpTotalComm').textContent = `₩${Math.round(total.commission || 0).toLocaleString()}`;
+
+            // Config
+            document.getElementById('scalpCandle').textContent = d.candle_min || 15;
+            document.getElementById('scalpOrderAmt').textContent = (d.order_amount || 50000).toLocaleString();
+            if (d.last_scan) {
+                const ls = new Date(d.last_scan);
+                document.getElementById('scalpLastScan').textContent = ls.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            }
+            if (d.pairs) {
+                document.getElementById('scalpPairs').textContent = d.pairs.map(p => p.replace('KRW-', '')).join(', ');
+            }
+
+            // Recent trades
+            this.renderScalpTrades(d.recent_trades || []);
+        } catch (e) {
+            console.error('Scalp status error:', e);
+        }
+    }
+
+    renderScalpTrades(trades) {
+        const tbody = document.getElementById('scalpTradesTable');
+        if (!trades.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No trades yet</td></tr>';
+            return;
+        }
+        // Show newest first
+        const sorted = [...trades].reverse();
+        tbody.innerHTML = sorted.map(t => {
+            const name = (t.symbol || '').replace('KRW-', '');
+            const pnlColor = t.net_pnl >= 0 ? 'text-green-400' : 'text-red-400';
+            const pctColor = t.pnl_pct >= 0 ? 'text-green-400' : 'text-red-400';
+            const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString('ko-KR', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '-';
+            const reason = (t.exit_reason || '').replace('_', ' ');
+            return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 px-2 text-gray-300">${exitTime}</td>
+                <td class="py-2 px-2 font-medium">${name}</td>
+                <td class="py-2 px-2 text-right text-gray-300">₩${Math.round(t.entry_price).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right text-gray-300">₩${Math.round(t.exit_price).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right ${pnlColor}">₩${Math.round(t.net_pnl).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right ${pctColor}">${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(2)}%</td>
+                <td class="py-2 px-2 text-gray-400">${reason}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    renderScalpPositions(positions, barCounter) {
+        const tbody = document.getElementById('scalpPositionsTable');
+        const entries = Object.values(positions);
+        if (!entries.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No active positions</td></tr>';
+            return;
+        }
+        tbody.innerHTML = entries.map(p => {
+            const name = (p.symbol || '').replace('KRW-', '');
+            const barsHeld = barCounter - (p.entry_bar || 0);
+            const entryTime = p.entry_time ? new Date(p.entry_time) : null;
+            const timeStr = entryTime ? entryTime.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+            return `<tr class="border-b border-gray-700 hover:bg-gray-750">
+                <td class="py-2 px-2 font-medium text-blue-400">${name}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(p.entry_price || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(p.amount_krw || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right text-red-400">₩${Math.round(p.stop_loss || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right text-green-400">₩${Math.round(p.take_profit || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right">${(p.rsi_at_entry || 0).toFixed(1)}</td>
+                <td class="py-2 px-2 text-right">${barsHeld}</td>
+                <td class="py-2 px-2 text-right text-gray-400">${timeStr}</td>
+            </tr>`;
+        }).join('');
     }
 }
 

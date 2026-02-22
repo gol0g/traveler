@@ -33,6 +33,7 @@
             <button class="tab-btn" data-tab="history">History</button>
             <button class="tab-btn" data-tab="strategy">Strategy</button>
             <button class="tab-btn" data-tab="dca">DCA</button>
+            <button class="tab-btn" data-tab="scalp">Scalp</button>
         </nav>
     </header>
 
@@ -837,6 +838,127 @@
             <div id="dcaInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
                 <p class="text-gray-400 text-lg mb-2">DCA daemon is not running</p>
                 <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --market crypto --dca</code></p>
+            </div>
+        </div>
+
+        <!-- ==================== SCALP TAB ==================== -->
+        <div id="panelScalp" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Crypto Scalping</h2>
+                <p class="text-gray-400 text-sm">RSI(7) Mean-Reversion on 15-min Candles</p>
+            </div>
+
+            <!-- Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Win Rate</div>
+                    <div id="scalpWinRate" class="text-3xl font-bold">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="scalpTotalTrades">0</span> trades</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Today P&L</div>
+                    <div id="scalpDailyPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="scalpDailyTrades">0</span>W / <span id="scalpDailyLosses">0</span>L</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Net P&L</div>
+                    <div id="scalpTotalPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1">since <span id="scalpStartDate">-</span></div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Active Positions</div>
+                    <div id="scalpActiveCount" class="text-3xl font-bold text-blue-400">0</div>
+                    <div class="text-gray-500 text-xs mt-1">/ <span id="scalpMaxPositions">3</span> max</div>
+                </div>
+            </div>
+
+            <!-- Active Positions -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Active Positions</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Entry</th>
+                                <th class="text-right py-2 px-2">Amount</th>
+                                <th class="text-right py-2 px-2">Stop Loss</th>
+                                <th class="text-right py-2 px-2">Take Profit</th>
+                                <th class="text-right py-2 px-2">RSI</th>
+                                <th class="text-right py-2 px-2">Bars</th>
+                                <th class="text-right py-2 px-2">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scalpPositionsTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <!-- Today Stats -->
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Today (<span id="scalpToday">-</span>)</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Trades:</span> <span id="scalpDayTradeCount">0</span></div>
+                        <div><span class="text-gray-400">Win Rate:</span> <span id="scalpDayWR">0%</span></div>
+                        <div><span class="text-gray-400">Gross P&L:</span> <span id="scalpDayGross">₩0</span></div>
+                        <div><span class="text-gray-400">Commission:</span> <span id="scalpDayComm">₩0</span></div>
+                    </div>
+                </div>
+                <!-- Lifetime Stats -->
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Lifetime</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Best Trade:</span> <span id="scalpBest">₩0</span></div>
+                        <div><span class="text-gray-400">Worst Trade:</span> <span id="scalpWorst">₩0</span></div>
+                        <div><span class="text-gray-400">Win Streak:</span> <span id="scalpWinStreak">0</span></div>
+                        <div><span class="text-gray-400">Lose Streak:</span> <span id="scalpLoseStreak">0</span></div>
+                        <div><span class="text-gray-400">Gross P&L:</span> <span id="scalpTotalGross">₩0</span></div>
+                        <div><span class="text-gray-400">Commission:</span> <span id="scalpTotalComm">₩0</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Trades -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Recent Trades</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Time</th>
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Entry</th>
+                                <th class="text-right py-2 px-2">Exit</th>
+                                <th class="text-right py-2 px-2">P&L</th>
+                                <th class="text-right py-2 px-2">%</th>
+                                <th class="text-left py-2 px-2">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scalpTradesTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Config Info -->
+            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <h3 class="font-semibold mb-3">Strategy Config</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div><span class="text-gray-400">Candle:</span> <span id="scalpCandle">15</span>min</div>
+                    <div><span class="text-gray-400">Order:</span> ₩<span id="scalpOrderAmt">50,000</span></div>
+                    <div><span class="text-gray-400">TP / SL:</span> <span id="scalpTPSL">+2.0% / -2.5%</span></div>
+                    <div><span class="text-gray-400">Last Scan:</span> <span id="scalpLastScan">-</span></div>
+                </div>
+                <div class="mt-2 text-xs text-gray-500">
+                    Pairs: <span id="scalpPairs">-</span>
+                </div>
+            </div>
+
+            <!-- Scalp inactive message -->
+            <div id="scalpInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">Scalp daemon is not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --market crypto --scalp</code></p>
             </div>
         </div>
 

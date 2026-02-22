@@ -77,6 +77,8 @@ var (
 	simCapital      float64 // 모의투자 가상 자본
 	dcaMode         bool    // DCA 장기 투자 모드
 	dcaAmount       float64 // DCA 1회 매수 금액 (KRW)
+	scalpMode       bool    // 스캘핑 모드
+	scalpAmount     float64 // 스캘핑 1회 매수 금액 (KRW)
 )
 
 func main() {
@@ -134,6 +136,8 @@ Examples:
 	rootCmd.Flags().Float64Var(&simCapital, "sim-capital", 0, "virtual capital for sim mode (default: US $100000, KR ₩50000000)")
 	rootCmd.Flags().BoolVar(&dcaMode, "dca", false, "DCA long-term investment mode (crypto)")
 	rootCmd.Flags().Float64Var(&dcaAmount, "dca-amount", 10000, "DCA base amount per cycle in KRW")
+	rootCmd.Flags().BoolVar(&scalpMode, "scalp", false, "crypto scalping mode (RSI mean-reversion)")
+	rootCmd.Flags().Float64Var(&scalpAmount, "scalp-amount", 50000, "scalp order amount in KRW per trade")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -185,6 +189,11 @@ func run(cmd *cobra.Command, args []string) error {
 			fmt.Print(p.Name())
 		}
 		fmt.Println()
+	}
+
+	// Scalp mode - crypto scalping
+	if daemonMode && scalpMode {
+		return runScalpMode()
 	}
 
 	// DCA mode - long-term crypto DCA investing
@@ -622,6 +631,79 @@ func runDCAMode() error {
 	}()
 
 	return dcaDaemon.Run()
+}
+
+func runScalpMode() error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER SCALP MODE - Crypto RSI Mean-Reversion")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	resolvedDir := resolveDataDir()
+
+	// Load .env for Upbit credentials
+	loadEnvFile()
+
+	upbitBroker := upbit.NewClient()
+	if !upbitBroker.IsReady() {
+		return fmt.Errorf("Upbit API credentials required for scalp mode (set UPBIT_ACCESS_KEY/UPBIT_SECRET_KEY)")
+	}
+
+	upbitProvider := provider.NewUpbitProvider()
+
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	log.Printf("[SCALP] Data directory: %s", resolvedDir)
+
+	// Scalp config
+	scalpCfg := strategy.DefaultScalpConfig()
+	if scalpAmount > 0 {
+		scalpCfg.OrderAmountKRW = scalpAmount
+	}
+
+	fmt.Printf(" Order Amount:    ₩%.0f per trade\n", scalpCfg.OrderAmountKRW)
+	fmt.Printf(" Max Positions:   %d\n", scalpCfg.MaxPositions)
+	fmt.Printf(" Candle Interval: %d min\n", scalpCfg.CandleInterval)
+	fmt.Printf(" Entry:           RSI(%d) < %.0f\n", scalpCfg.RSIPeriod, scalpCfg.RSIEntry)
+	fmt.Printf(" Exit:            TP +%.1f%% / SL -%.1f%% / RSI > %.0f\n",
+		scalpCfg.TakeProfitPct, scalpCfg.StopLossPct, scalpCfg.RSIExit)
+	fmt.Printf(" Pairs:           ")
+	for i, p := range scalpCfg.Pairs {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		fmt.Print(strings.TrimPrefix(p, "KRW-"))
+	}
+	fmt.Println()
+	fmt.Println()
+
+	// Check balance
+	ctx := context.Background()
+	bal, err := upbitBroker.GetBalance(ctx)
+	if err != nil {
+		log.Printf("[SCALP] Warning: could not get balance: %v", err)
+	} else {
+		log.Printf("[SCALP] Account balance: ₩%.0f (cash: ₩%.0f)", bal.TotalEquity, bal.CashBalance)
+	}
+
+	scalpDaemon := daemon.NewScalpDaemon(scalpCfg, upbitBroker, upbitProvider, resolvedDir)
+
+	// Signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		scalpDaemon.Stop()
+	}()
+
+	return scalpDaemon.Run()
 }
 
 func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {

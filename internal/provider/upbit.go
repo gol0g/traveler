@@ -358,6 +358,118 @@ func (p *UpbitProvider) GetSymbols(ctx context.Context, exchange string) ([]mode
 	return stocks, nil
 }
 
+// GetRecentMinuteCandles fetches the most recent N minute candles (no date filter).
+// This is useful for real-time scalping where we need a rolling window.
+func (p *UpbitProvider) GetRecentMinuteCandles(ctx context.Context, symbol string, interval int, count int) ([]model.Candle, error) {
+	var allCandles []model.Candle
+	remaining := count
+	var toParam string
+
+	unit := normalizeUpbitInterval(interval)
+
+	for remaining > 0 {
+		batch := remaining
+		if batch > 200 {
+			batch = 200
+		}
+
+		if err := p.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+
+		reqURL := fmt.Sprintf("%s/candles/minutes/%d?market=%s&count=%d",
+			upbitBaseURL, unit, symbol, batch)
+		if toParam != "" {
+			reqURL += "&to=" + toParam
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return nil, &ProviderError{Provider: p.Name(), Err: err, Retryable: true}
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			p.limiter.SignalRateLimited()
+			return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("rate limited"), Retryable: true}
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, &ProviderError{Provider: p.Name(), Err: fmt.Errorf("status %d", resp.StatusCode), Retryable: false}
+		}
+
+		p.limiter.ResetBackoff()
+
+		var raw []upbitMinuteCandle
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding response: %w", err)
+		}
+		resp.Body.Close()
+
+		if len(raw) == 0 {
+			break
+		}
+
+		loc, _ := time.LoadLocation("Asia/Seoul")
+		for _, c := range raw {
+			t, err := time.ParseInLocation("2006-01-02T15:04:05", c.CandleDateTimeKST, loc)
+			if err != nil {
+				continue
+			}
+			allCandles = append(allCandles, model.Candle{
+				Time:   t,
+				Open:   c.OpeningPrice,
+				High:   c.HighPrice,
+				Low:    c.LowPrice,
+				Close:  c.TradePrice,
+				Volume: int64(c.CandleAccTradeVolume),
+			})
+		}
+
+		remaining -= len(raw)
+		if len(raw) < batch {
+			break
+		}
+
+		// Paginate using oldest candle time
+		oldest := raw[len(raw)-1]
+		t, _ := time.Parse("2006-01-02T15:04:05", oldest.CandleDateTimeUTC)
+		toParam = t.Format("2006-01-02T15:04:05")
+
+		// Rate limit between pagination batches
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Sort ascending (Upbit returns newest first)
+	sort.Slice(allCandles, func(i, j int) bool {
+		return allCandles[i].Time.Before(allCandles[j].Time)
+	})
+
+	// Deduplicate
+	if len(allCandles) > 1 {
+		deduped := []model.Candle{allCandles[0]}
+		for i := 1; i < len(allCandles); i++ {
+			if !allCandles[i].Time.Equal(deduped[len(deduped)-1].Time) {
+				deduped = append(deduped, allCandles[i])
+			}
+		}
+		allCandles = deduped
+	}
+
+	if len(allCandles) > count {
+		allCandles = allCandles[len(allCandles)-count:]
+	}
+
+	return allCandles, nil
+}
+
 // normalizeUpbitInterval converts minute interval to valid Upbit unit.
 // Valid units: 1, 3, 5, 15, 30, 60, 240
 func normalizeUpbitInterval(interval int) int {

@@ -64,7 +64,7 @@ func DefaultConfig() Config {
 	return Config{
 		Interval:       24 * time.Hour,
 		DCATimeKST:     "09:00",
-		BaseDCAAmount:  10000,
+		BaseDCAAmount:  50000,
 		MinOrderAmount: 5000,
 		Targets: []AssetTarget{
 			{Symbol: "KRW-BTC", TargetPct: 0.40},
