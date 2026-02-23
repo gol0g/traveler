@@ -234,7 +234,7 @@ func (s *ETFMomentumStrategy) analyzeTQQQSMA(ctx context.Context, stock model.St
 // analyzeKRTiming — KODEX leverage when KOSPI200 > 200-day SMA, else inverse or cash.
 func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.Stock) (*Signal, error) {
 	sym := stock.Symbol
-	if sym != "122630" && sym != "114800" {
+	if sym != "069500" && sym != "114800" {
 		return nil, nil
 	}
 
@@ -251,10 +251,11 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 	benchSMA200 := CalculateMA(benchCandles, 200)
 	isAboveSMA := benchPrice > benchSMA200
 
-	// 상승장: 레버리지(122630), 하락장: 인버스(114800)
+	// 상승장: KODEX 200(069500), 하락장: 인버스(114800)
+	// 레버리지(122630)는 파생ETF 신청 필요 → 소규모 계좌에서 사용 불가
 	var target string
 	if isAboveSMA {
-		target = "122630" // KODEX 레버리지
+		target = "069500" // KODEX 200 (파생ETF 동의서 불필요)
 	} else {
 		target = "114800" // KODEX 인버스
 	}
@@ -263,13 +264,18 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 		return nil, nil
 	}
 
-	// 타겟 ETF 데이터
-	candles, err := s.provider.GetDailyCandles(ctx, sym, 60)
-	if err != nil {
-		return nil, fmt.Errorf("%s data: %w", sym, err)
-	}
-	if len(candles) == 0 {
-		return nil, fmt.Errorf("%s no data", sym)
+	// 타겟 ETF 데이터 (069500이면 벤치마크 캔들 재사용)
+	var candles []model.Candle
+	if sym == "069500" {
+		candles = benchCandles
+	} else {
+		candles, err = s.provider.GetDailyCandles(ctx, sym, 60)
+		if err != nil {
+			return nil, fmt.Errorf("%s data: %w", sym, err)
+		}
+		if len(candles) == 0 {
+			return nil, fmt.Errorf("%s no data", sym)
+		}
 	}
 
 	price := candles[len(candles)-1].Close
@@ -281,7 +287,7 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 	pctFromSMA := (benchPrice - benchSMA200) / benchSMA200 * 100
 	var direction string
 	if isAboveSMA {
-		direction = "상승 (레버리지)"
+		direction = "상승 (KODEX 200)"
 	} else {
 		direction = "하락 (인버스)"
 	}

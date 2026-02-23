@@ -739,32 +739,73 @@ func (c *Client) getDomesticQuote(ctx context.Context, symbol string) (float64, 
 }
 
 // GetDailyCandles 국내주식 일봉 조회 (Provider용)
+// KIS API는 한 번에 ~100개만 반환하므로, 200일+ 요청 시 페이지네이션으로 분할 조회.
 func (c *Client) GetDailyCandles(ctx context.Context, symbol string, days int) ([]domCandleItem, error) {
 	if c.market != MarketDomestic {
 		return nil, fmt.Errorf("GetDailyCandles only available for domestic market")
 	}
 
-	endDate := time.Now().Format("20060102")
-	startDate := time.Now().AddDate(0, 0, -int(float64(days)*1.5)).Format("20060102")
+	startDate := time.Now().AddDate(0, 0, -int(float64(days)*1.5))
+	endDate := time.Now()
 
-	params := fmt.Sprintf("?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=%s&FID_INPUT_DATE_1=%s&FID_INPUT_DATE_2=%s&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0",
-		symbol, startDate, endDate)
+	var allItems []domCandleItem
+	maxPages := 3 // 최대 3페이지 (300개 캔들)
 
-	respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"+params, TrIDDomCandleReal, nil)
-	if err != nil {
-		return nil, err
+	for page := 0; page < maxPages; page++ {
+		params := fmt.Sprintf("?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=%s&FID_INPUT_DATE_1=%s&FID_INPUT_DATE_2=%s&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=0",
+			symbol, startDate.Format("20060102"), endDate.Format("20060102"))
+
+		respBody, err := c.doRequest(ctx, "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"+params, TrIDDomCandleReal, nil)
+		if err != nil {
+			if page == 0 {
+				return nil, err
+			}
+			break // 첫 페이지 이후 에러는 무시 (이미 데이터 있음)
+		}
+
+		var resp domCandleResponse
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			if page == 0 {
+				return nil, fmt.Errorf("unmarshal response: %w", err)
+			}
+			break
+		}
+
+		if resp.RtCd != "0" {
+			if page == 0 {
+				return nil, fmt.Errorf("candle query failed: [%s] %s", resp.MsgCd, resp.Msg1)
+			}
+			break
+		}
+
+		if len(resp.Output2) == 0 {
+			break
+		}
+
+		// 이전 페이지 데이터 앞에 추가 (오래된 데이터가 앞쪽)
+		allItems = append(resp.Output2, allItems...)
+
+		// 충분한 데이터 확보 시 종료
+		if len(allItems) >= days {
+			break
+		}
+
+		// 다음 페이지: 마지막(가장 오래된) 캔들 날짜 하루 전까지
+		oldest := resp.Output2[len(resp.Output2)-1].STCK_BSOP_DATE
+		t, err := time.Parse("20060102", oldest)
+		if err != nil {
+			break
+		}
+		endDate = t.AddDate(0, 0, -1)
+		if endDate.Before(startDate) {
+			break
+		}
+
+		// API rate limit 방지
+		time.Sleep(200 * time.Millisecond)
 	}
 
-	var resp domCandleResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	if resp.RtCd != "0" {
-		return nil, fmt.Errorf("candle query failed: [%s] %s", resp.MsgCd, resp.Msg1)
-	}
-
-	return resp.Output2, nil
+	return allItems, nil
 }
 
 // domCandleItem 일봉 개별 항목 (외부 노출용 alias)

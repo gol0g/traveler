@@ -137,10 +137,12 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 		if isKR {
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000
-			// KR bull: 풀백 허용 범위 확대
+			// KR bull: 풀백 조건 대폭 완화 (5일간 0 시그널 → 조건 축소)
 			if regime == RegimeBull {
-				cfg.MA20TouchTolerance = 0.04 // 2% → 4%
-				cfg.MaxRSI = 60               // 50 → 60
+				cfg.MA20TouchTolerance = 0.08    // 2% → 8% (불장에서 MA20 근처까지 안 내려옴)
+				cfg.MaxRSI = 65                  // 50 → 65 (불장 RSI 높음)
+				cfg.RequireVolumePattern = false  // 거래량 패턴 선택사항 (강도만 반영)
+				cfg.RequireBouncing = false       // 바운싱 선택사항 (강도만 반영)
 			}
 		}
 		return NewPullbackStrategy(cfg, s.provider)
@@ -153,8 +155,8 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 			// KR bull: 수렴 필수 해제 + 필터 완화
 			if regime == RegimeBull {
 				cfg.RequireConsolidation = false // 수렴 없어도 시그널 (probability 감소)
-				cfg.KRVolumeMultiple = 1.5       // 2.0 → 1.5 (US와 동일)
-				cfg.KRMinBreakoutPct = 0.5       // 1.5% → 0.5%
+				cfg.KRVolumeMultiple = 1.3       // 2.0 → 1.3 (KR 거래량 패턴 고려)
+				cfg.KRMinBreakoutPct = 0.3       // 1.5% → 0.3% (소폭 돌파도 허용)
 			}
 		}
 		return NewBreakoutStrategy(cfg, s.provider)

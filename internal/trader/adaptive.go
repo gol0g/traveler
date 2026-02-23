@@ -26,7 +26,7 @@ type AdaptiveConfig struct {
 func DefaultAdaptiveConfig() AdaptiveConfig {
 	return AdaptiveConfig{
 		MinSignals:    3,
-		MinAvgProb:    55.0,
+		MinAvgProb:    53.0, // 55 → 53: KR 불장 풀백 시그널 평균 54.6%
 		MinAvgRR:      1.5,
 		MaxExpansions: 2,
 		Verbose:       false,
@@ -247,6 +247,11 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 				if sig.Guide != nil && sig.Guide.EntryPrice <= maxPrice {
 					allSignals = append(allSignals, sig)
 				} else {
+					price := 0.0
+					if sig.Guide != nil {
+						price = sig.Guide.EntryPrice
+					}
+					log.Printf("[ADAPTIVE] Price filter: %s rejected (price=%.0f > max=%.0f)", sig.Stock.Symbol, price, maxPrice)
 					filtered++
 				}
 			}
@@ -349,7 +354,7 @@ func AdjustConfigForKRBalance(balance float64) SizerConfig {
 	switch {
 	case balance < 500000: // 50만원 미만: ETF tier — 집중 투자
 		cfg.RiskPerTrade = 0.05
-		cfg.MaxPositionPct = 0.90    // ETF 집중
+		cfg.MaxPositionPct = 1.0     // ETF 1주 매수를 위해 전액 투자 허용
 		cfg.MaxPositions = 2
 		cfg.MinRiskReward = 1.0
 		cfg.MinExpectedReturn = 0.005

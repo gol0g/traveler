@@ -30,6 +30,10 @@ type PullbackConfig struct {
 	// Sideways mode relaxations (set by StockMetaStrategy for sideways regime)
 	RequireUptrend bool    // Require price > MA50 + trend confirmation (default true)
 	MaxRSI         float64 // Maximum RSI for entry (default 50)
+
+	// KR bull relaxations — some conditions become optional (contribute to strength only)
+	RequireVolumePattern bool // Require pullback low vol + reversal vol (default true)
+	RequireBouncing      bool // Require today's low > yesterday's low (default true)
 }
 
 // DefaultPullbackConfig returns default configuration
@@ -47,6 +51,10 @@ func DefaultPullbackConfig() PullbackConfig {
 		// Uptrend requirement (relaxed in sideways regime)
 		RequireUptrend: true,
 		MaxRSI:         50,
+
+		// Volume/bouncing required by default
+		RequireVolumePattern: true,
+		RequireBouncing:      true,
 	}
 }
 
@@ -270,7 +278,11 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	signalType := SignalHold
 	reason := ""
 
-	if uptrendOK && touchedMA20 && hasReversalSign && volumePattern && bouncing && rsiOK {
+	// Volume/bouncing: required by default, optional when configured (KR bull)
+	volumeOK := volumePattern || !s.config.RequireVolumePattern
+	bouncingOK := bouncing || !s.config.RequireBouncing
+
+	if uptrendOK && touchedMA20 && hasReversalSign && volumeOK && bouncingOK && rsiOK {
 		signalType = SignalBuy
 		if s.config.RequireUptrend {
 			reason = fmt.Sprintf("Pullback to MA20 (%.1f%% >MA50, slope %.2f%%, RSI %.0f), vol OK (pb:%.1fx, rev:%.1fx), ",
@@ -293,9 +305,9 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		reason = fmt.Sprintf("Price not near MA20 (%.1f%% away)", details["price_vs_ma20_pct"])
 	} else if !hasReversalSign {
 		reason = "No reversal sign (need bullish candle or long lower shadow)"
-	} else if !volumePattern {
+	} else if !volumeOK {
 		reason = fmt.Sprintf("Volume pattern weak (pb:%.1fx, rev:%.1fx)", pullbackAvgVol/ind.AvgVol, volumeRatio)
-	} else if !bouncing {
+	} else if !bouncingOK {
 		reason = "Not bouncing (today's low <= yesterday's low)"
 	} else if !rsiOK {
 		reason = fmt.Sprintf("RSI too high (%.0f >= %.0f)", ind.RSI14, maxRSI)
