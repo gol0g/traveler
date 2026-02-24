@@ -18,7 +18,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Raspberry Pi (ARM64)                  │
+│                  systemd services (Linux)                │
 ├─────────────┬─────────────┬─────────────┬───────────────┤
 │ traveler-web│traveler-us  │traveler-kr  │traveler-crypto│
 │ :8080       │ timer 23:20 │ timer 08:40 │ always-on     │
@@ -89,10 +89,9 @@ go mod tidy
 go build -o traveler ./cmd/traveler
 ```
 
-### Raspberry Pi 크로스 컴파일
+### 크로스 컴파일 (Linux ARM64)
 ```bash
-GOOS=linux GOARCH=arm64 go build -o traveler-linux-arm64 ./cmd/traveler
-scp traveler-linux-arm64 user@pi:/usr/local/bin/traveler
+GOOS=linux GOARCH=arm64 go build -o traveler ./cmd/traveler
 ```
 
 ## 빠른 시작
@@ -407,7 +406,13 @@ traveler/
 └── README.md
 ```
 
-## Raspberry Pi 배포
+## 배포 (systemd)
+
+단일 바이너리로 크로스 컴파일 후 Linux 서버에 systemd 서비스로 배포:
+
+```bash
+GOOS=linux GOARCH=arm64 go build -o traveler ./cmd/traveler
+```
 
 ### 서비스 구성
 | 서비스 | 유형 | 스케줄 | 설명 |
@@ -419,11 +424,6 @@ traveler/
 | `traveler-kr-dca` | always-on | weekly Mon | KR DCA (KODEX 200) |
 | `traveler-us.timer` | oneshot | 23:20 KST | US 주식 데몬 |
 | `traveler-kr.timer` | oneshot | 08:40 KST | KR 주식 데몬 |
-
-### 배포
-```bash
-make update-pi PI_HOST=<tailscale-ip> PI_USER=junghyun
-```
 
 ### 로그 확인
 ```bash
