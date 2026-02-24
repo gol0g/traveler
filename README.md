@@ -453,4 +453,4 @@ tail -f ~/.traveler/daemon_kr.log
 
 ## 라이선스
 
-MIT License
+Private repository. All rights reserved.
