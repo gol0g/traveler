@@ -1,6 +1,6 @@
 # Traveler - 멀티마켓 자동 매매 시스템
 
-미국/한국 주식 + 암호화폐 자동 매매, DCA 적립식 투자, 스캘핑을 하나의 Go 바이너리로 운영하는 시스템입니다. Raspberry Pi에서 systemd 서비스로 24/7 가동.
+미국/한국 주식 + 암호화폐 자동 매매, DCA 적립식 투자, 스캘핑을 하나의 Go 바이너리로 운영하는 시스템입니다. systemd 서비스로 24/7 가동.
 
 ## 주요 기능
 
@@ -12,7 +12,7 @@
 - **KR DCA**: RSI 공포 게이지 + KODEX 200 ETF 주간 적립식 매수
 - **Crypto Scalping**: RSI(7) 15분봉 평균 회귀 단타 (WR 70%, Sharpe 11.2)
 - **Web Dashboard**: 실시간 포지션, 차트, DCA 현황, 포트폴리오 종합 뷰
-- **Raspberry Pi 배포**: ARM64 크로스 컴파일, systemd 서비스 7개 자동화
+- **Self-hosted 배포**: 크로스 컴파일, systemd 서비스 7개 자동화
 
 ## 시스템 구성
 
