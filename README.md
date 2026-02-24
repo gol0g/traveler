@@ -204,8 +204,8 @@ FINNHUB_API_KEY="your_key"
 |------|--------|------|
 | `--daemon` | false | 데몬 모드 |
 | `--sleep-on-exit` | true | 종료 시 PC 절전 (Windows) |
-| `--daily-target` | 1.0 | 일일 목표 수익률 (%) |
-| `--daily-loss-limit` | -2.0 | 일일 최대 손실 (%) |
+| `--daily-target` | 1.0 | (비활성) 개별 TP/SL로 대체 |
+| `--daily-loss-limit` | -2.0 | (비활성) 개별 TP/SL로 대체 |
 | `--sim` | false | 시뮬레이션 모드 (가상 자본) |
 | `--sim-capital` | 0 | 가상 자본 (US: $100K, KR: ₩5000만) |
 
@@ -301,8 +301,7 @@ FINNHUB_API_KEY="your_key"
 3. 마켓 오픈 → 시그널 실행 (포지션 사이징 → 주문)
 4. 모니터 모드 전환 → TP/SL/MaxHold 감시 (30초 주기)
 5. 인트라데이 스캔 (5분 주기, 레짐에 따라 ORB 등)
-6. 목표 달성 → wind-down (신규 진입 중지, 모니터링 유지)
-7. 마감 → 리포트 생성, 종료
+6. 마감 → 인트라데이 포지션 청산, 리포트 생성, 종료
 ```
 
 ### KR 데몬 특수 모드
@@ -355,7 +354,7 @@ traveler/
 │   │   ├── upbit/               # Upbit 거래소 API
 │   │   └── sim/                 # 시뮬레이션 브로커
 │   ├── daemon/
-│   │   ├── daemon.go            # 메인 오케스트레이터 (monitor-only, wind-down)
+│   │   ├── daemon.go            # 메인 오케스트레이터 (monitor-only)
 │   │   ├── market.go            # US/KR 마켓 시간 + 휴일
 │   │   ├── tracker.go           # 일일 P&L 추적
 │   │   ├── dca.go               # Crypto DCA 데몬

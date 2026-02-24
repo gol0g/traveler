@@ -480,8 +480,6 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 	daemonCfg.DataDir = resolvedDir
 	daemonCfg.TradingCapital = tradingCapital
 
-	fmt.Printf(" Daily Target:    %.1f%%\n", dailyTargetPct)
-	fmt.Printf(" Daily Loss Limit: %.1f%%\n", dailyLossLimit)
 	fmt.Printf(" Sleep on Exit:   %v\n", sleepOnExit)
 	if tradingCapital > 0 {
 		fmt.Printf(" Trading Capital: ₩%.0f (earmarked)\n", tradingCapital)

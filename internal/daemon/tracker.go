@@ -200,14 +200,8 @@ func (t *DailyTracker) CheckTargets() TargetCheckResult {
 		CurrentPnLPct: t.state.TotalPnLPct,
 	}
 
-	// 목표 수익 달성
-	if t.state.TotalPnLPct >= t.config.TargetPct {
-		result.TargetReached = true
-		result.ShouldStop = true
-		result.Reason = fmt.Sprintf("target reached: %.2f%% >= %.2f%%", t.state.TotalPnLPct, t.config.TargetPct)
-	}
-
-	// 일일 손실한도 제거됨 - 개별 종목 손절로 리스크 관리
+	// 일일 목표/손실한도 제거됨 — 스윙 트레이딩에서는 개별 종목 TP/SL로 리스크 관리
+	// (소액 계좌에서 1% 목표는 한 틱에 도달하여 인트라데이 기회 차단)
 
 	// 최대 거래 횟수
 	if t.state.TradeCount >= t.config.MaxTrades {

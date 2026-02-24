@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"traveler/internal/ai"
@@ -81,9 +80,7 @@ type Daemon struct {
 	// AI signal filter
 	aiClient *ai.GeminiClient
 
-	// Wind-down mode (daily target reached → stop new orders, keep monitoring)
-	windDown    chan struct{}
-	windingDown bool
+	windDown chan struct{} // signal to stop intraday loop on shutdown
 
 	// Monitor-only mode: KR low-balance → monitor existing positions, no new scans
 	monitorOnly bool
@@ -529,20 +526,6 @@ func (d *Daemon) mainLoop() error {
 		shouldStop, reason := d.checkStopConditions()
 		if !shouldStop {
 			continue
-		}
-
-		// Wind-down mode: 일일 목표 달성 시 신규 진입 중지, 기존 포지션 모니터링 유지
-		// (장중 포지션 강제청산 X — 개별 손절/익절로 퇴출)
-		if !d.windingDown && strings.HasPrefix(reason, "target reached") {
-			log.Printf("[DAEMON] %s — entering wind-down mode (no new orders, keep monitoring)", reason)
-			close(d.windDown) // intradayLoop에 신호 → 신규 진입 중지
-			d.windingDown = true
-			continue
-		}
-
-		// Wind-down 중에는 장 마감만 hard stop
-		if d.windingDown && !strings.HasPrefix(reason, "market_closed") {
-			continue // target_reached 반복 무시
 		}
 
 		// Hard stop: 장 마감 또는 기타 사유
