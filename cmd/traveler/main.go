@@ -79,6 +79,8 @@ var (
 	dcaAmount       float64 // DCA 1회 매수 금액 (KRW)
 	scalpMode       bool    // 스캘핑 모드
 	scalpAmount     float64 // 스캘핑 1회 매수 금액 (KRW)
+	krDCAMode       bool    // KR 주식 DCA 모드
+	krDCAShares     int     // KR DCA 기본 매수 주수
 )
 
 func main() {
@@ -138,6 +140,8 @@ Examples:
 	rootCmd.Flags().Float64Var(&dcaAmount, "dca-amount", 10000, "DCA base amount per cycle in KRW")
 	rootCmd.Flags().BoolVar(&scalpMode, "scalp", false, "crypto scalping mode (RSI mean-reversion)")
 	rootCmd.Flags().Float64Var(&scalpAmount, "scalp-amount", 50000, "scalp order amount in KRW per trade")
+	rootCmd.Flags().BoolVar(&krDCAMode, "kr-dca", false, "KR stock DCA mode (KODEX 200 weekly)")
+	rootCmd.Flags().IntVar(&krDCAShares, "kr-dca-shares", 1, "KR DCA base shares per cycle")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -189,6 +193,11 @@ func run(cmd *cobra.Command, args []string) error {
 			fmt.Print(p.Name())
 		}
 		fmt.Println()
+	}
+
+	// KR DCA mode - KR stock weekly DCA
+	if daemonMode && krDCAMode {
+		return runKRDCAMode(cfg)
 	}
 
 	// Scalp mode - crypto scalping
@@ -631,6 +640,78 @@ func runDCAMode() error {
 	}()
 
 	return dcaDaemon.Run()
+}
+
+func runKRDCAMode(cfg *config.Config) error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER KR DCA MODE - KODEX 200 Weekly Investment")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	resolvedDir := resolveDataDir()
+	loadEnvFile()
+
+	// KIS domestic credentials
+	if cfg.KIS.Domestic.AppKey == "" {
+		return fmt.Errorf("KIS domestic credentials required for KR DCA mode (set KIS_KR_APP_KEY/SECRET/ACCOUNT_NO)")
+	}
+	krCreds := kis.Credentials{
+		AppKey:    cfg.KIS.Domestic.AppKey,
+		AppSecret: cfg.KIS.Domestic.AppSecret,
+		AccountNo: cfg.KIS.Domestic.AccountNo,
+	}
+	krBroker := kis.NewDomesticClient(krCreds)
+	if !krBroker.IsReady() {
+		return fmt.Errorf("KIS domestic broker not ready")
+	}
+
+	krProvider := provider.NewKISProvider(krCreds)
+
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	log.Printf("[KR-DCA] Data directory: %s", resolvedDir)
+
+	// KR DCA config
+	krDCACfg := dca.DefaultKRDCAConfig()
+	if krDCAShares > 0 {
+		krDCACfg.BaseShares = krDCAShares
+	}
+
+	fmt.Printf(" Target:    %s (%s)\n", krDCACfg.SymbolName, krDCACfg.Symbol)
+	fmt.Printf(" Base:      %d shares/week\n", krDCACfg.BaseShares)
+	fmt.Printf(" Schedule:  %s %s KST\n", krDCACfg.DCAWeekday, krDCACfg.DCATimeKST)
+	fmt.Printf(" RSI Fear:  %v (period=%d)\n", krDCACfg.RSIEnabled, krDCACfg.RSIPeriod)
+	fmt.Printf(" EMA50:     %v (+%d bonus)\n", krDCACfg.EMA50Enabled, krDCACfg.EMA50BonusShare)
+	fmt.Printf(" TakeProfit: %v\n", krDCACfg.TakeProfitEnabled)
+	fmt.Println()
+
+	// Check balance
+	ctx := context.Background()
+	bal, err := krBroker.GetBalance(ctx)
+	if err != nil {
+		log.Printf("[KR-DCA] Warning: could not get balance: %v", err)
+	} else {
+		log.Printf("[KR-DCA] Account balance: ₩%.0f", bal.TotalEquity)
+	}
+
+	krDCADaemon := daemon.NewKRDCADaemon(krDCACfg, krBroker, krProvider, resolvedDir)
+
+	// Signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		krDCADaemon.Stop()
+	}()
+
+	return krDCADaemon.Run()
 }
 
 func runScalpMode() error {

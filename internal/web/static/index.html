@@ -34,6 +34,7 @@
             <button class="tab-btn" data-tab="strategy">Strategy</button>
             <button class="tab-btn" data-tab="dca">DCA</button>
             <button class="tab-btn" data-tab="scalp">Scalp</button>
+            <button class="tab-btn" data-tab="portfolio">Portfolio</button>
         </nav>
     </header>
 
@@ -959,6 +960,268 @@
             <div id="scalpInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
                 <p class="text-gray-400 text-lg mb-2">Scalp daemon is not running</p>
                 <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --market crypto --scalp</code></p>
+            </div>
+        </div>
+
+        <!-- ==================== KR DCA TAB ==================== -->
+        <div id="panelKrDca" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">KR Stock DCA - KODEX 200</h2>
+                <p class="text-gray-400 text-sm">RSI 공포 게이지 + EMA50 가중 + 주간 적립식 매수</p>
+            </div>
+
+            <!-- KR DCA Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">RSI (14)</div>
+                    <div class="flex items-center gap-2">
+                        <div id="krDcaRSI" class="text-3xl font-bold">-</div>
+                        <div id="krDcaRSILabel" class="text-sm text-gray-400">-</div>
+                    </div>
+                    <div class="h-2 rounded-full bg-gray-700 mt-2">
+                        <div id="krDcaRSIFill" class="h-2 rounded-full bg-gray-500 transition-all" style="width:50%"></div>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Invested</div>
+                    <div id="krDcaTotalInvested" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="krDcaCycles">0</span> cycles / <span id="krDcaShares">0</span> shares</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Current Value</div>
+                    <div id="krDcaCurrentValue" class="text-2xl font-bold text-white">-</div>
+                    <div id="krDcaPnL" class="text-sm mt-1">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Next DCA</div>
+                    <div id="krDcaNextTime" class="text-lg font-bold text-blue-400">-</div>
+                    <div id="krDcaAction" class="text-gray-500 text-xs mt-1">Action: -</div>
+                </div>
+            </div>
+
+            <!-- Price / EMA50 Info -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Current Price</div>
+                    <div id="krDcaPrice" class="text-2xl font-bold text-white">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Avg Cost</div>
+                    <div id="krDcaAvgCost" class="text-2xl font-bold text-white">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">EMA50</div>
+                    <div id="krDcaEMA50" class="text-2xl font-bold text-white">-</div>
+                    <div id="krDcaEMA50Status" class="text-xs text-gray-500 mt-1">-</div>
+                </div>
+            </div>
+
+            <!-- RSI Tier Guide -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">RSI Tier Guide</h3>
+                <div class="grid grid-cols-5 gap-2 text-sm text-center">
+                    <div class="bg-green-900/30 rounded p-2 border border-green-700/30">
+                        <div class="text-green-400 font-bold">RSI &lt; 25</div>
+                        <div class="text-gray-300">3 shares</div>
+                        <div class="text-gray-500 text-xs">Extreme Oversold</div>
+                    </div>
+                    <div class="bg-green-900/20 rounded p-2 border border-green-700/20">
+                        <div class="text-green-300 font-bold">25-35</div>
+                        <div class="text-gray-300">2 shares</div>
+                        <div class="text-gray-500 text-xs">Oversold</div>
+                    </div>
+                    <div class="bg-gray-700/30 rounded p-2 border border-gray-600/30">
+                        <div class="text-gray-300 font-bold">35-50</div>
+                        <div class="text-gray-300">1 share</div>
+                        <div class="text-gray-500 text-xs">Neutral-Low</div>
+                    </div>
+                    <div class="bg-yellow-900/20 rounded p-2 border border-yellow-700/20">
+                        <div class="text-yellow-300 font-bold">50-65</div>
+                        <div class="text-gray-300">Skip</div>
+                        <div class="text-gray-500 text-xs">Neutral-High</div>
+                    </div>
+                    <div class="bg-red-900/20 rounded p-2 border border-red-700/20">
+                        <div class="text-red-400 font-bold">RSI &gt; 65</div>
+                        <div class="text-gray-300">Sell 10%</div>
+                        <div class="text-gray-500 text-xs">Overbought</div>
+                    </div>
+                </div>
+                <div class="text-xs text-gray-500 mt-2">* Price &lt; EMA50 일 때 +1 share 보너스</div>
+            </div>
+
+            <!-- KR DCA History -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">DCA History</h3>
+                <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="sticky top-0 bg-gray-800">
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Date</th>
+                                <th class="text-right py-2 px-2">RSI</th>
+                                <th class="text-center py-2 px-2">Action</th>
+                                <th class="text-right py-2 px-2">Shares</th>
+                                <th class="text-right py-2 px-2">Price</th>
+                                <th class="text-right py-2 px-2">Amount</th>
+                                <th class="text-center py-2 px-2">EMA50</th>
+                            </tr>
+                        </thead>
+                        <tbody id="krDcaHistoryTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- KR DCA inactive message -->
+            <div id="krDcaInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">KR DCA daemon is not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --kr-dca</code></p>
+            </div>
+        </div>
+
+        <!-- DCA N/A placeholder (US/SIM markets) -->
+        <div id="panelDcaNA" class="tab-panel hidden">
+            <div class="bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">DCA is not available for this market</p>
+                <p class="text-gray-500 text-sm">Switch to <span class="text-blue-400">Crypto</span> or <span class="text-green-400">KR</span> market to view DCA status</p>
+            </div>
+        </div>
+
+        <!-- ==================== PORTFOLIO TAB ==================== -->
+        <div id="panelPortfolio" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Portfolio Overview</h2>
+                <p class="text-gray-400 text-sm">전체 투자 현황 / 수익 분석 / FIRE 프로젝션</p>
+            </div>
+
+            <!-- Total Summary Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Assets</div>
+                    <div id="pfTotalValue" class="text-2xl font-bold text-white">-</div>
+                    <div id="pfTotalPnL" class="text-sm mt-1 text-gray-500">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Invested</div>
+                    <div id="pfTotalCost" class="text-2xl font-bold text-blue-400">-</div>
+                    <div id="pfStrategies" class="text-xs text-gray-500 mt-1">0 strategies active</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">FIRE Target (6%)</div>
+                    <div id="pfFireYear6" class="text-2xl font-bold text-yellow-400">-</div>
+                    <div id="pfFireYears6" class="text-xs text-gray-500 mt-1">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">FIRE Target (4%)</div>
+                    <div id="pfFireYear4" class="text-2xl font-bold text-orange-400">-</div>
+                    <div id="pfFireYears4" class="text-xs text-gray-500 mt-1">-</div>
+                </div>
+            </div>
+
+            <!-- FIRE Progress Bar -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="font-semibold">FIRE Progress</h3>
+                    <span id="pfFirePct" class="text-sm text-gray-400">0%</span>
+                </div>
+                <div class="h-4 rounded-full bg-gray-700 overflow-hidden">
+                    <div id="pfFireBar" class="h-4 rounded-full bg-gradient-to-r from-blue-600 via-yellow-500 to-red-500 transition-all" style="width:0%"></div>
+                </div>
+                <div class="flex justify-between mt-2 text-xs text-gray-500">
+                    <span>₩0</span>
+                    <span id="pfFireTarget">목표: -</span>
+                </div>
+            </div>
+
+            <!-- Strategy Breakdown -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Strategy Breakdown</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Strategy</th>
+                                <th class="text-center py-2 px-2">Status</th>
+                                <th class="text-right py-2 px-2">Invested</th>
+                                <th class="text-right py-2 px-2">Value</th>
+                                <th class="text-right py-2 px-2">PnL</th>
+                                <th class="text-right py-2 px-2">Return</th>
+                                <th class="text-left py-2 px-2">Info</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pfStrategyTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Asset Allocation Pie + Growth Projection -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <!-- Allocation -->
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Asset Allocation</h3>
+                    <div id="pfAllocationChart" class="space-y-2"></div>
+                </div>
+
+                <!-- FIRE Parameters -->
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">FIRE Parameters</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div class="bg-gray-700/50 rounded p-3">
+                            <div class="text-gray-400 text-xs">Monthly Investment</div>
+                            <div id="pfMonthlyInvest" class="font-bold">-</div>
+                        </div>
+                        <div class="bg-gray-700/50 rounded p-3">
+                            <div class="text-gray-400 text-xs">Target Monthly Income</div>
+                            <div id="pfTargetMonthly" class="font-bold">-</div>
+                        </div>
+                        <div class="bg-gray-700/50 rounded p-3">
+                            <div class="text-gray-400 text-xs">Target Assets (4%)</div>
+                            <div id="pfTarget4" class="font-bold text-orange-400">-</div>
+                        </div>
+                        <div class="bg-gray-700/50 rounded p-3">
+                            <div class="text-gray-400 text-xs">Target Assets (6%)</div>
+                            <div id="pfTarget6" class="font-bold text-yellow-400">-</div>
+                        </div>
+                        <div class="bg-gray-700/50 rounded p-3">
+                            <div class="text-gray-400 text-xs">Monthly Growth Rate</div>
+                            <div id="pfGrowthRate" class="font-bold">-</div>
+                        </div>
+                        <div class="bg-gray-700/50 rounded p-3">
+                            <div class="text-gray-400 text-xs">Current Total</div>
+                            <div id="pfCurrentTotal" class="font-bold text-white">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 24-Month Growth Projection -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">24-Month Growth Projection</h3>
+                <div class="overflow-x-auto">
+                    <div id="pfGrowthChart" class="flex items-end gap-1 h-48 px-2"></div>
+                </div>
+                <div class="grid grid-cols-4 gap-4 mt-4 text-sm text-center">
+                    <div>
+                        <div class="text-gray-400 text-xs">6 Months</div>
+                        <div id="pfProj6m" class="font-bold text-blue-400">-</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-400 text-xs">12 Months</div>
+                        <div id="pfProj12m" class="font-bold text-green-400">-</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-400 text-xs">18 Months</div>
+                        <div id="pfProj18m" class="font-bold text-yellow-400">-</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-400 text-xs">24 Months</div>
+                        <div id="pfProj24m" class="font-bold text-orange-400">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Portfolio inactive -->
+            <div id="pfInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">No active strategies found</p>
+                <p class="text-gray-500 text-sm">Start at least one daemon to see portfolio data</p>
             </div>
         </div>
 

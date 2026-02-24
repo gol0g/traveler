@@ -79,6 +79,8 @@ class TravelerApp {
             this.loadLastResult(true);
         } else if (this.activeTab === 'history') {
             this.loadTradeHistory();
+        } else if (this.activeTab === 'dca') {
+            this.switchTab('dca'); // re-trigger panel toggle + data load
         }
     }
 
@@ -118,8 +120,14 @@ class TravelerApp {
         document.getElementById('panelPositions').classList.toggle('hidden', tab !== 'positions');
         document.getElementById('panelHistory').classList.toggle('hidden', tab !== 'history');
         document.getElementById('panelStrategy').classList.toggle('hidden', tab !== 'strategy');
-        document.getElementById('panelDca').classList.toggle('hidden', tab !== 'dca');
         document.getElementById('panelScalp').classList.toggle('hidden', tab !== 'scalp');
+        document.getElementById('panelPortfolio').classList.toggle('hidden', tab !== 'portfolio');
+
+        // DCA tab: market-aware (crypto → Crypto DCA, kr → KR DCA)
+        const isDca = tab === 'dca';
+        document.getElementById('panelDca').classList.toggle('hidden', !(isDca && this.market === 'crypto'));
+        document.getElementById('panelKrDca').classList.toggle('hidden', !(isDca && this.isKR()));
+        document.getElementById('panelDcaNA').classList.toggle('hidden', !(isDca && !this.isCrypto() && !this.isKR()));
 
         // Load data for specific tabs
         if (tab === 'positions') {
@@ -134,12 +142,15 @@ class TravelerApp {
         }
 
         if (tab === 'dca') {
-            this.loadDCAStatus();
-            this.loadDCAFearGreed();
+            this.loadDCAForMarket();
         }
 
         if (tab === 'scalp') {
             this.loadScalpStatus();
+        }
+
+        if (tab === 'portfolio') {
+            this.loadPortfolioOverview();
         }
     }
 
@@ -1400,6 +1411,15 @@ class TravelerApp {
 
     // ==================== DCA Methods ====================
 
+    loadDCAForMarket() {
+        if (this.isCrypto()) {
+            this.loadDCAStatus();
+            this.loadDCAFearGreed();
+        } else if (this.isKR()) {
+            this.loadKRDCAStatus();
+        }
+    }
+
     async loadDCAStatus() {
         try {
             const resp = await fetch('/api/dca/status');
@@ -1685,6 +1705,251 @@ class TravelerApp {
                 <td class="py-2 px-2 text-right text-gray-400">${timeStr}</td>
             </tr>`;
         }).join('');
+    }
+
+    // ==================== KR DCA Methods ====================
+
+    async loadKRDCAStatus() {
+        try {
+            const resp = await fetch('/api/kr-dca/status');
+            const result = await resp.json();
+
+            const inactive = document.getElementById('krDcaInactive');
+            const panels = document.querySelectorAll('#panelKrDca > .grid, #panelKrDca > .bg-gray-800:not(#krDcaInactive)');
+
+            if (!result.active || !result.data) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            const d = result.data;
+
+            // RSI card
+            const rsi = d.rsi || 0;
+            const rsiEl = document.getElementById('krDcaRSI');
+            rsiEl.textContent = rsi.toFixed(1);
+            rsiEl.className = `text-3xl font-bold ${rsi < 30 ? 'text-green-400' : rsi < 50 ? 'text-yellow-400' : rsi < 65 ? 'text-white' : 'text-red-400'}`;
+            document.getElementById('krDcaRSILabel').textContent = d.rsi_label || '-';
+
+            // RSI fill bar
+            const rsiFill = document.getElementById('krDcaRSIFill');
+            rsiFill.style.width = `${Math.min(100, rsi)}%`;
+            rsiFill.className = `h-2 rounded-full transition-all ${rsi < 30 ? 'bg-green-500' : rsi < 50 ? 'bg-yellow-500' : rsi < 65 ? 'bg-gray-400' : 'bg-red-500'}`;
+
+            // Total Invested
+            document.getElementById('krDcaTotalInvested').textContent = `₩${Math.round(d.total_invested || 0).toLocaleString()}`;
+            document.getElementById('krDcaCycles').textContent = d.total_dca_cycles || 0;
+            document.getElementById('krDcaShares').textContent = Math.round(d.total_shares || 0);
+
+            // Current Value + PnL
+            const cv = d.current_value || 0;
+            document.getElementById('krDcaCurrentValue').textContent = cv > 0 ? `₩${Math.round(cv).toLocaleString()}` : '-';
+            const pnl = d.unrealized_pnl || 0;
+            const pnlPct = d.unrealized_pct || 0;
+            const pnlEl = document.getElementById('krDcaPnL');
+            pnlEl.textContent = cv > 0 ? `${pnl >= 0 ? '+' : ''}₩${Math.round(pnl).toLocaleString()} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)` : '-';
+            pnlEl.className = `text-sm mt-1 ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+            // Next DCA
+            if (d.next_dca_time) {
+                const next = new Date(d.next_dca_time);
+                document.getElementById('krDcaNextTime').textContent = next.toLocaleString('ko-KR', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+            }
+            const actionLabel = d.current_action === 'buy' ? `Buy ${d.current_shares || 0} shares` : d.current_action === 'sell' ? 'Sell signal' : 'Skip';
+            document.getElementById('krDcaAction').textContent = `Action: ${actionLabel}`;
+
+            // Price / Avg Cost / EMA50
+            const price = d.current_price || 0;
+            document.getElementById('krDcaPrice').textContent = price > 0 ? `₩${Math.round(price).toLocaleString()}` : '-';
+            document.getElementById('krDcaAvgCost').textContent = d.avg_cost > 0 ? `₩${Math.round(d.avg_cost).toLocaleString()}` : '-';
+            document.getElementById('krDcaEMA50').textContent = d.ema50 > 0 ? `₩${Math.round(d.ema50).toLocaleString()}` : '-';
+            const ema50Status = d.price_vs_ema50 === 'below' ? 'Price < EMA50 (+1 bonus share)' : d.price_vs_ema50 === 'above' ? 'Price > EMA50' : '-';
+            const ema50El = document.getElementById('krDcaEMA50Status');
+            ema50El.textContent = ema50Status;
+            ema50El.className = `text-xs mt-1 ${d.price_vs_ema50 === 'below' ? 'text-green-400' : 'text-gray-500'}`;
+
+            // History table
+            this.renderKRDCAHistory(d.history || []);
+        } catch (e) {
+            console.error('KR DCA status error:', e);
+        }
+    }
+
+    renderKRDCAHistory(history) {
+        const tbody = document.getElementById('krDcaHistoryTable');
+        if (!history || !history.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No history yet</td></tr>';
+            return;
+        }
+        const sorted = [...history].reverse();
+        tbody.innerHTML = sorted.map(h => {
+            const date = new Date(h.timestamp).toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            const rsiColor = h.rsi < 30 ? 'text-green-400' : h.rsi < 50 ? 'text-yellow-400' : h.rsi < 65 ? 'text-white' : 'text-red-400';
+            const actionColor = h.action === 'buy' ? 'text-blue-400' : h.action === 'sell' ? 'text-red-400' : 'text-gray-400';
+            return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 px-2 text-gray-300">${date}</td>
+                <td class="py-2 px-2 text-right ${rsiColor}">${h.rsi.toFixed(1)}</td>
+                <td class="py-2 px-2 text-center ${actionColor}">${h.action}</td>
+                <td class="py-2 px-2 text-right">${h.shares || 0}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(h.price || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-right">₩${Math.round(h.amount || 0).toLocaleString()}</td>
+                <td class="py-2 px-2 text-center">${h.ema50_bonus ? '✓' : ''}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // ==================== Portfolio Overview ====================
+
+    async loadPortfolioOverview() {
+        try {
+            const resp = await fetch('/api/portfolio/overview');
+            const data = await resp.json();
+
+            const inactive = document.getElementById('pfInactive');
+            const panels = document.querySelectorAll('#panelPortfolio > .grid, #panelPortfolio > .bg-gray-800:not(#pfInactive)');
+
+            if (!data.strategies || data.strategies.length === 0) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            // Total Summary
+            document.getElementById('pfTotalValue').textContent = `₩${Math.round(data.total_value || 0).toLocaleString()}`;
+            const pnl = data.total_pnl || 0;
+            const pct = data.total_pct || 0;
+            const pnlEl = document.getElementById('pfTotalPnL');
+            pnlEl.textContent = `${pnl >= 0 ? '+' : ''}₩${Math.round(pnl).toLocaleString()} (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)`;
+            pnlEl.className = `text-sm mt-1 ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+            document.getElementById('pfTotalCost').textContent = `₩${Math.round(data.total_cost || 0).toLocaleString()}`;
+            const activeCount = data.strategies.filter(s => s.active).length;
+            document.getElementById('pfStrategies').textContent = `${activeCount} strategies active`;
+
+            // FIRE cards
+            const fire = data.fire || {};
+            document.getElementById('pfFireYear6').textContent = fire.fire_year_6pct || '-';
+            document.getElementById('pfFireYears6').textContent = fire.years_to_6pct ? `${fire.years_to_6pct}y (Active Trading)` : '-';
+            document.getElementById('pfFireYear4').textContent = fire.fire_year_4pct || '-';
+            document.getElementById('pfFireYears4').textContent = fire.years_to_4pct ? `${fire.years_to_4pct}y (Passive)` : '-';
+
+            // FIRE Progress Bar
+            const target6 = fire.target_assets_6pct || 1;
+            const progress = Math.min(100, ((data.total_value || 0) / target6) * 100);
+            document.getElementById('pfFireBar').style.width = `${progress}%`;
+            document.getElementById('pfFirePct').textContent = `${progress.toFixed(1)}%`;
+            document.getElementById('pfFireTarget').textContent = `목표 (6%): ₩${Math.round(target6).toLocaleString()}`;
+
+            // FIRE Parameters
+            document.getElementById('pfMonthlyInvest').textContent = `₩${Math.round(fire.monthly_investment || 0).toLocaleString()}`;
+            document.getElementById('pfTargetMonthly').textContent = `₩${Math.round(fire.target_monthly || 0).toLocaleString()}/월`;
+            document.getElementById('pfTarget4').textContent = `₩${Math.round(fire.target_assets_4pct || 0).toLocaleString()}`;
+            document.getElementById('pfTarget6').textContent = `₩${Math.round(fire.target_assets_6pct || 0).toLocaleString()}`;
+            document.getElementById('pfGrowthRate').textContent = `${(fire.monthly_growth_rate || 0).toFixed(1)}%/월`;
+            document.getElementById('pfCurrentTotal').textContent = `₩${Math.round(data.total_value || 0).toLocaleString()}`;
+
+            // Strategy Table
+            this.renderPortfolioStrategies(data.strategies);
+
+            // Allocation Chart
+            this.renderAllocationChart(data.strategies, data.total_value || 0);
+
+            // Growth Projection
+            this.renderGrowthProjection(data.projection || []);
+
+        } catch (e) {
+            console.error('Portfolio overview error:', e);
+        }
+    }
+
+    renderPortfolioStrategies(strategies) {
+        const tbody = document.getElementById('pfStrategyTable');
+        if (!strategies || !strategies.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No strategies</td></tr>';
+            return;
+        }
+        tbody.innerHTML = strategies.map(s => {
+            const statusClass = s.active ? 'text-green-400' : 'text-gray-500';
+            const statusText = s.active ? 'Active' : 'Inactive';
+            const pnlClass = (s.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400';
+            const fmt = v => `₩${Math.round(v || 0).toLocaleString()}`;
+            return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 px-2 font-medium">${s.name}</td>
+                <td class="py-2 px-2 text-center ${statusClass}">${statusText}</td>
+                <td class="py-2 px-2 text-right">${fmt(s.invested)}</td>
+                <td class="py-2 px-2 text-right">${fmt(s.value)}</td>
+                <td class="py-2 px-2 text-right ${pnlClass}">${(s.pnl || 0) >= 0 ? '+' : ''}${fmt(s.pnl)}</td>
+                <td class="py-2 px-2 text-right ${pnlClass}">${(s.pnl_pct || 0) >= 0 ? '+' : ''}${(s.pnl_pct || 0).toFixed(1)}%</td>
+                <td class="py-2 px-2 text-gray-400 text-xs">${s.extra_info || '-'}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    renderAllocationChart(strategies, totalValue) {
+        const container = document.getElementById('pfAllocationChart');
+        if (!strategies.length || totalValue <= 0) {
+            container.innerHTML = '<p class="text-gray-500 text-sm">No data</p>';
+            return;
+        }
+
+        const colors = {
+            'dca': 'bg-blue-500',
+            'scalp': 'bg-purple-500',
+            'kr-dca': 'bg-green-500',
+            'us-stock': 'bg-yellow-500',
+            'kr-stock': 'bg-red-500',
+        };
+
+        container.innerHTML = strategies.filter(s => s.value > 0).map(s => {
+            const pct = ((s.value || 0) / totalValue * 100);
+            const color = colors[s.type] || 'bg-gray-500';
+            return `<div>
+                <div class="flex justify-between text-sm mb-1">
+                    <span class="text-gray-300">${s.name}</span>
+                    <span class="text-gray-400">₩${Math.round(s.value).toLocaleString()} (${pct.toFixed(1)}%)</span>
+                </div>
+                <div class="h-3 rounded-full bg-gray-700 overflow-hidden">
+                    <div class="h-3 rounded-full ${color} transition-all" style="width:${pct}%"></div>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    renderGrowthProjection(projection) {
+        const container = document.getElementById('pfGrowthChart');
+        if (!projection || !projection.length) {
+            container.innerHTML = '<p class="text-gray-500 text-sm">No projection data</p>';
+            return;
+        }
+
+        const maxVal = Math.max(...projection.map(p => p.total_assets));
+
+        container.innerHTML = projection.map(p => {
+            const height = maxVal > 0 ? (p.total_assets / maxVal * 100) : 0;
+            const invHeight = maxVal > 0 ? (p.invested / maxVal * 100) : 0;
+            const isQuarter = p.month % 3 === 0;
+            return `<div class="flex flex-col items-center flex-1 min-w-0" title="M${p.month}: ₩${Math.round(p.total_assets).toLocaleString()}">
+                <div class="w-full relative" style="height:${height}%">
+                    <div class="absolute bottom-0 w-full bg-blue-600/30 rounded-t" style="height:${invHeight / height * 100}%"></div>
+                    <div class="absolute bottom-0 w-full bg-blue-500 rounded-t" style="height:100%;opacity:0.7"></div>
+                </div>
+                ${isQuarter ? `<div class="text-gray-500 text-xs mt-1">M${p.month}</div>` : ''}
+            </div>`;
+        }).join('');
+
+        // Milestone values
+        const fmt = v => `₩${Math.round(v).toLocaleString()}`;
+        if (projection.length >= 6) document.getElementById('pfProj6m').textContent = fmt(projection[5].total_assets);
+        if (projection.length >= 12) document.getElementById('pfProj12m').textContent = fmt(projection[11].total_assets);
+        if (projection.length >= 18) document.getElementById('pfProj18m').textContent = fmt(projection[17].total_assets);
+        if (projection.length >= 24) document.getElementById('pfProj24m').textContent = fmt(projection[23].total_assets);
     }
 }
 

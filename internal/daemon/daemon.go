@@ -84,6 +84,9 @@ type Daemon struct {
 	// Wind-down mode (daily target reached → stop new orders, keep monitoring)
 	windDown    chan struct{}
 	windingDown bool
+
+	// Monitor-only mode: KR low-balance → monitor existing positions, no new scans
+	monitorOnly bool
 }
 
 // NewDaemon 생성자
@@ -199,6 +202,36 @@ func (d *Daemon) Run() error {
 		log.Printf("[DAEMON] Account balance: ₩%.0f", balance.TotalEquity)
 	} else {
 		log.Printf("[DAEMON] Account balance: $%.2f", balance.TotalEquity)
+	}
+
+	// KR 소액 계좌: KR DCA 데몬이 KODEX 200을 처리
+	// → 기존 포지션이 없으면 즉시 종료, 있으면 모니터링만 하고 신규 매수 안 함
+	if d.isKR() && balance.TotalEquity < 500000 {
+		log.Printf("[DAEMON] KR balance ₩%.0f < ₩500,000 — KR DCA handles KODEX 200", balance.TotalEquity)
+		// plans.json에 기존 KR 포지션이 있는지 확인
+		checkDir := d.config.DataDir
+		if checkDir == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				checkDir = filepath.Join(home, ".traveler")
+			}
+		}
+		hasKRPositions := false
+		if ps, perr := trader.NewPlanStore(checkDir); perr == nil {
+			for _, plan := range ps.GetAll() {
+				// KR 심볼: 6자리 숫자 (005930, 069500 등)
+				if len(plan.Symbol) == 6 && plan.Symbol[0] >= '0' && plan.Symbol[0] <= '9' {
+					hasKRPositions = true
+					log.Printf("[DAEMON] Open KR position: %s (strategy=%s)", plan.Symbol, plan.Strategy)
+				}
+			}
+		}
+		if hasKRPositions {
+			log.Printf("[DAEMON] Monitor-only mode: watching existing positions, no new scans")
+			d.monitorOnly = true
+		} else {
+			log.Printf("[DAEMON] No open KR positions. Exiting cleanly.")
+			return nil
+		}
 	}
 
 	// 자동매매 전용 자본 결정
@@ -364,6 +397,9 @@ func (d *Daemon) Run() error {
 	d.runInvalidationCheck()
 
 	// 10. 프리마켓 스캔 (전일 일봉 데이터 사용, 장 열기 전에 시그널 준비)
+	if d.monitorOnly {
+		log.Printf("[DAEMON] Monitor-only mode: skipping scan, will only watch existing positions")
+	} else {
 	state := d.tracker.GetState()
 	if !d.config.ForceScan && state.TradeCount > 0 {
 		log.Printf("[DAEMON] Already traded today (%d trades). Skipping scan.", state.TradeCount)
@@ -383,6 +419,7 @@ func (d *Daemon) Run() error {
 				len(d.preMarketSigs), scanResult.ScanTime.Round(time.Second))
 		}
 	}
+	} // end !monitorOnly
 
 	// 11. 장 열릴 때까지 대기 (프리마켓이면)
 	if !status.IsOpen {
@@ -464,9 +501,11 @@ func (d *Daemon) mainLoop() error {
 	monitorTicker := time.NewTicker(d.config.MonitorInterval)
 	defer monitorTicker.Stop()
 
-	// 장중 매매 초기화
+	// 장중 매매 초기화 (monitor-only 모드에서는 건너뜀)
 	d.windDown = make(chan struct{})
-	d.initIntraday()
+	if !d.monitorOnly {
+		d.initIntraday()
+	}
 
 	// 장중 스캔 루프 (별도 고루틴)
 	intradayDone := make(chan struct{})

@@ -1319,6 +1319,39 @@ func (s *Server) handleScalpStatus(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("}"))
 }
 
+// handleKRDCAStatus returns the current KR stock DCA status (read from kr_dca_status.json)
+func (s *Server) handleKRDCAStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fp := filepath.Join(s.dataDir, "kr_dca_status.json")
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active": false,
+			"error":  "KR DCA not running",
+		})
+		return
+	}
+
+	info, _ := os.Stat(fp)
+	active := info != nil && time.Since(info.ModTime()) < 8*24*time.Hour // weekly → 8 day freshness
+
+	w.Write([]byte(`{"active":`))
+	if active {
+		w.Write([]byte("true"))
+	} else {
+		w.Write([]byte("false"))
+	}
+	w.Write([]byte(`,"data":`))
+	w.Write(data)
+	w.Write([]byte("}"))
+}
+
 // handleDCAStatus returns the current DCA status (read from dca_status.json)
 func (s *Server) handleDCAStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1352,6 +1385,354 @@ func (s *Server) handleDCAStatus(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`,"data":`))
 	w.Write(data)
 	w.Write([]byte("}"))
+}
+
+// ==================== Portfolio Overview ====================
+
+// PortfolioOverviewResponse aggregates all strategies into a single view
+type PortfolioOverviewResponse struct {
+	UpdatedAt  time.Time              `json:"updated_at"`
+	TotalValue float64                `json:"total_value"` // 전체 현재 가치 (KRW)
+	TotalCost  float64                `json:"total_cost"`  // 전체 투입 원금 (KRW)
+	TotalPnL   float64                `json:"total_pnl"`   // 미실현 손익
+	TotalPct   float64                `json:"total_pct"`   // 미실현 수익률 %
+	Strategies []StrategyOverview     `json:"strategies"`
+	FIRE       FIREProjection         `json:"fire"`
+	Projection []GrowthPoint          `json:"projection"` // 24개월 예측
+}
+
+// StrategyOverview represents one strategy's summary
+type StrategyOverview struct {
+	Name      string  `json:"name"`
+	Type      string  `json:"type"`      // "dca", "scalp", "kr-dca", "us-stock", "kr-stock"
+	Active    bool    `json:"active"`
+	Invested  float64 `json:"invested"`  // 투입 원금 (KRW)
+	Value     float64 `json:"value"`     // 현재 가치 (KRW)
+	PnL       float64 `json:"pnl"`       // 미실현 손익
+	PnLPct    float64 `json:"pnl_pct"`   // 수익률 %
+	Currency  string  `json:"currency"`  // "KRW" or "USD"
+	ExtraInfo string  `json:"extra_info,omitempty"` // 추가 정보 (F&G, RSI 등)
+}
+
+// FIREProjection contains retirement projection data
+type FIREProjection struct {
+	CurrentAssets     float64 `json:"current_assets"`      // 현재 총 자산 (KRW)
+	MonthlyInvestment float64 `json:"monthly_investment"`  // 월 투입 (KRW)
+	TargetMonthly     float64 `json:"target_monthly"`      // FIRE 목표 월소득 (KRW)
+	TargetAssets4Pct  float64 `json:"target_assets_4pct"`  // 4% 룰 목표 자산
+	TargetAssets6Pct  float64 `json:"target_assets_6pct"`  // 6% 룰 목표 자산
+	YearsTo4Pct       float64 `json:"years_to_4pct"`       // 4% 룰 도달 연수
+	YearsTo6Pct       float64 `json:"years_to_6pct"`       // 6% 룰 도달 연수
+	FireYear4Pct      int     `json:"fire_year_4pct"`      // 4% 룰 도달 연도
+	FireYear6Pct      int     `json:"fire_year_6pct"`      // 6% 룰 도달 연도
+	MonthlyGrowthRate float64 `json:"monthly_growth_rate"` // 월 복리 수익률 %
+}
+
+// GrowthPoint represents a point in the growth projection
+type GrowthPoint struct {
+	Month        int     `json:"month"`
+	TotalAssets  float64 `json:"total_assets"`
+	Invested     float64 `json:"invested"`
+	Growth       float64 `json:"growth"`
+}
+
+// handlePortfolioOverview aggregates all strategies into a portfolio view
+func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	resp := PortfolioOverviewResponse{
+		UpdatedAt: time.Now(),
+	}
+
+	var totalValue, totalCost float64
+
+	// 1. Crypto DCA
+	if dcaData := s.readStatusFile("dca_status.json", 48*time.Hour); dcaData != nil {
+		var dca struct {
+			TotalInvested float64 `json:"total_invested"`
+			CurrentValue  float64 `json:"current_value"`
+			UnrealizedPnL float64 `json:"unrealized_pnl"`
+			UnrealizedPct float64 `json:"unrealized_pct"`
+			FearGreed     int     `json:"fear_greed"`
+			FGLabel       string  `json:"fg_label"`
+		}
+		if json.Unmarshal(dcaData, &dca) == nil && dca.TotalInvested > 0 {
+			so := StrategyOverview{
+				Name:     "Crypto DCA",
+				Type:     "dca",
+				Active:   true,
+				Invested: dca.TotalInvested,
+				Value:    dca.CurrentValue,
+				PnL:      dca.UnrealizedPnL,
+				PnLPct:   dca.UnrealizedPct,
+				Currency: "KRW",
+			}
+			if dca.FearGreed > 0 {
+				so.ExtraInfo = fmt.Sprintf("F&G: %d (%s)", dca.FearGreed, dca.FGLabel)
+			}
+			resp.Strategies = append(resp.Strategies, so)
+			totalValue += dca.CurrentValue
+			totalCost += dca.TotalInvested
+		}
+	}
+
+	// 2. Scalp
+	if scalpData := s.readStatusFile("scalp_status.json", 1*time.Hour); scalpData != nil {
+		var scalp struct {
+			ActivePositions map[string]json.RawMessage `json:"active_positions"`
+			Daily struct {
+				NetPnL float64 `json:"net_pnl"`
+			} `json:"daily"`
+			Total struct {
+				NetPnL  float64 `json:"net_pnl"`
+				WinRate float64 `json:"win_rate"`
+				Trades  int     `json:"trades"`
+			} `json:"total"`
+			OrderAmount float64 `json:"order_amount"`
+		}
+		if json.Unmarshal(scalpData, &scalp) == nil {
+			posCount := len(scalp.ActivePositions)
+			posValue := float64(posCount) * scalp.OrderAmount
+			so := StrategyOverview{
+				Name:     "Crypto Scalp",
+				Type:     "scalp",
+				Active:   true,
+				Invested: posValue,
+				Value:    posValue + scalp.Total.NetPnL,
+				PnL:      scalp.Total.NetPnL,
+				Currency: "KRW",
+			}
+			if posValue > 0 {
+				so.PnLPct = scalp.Total.NetPnL / posValue * 100
+			}
+			if scalp.Total.Trades > 0 {
+				so.ExtraInfo = fmt.Sprintf("WR: %.0f%% (%d trades)", scalp.Total.WinRate, scalp.Total.Trades)
+			}
+			resp.Strategies = append(resp.Strategies, so)
+			totalValue += posValue + scalp.Total.NetPnL
+			totalCost += posValue
+		}
+	}
+
+	// 3. KR DCA
+	if krDcaData := s.readStatusFile("kr_dca_status.json", 8*24*time.Hour); krDcaData != nil {
+		var krDca struct {
+			TotalInvested float64 `json:"total_invested"`
+			CurrentValue  float64 `json:"current_value"`
+			UnrealizedPnL float64 `json:"unrealized_pnl"`
+			UnrealizedPct float64 `json:"unrealized_pct"`
+			RSI           float64 `json:"rsi"`
+			RSILabel      string  `json:"rsi_label"`
+			TotalShares   float64 `json:"total_shares"`
+		}
+		if json.Unmarshal(krDcaData, &krDca) == nil {
+			so := StrategyOverview{
+				Name:     "KR DCA (KODEX 200)",
+				Type:     "kr-dca",
+				Active:   true,
+				Invested: krDca.TotalInvested,
+				Value:    krDca.CurrentValue,
+				PnL:      krDca.UnrealizedPnL,
+				PnLPct:   krDca.UnrealizedPct,
+				Currency: "KRW",
+			}
+			if krDca.RSI > 0 {
+				so.ExtraInfo = fmt.Sprintf("RSI: %.1f (%s), %d shares", krDca.RSI, krDca.RSILabel, int(krDca.TotalShares))
+			}
+			resp.Strategies = append(resp.Strategies, so)
+			totalValue += krDca.CurrentValue
+			totalCost += krDca.TotalInvested
+		}
+	}
+
+	// 4. US Stock (broker balance + positions)
+	if s.broker != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if bal, err := s.broker.GetBalance(ctx); err == nil && bal.TotalEquity > 0 {
+			usdToKrw := 1450.0 // 환율 근사치
+			valueKRW := bal.TotalEquity * usdToKrw
+
+			// positions에서 원가 합산
+			var posInvested float64
+			if positions, err := s.broker.GetPositions(ctx); err == nil {
+				for _, pos := range positions {
+					posInvested += pos.AvgCost * pos.Quantity
+				}
+			}
+
+			investedUSD := bal.CashBalance + posInvested
+			investedKRW := investedUSD * usdToKrw
+			so := StrategyOverview{
+				Name:     "US Stock",
+				Type:     "us-stock",
+				Active:   true,
+				Invested: investedKRW,
+				Value:    valueKRW,
+				PnL:      (bal.TotalEquity - investedUSD) * usdToKrw,
+				Currency: "USD",
+			}
+			if investedUSD > 0 {
+				so.PnLPct = (bal.TotalEquity - investedUSD) / investedUSD * 100
+			}
+			so.ExtraInfo = fmt.Sprintf("$%.2f (₩%.0f)", bal.TotalEquity, valueKRW)
+			resp.Strategies = append(resp.Strategies, so)
+			totalValue += valueKRW
+			totalCost += investedKRW
+		}
+		cancel()
+	}
+
+	// 5. KR Stock (broker balance)
+	if s.brokerKR != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if bal, err := s.brokerKR.GetBalance(ctx); err == nil && bal.TotalEquity > 0 {
+			var posInvested float64
+			if positions, err := s.brokerKR.GetPositions(ctx); err == nil {
+				for _, pos := range positions {
+					posInvested += pos.AvgCost * pos.Quantity
+				}
+			}
+			investedKRW := bal.CashBalance + posInvested
+			so := StrategyOverview{
+				Name:     "KR Stock",
+				Type:     "kr-stock",
+				Active:   true,
+				Invested: investedKRW,
+				Value:    bal.TotalEquity,
+				PnL:      bal.TotalEquity - investedKRW,
+				Currency: "KRW",
+			}
+			if investedKRW > 0 {
+				so.PnLPct = (bal.TotalEquity - investedKRW) / investedKRW * 100
+			}
+			resp.Strategies = append(resp.Strategies, so)
+			totalValue += bal.TotalEquity
+			totalCost += investedKRW
+		}
+		cancel()
+	}
+
+	// 6. Crypto (short-term trading balance)
+	if s.brokerCrypto != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if bal, err := s.brokerCrypto.GetBalance(ctx); err == nil && bal.CashBalance > 0 {
+			var posInvested, posValue float64
+			if positions, err := s.brokerCrypto.GetPositions(ctx); err == nil {
+				for _, pos := range positions {
+					posInvested += pos.AvgCost * pos.Quantity
+					posValue += pos.MarketValue
+				}
+			}
+			// DCA+Scalp에 이미 반영된 금액을 빼야 하지만,
+			// crypto broker는 전체 Upbit 잔고이므로 별도 추가하지 않음 (이미 DCA/Scalp에서 집계)
+			// 여기서는 DCA/Scalp가 없는 순수 crypto 잔고만 — skip duplicate
+			_ = posInvested
+			_ = posValue
+		}
+		cancel()
+	}
+
+	resp.TotalValue = totalValue
+	resp.TotalCost = totalCost
+	resp.TotalPnL = totalValue - totalCost
+	if totalCost > 0 {
+		resp.TotalPct = (totalValue - totalCost) / totalCost * 100
+	}
+
+	// FIRE Projection
+	monthlyInvestment := 2000000.0 // ₩200만/월
+	targetMonthly := 3000000.0     // ₩300만/월 (물가 보정 전)
+	inflationRate := 0.03          // 3%/년
+	monthlyGrowth := 0.02          // 월 2% 복리 (보수적)
+
+	// 인플레이션 보정 목표 (10년 후)
+	targetAssets4Pct := (targetMonthly * 12) / 0.04 // 4% 룰: 9억
+	targetAssets6Pct := (targetMonthly * 12) / 0.06 // 6% 룰: 6억
+
+	// 복리 성장 시뮬레이션
+	assets := totalValue
+	invested := totalCost
+	var projection []GrowthPoint
+	var years4, years6 float64
+	found4, found6 := false, false
+
+	for m := 1; m <= 240; m++ { // 20년
+		assets = assets*(1+monthlyGrowth) + monthlyInvestment
+		invested += monthlyInvestment
+
+		// 인플레이션 보정 목표 업데이트
+		yearsElapsed := float64(m) / 12.0
+		adjustedTarget4 := targetAssets4Pct * math.Pow(1+inflationRate, yearsElapsed)
+		adjustedTarget6 := targetAssets6Pct * math.Pow(1+inflationRate, yearsElapsed)
+
+		if !found4 && assets >= adjustedTarget4 {
+			years4 = yearsElapsed
+			found4 = true
+		}
+		if !found6 && assets >= adjustedTarget6 {
+			years6 = yearsElapsed
+			found6 = true
+		}
+
+		// 24개월까지만 projection에 포함
+		if m <= 24 {
+			projection = append(projection, GrowthPoint{
+				Month:       m,
+				TotalAssets: assets,
+				Invested:    invested,
+				Growth:      assets - invested,
+			})
+		}
+	}
+
+	if !found4 {
+		years4 = 20.0
+	}
+	if !found6 {
+		years6 = 15.0
+	}
+
+	currentYear := time.Now().Year()
+	resp.FIRE = FIREProjection{
+		CurrentAssets:     totalValue,
+		MonthlyInvestment: monthlyInvestment,
+		TargetMonthly:     targetMonthly,
+		TargetAssets4Pct:  targetAssets4Pct,
+		TargetAssets6Pct:  targetAssets6Pct,
+		YearsTo4Pct:       math.Round(years4*10) / 10,
+		YearsTo6Pct:       math.Round(years6*10) / 10,
+		FireYear4Pct:      currentYear + int(math.Ceil(years4)),
+		FireYear6Pct:      currentYear + int(math.Ceil(years6)),
+		MonthlyGrowthRate: monthlyGrowth * 100,
+	}
+	resp.Projection = projection
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// readStatusFile reads a daemon status JSON file if it's fresh enough
+func (s *Server) readStatusFile(filename string, maxAge time.Duration) json.RawMessage {
+	if s.dataDir == "" {
+		return nil
+	}
+	fp := filepath.Join(s.dataDir, filename)
+	info, err := os.Stat(fp)
+	if err != nil {
+		return nil
+	}
+	if time.Since(info.ModTime()) > maxAge {
+		return nil
+	}
+	data, err := os.ReadFile(fp)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return data
 }
 
 // handleDCAFearGreed returns current and historical Fear & Greed data
