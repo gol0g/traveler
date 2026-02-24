@@ -1354,6 +1354,19 @@ func (d *Daemon) recalculateTargets(planStore *trader.PlanStore) {
 			continue // T1 이미 도달한 포지션은 건드리지 않음
 		}
 
+		// 현재 마켓과 다른 종목은 스킵 (plans.json은 전 마켓 공유)
+		isKRSym := symbols.IsKoreanSymbol(plan.Symbol)
+		isCryptoSym := len(plan.Symbol) > 4 && plan.Symbol[:4] == "KRW-"
+		if d.isKR() && !isKRSym {
+			continue
+		}
+		if !d.isKR() && !d.isCrypto() && (isKRSym || isCryptoSym) {
+			continue
+		}
+		if d.isCrypto() && !isCryptoSym {
+			continue
+		}
+
 		candles, err := d.provider.GetDailyCandles(d.ctx, plan.Symbol, 70)
 		if err != nil || len(candles) < 20 {
 			log.Printf("[RECALC] %s: insufficient data, keeping old targets", plan.Symbol)
