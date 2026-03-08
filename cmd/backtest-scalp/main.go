@@ -138,7 +138,7 @@ func main() {
 		}
 		fmt.Printf(" got %d candles\n", len(candles))
 		allData[symbol] = candles
-		time.Sleep(1 * time.Second)
+		time.Sleep(10 * time.Second) // Upbit rate limit: 600/min, need ~44 req per pair
 	}
 
 	fmt.Println()
@@ -612,7 +612,7 @@ func runOptimization(baseCfg strategy.ScalpConfig, allData map[string][]model.Ca
 
 	// Parameter grid
 	rsiEntries := []float64{20, 25, 30, 35}
-	rsiExits := []float64{50, 55, 60, 65}
+	rsiExits := []float64{50, 55, 60, 65, 70}
 	tps := []float64{1.0, 1.5, 2.0, 2.5}
 	sls := []float64{1.5, 2.0, 2.5, 3.0}
 	volMins := []float64{1.0, 1.5, 2.0}

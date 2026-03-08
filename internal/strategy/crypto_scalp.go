@@ -64,7 +64,7 @@ func DefaultScalpConfig() ScalpConfig {
 
 		RSIPeriod: 7,
 		RSIEntry:  30.0, // optimized from 25 → 30 (more opportunities)
-		RSIExit:   65.0, // raised from 60 → 65 (hold longer for larger moves)
+		RSIExit:   60.0, // backtest optimal: exit>60 dominates all top results (9-pair 90d grid)
 
 		VolumePeriod: 20,
 		VolumeMin:    1.5,
@@ -74,7 +74,7 @@ func DefaultScalpConfig() ScalpConfig {
 		BBPeriod: 20,
 		BBStdDev: 2.0,
 
-		TakeProfitPct: 2.0, // optimized from 0.8 → 2.0 (wider target, fewer premature exits)
+		TakeProfitPct: 2.5, // backtest optimal: TP 2.5 > 2.0 (+1.8%p Net, same MDD)
 		StopLossPct:   2.5, // optimized from 1.5 → 2.5 (reduce noise stops)
 		MaxHoldBars:   32,  // optimized from 16 → 32 (8 hours, allow time for reversion)
 

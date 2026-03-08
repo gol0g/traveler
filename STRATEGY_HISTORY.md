@@ -84,6 +84,16 @@
 
 ## Crypto Scalping - Upbit Long (KRW pairs)
 
+### 2026-03-08: RSIExit 65→60, TP 2.0→2.5 (9페어 그리드 서치)
+- **변경**: RSIExit 65→60, TakeProfitPct 2.0→2.5
+- **백테스트**: 90일, 9페어, 2880 combo grid search (RSIExit 50/55/60/65/70 포함)
+  - `go run ./cmd/backtest-scalp/ --days=90 --optimize`
+  - RSI<30, Exit>60, TP 2.5, SL 2.5: **184건, WR 68%, Net +30.0%, PF 1.68, MDD 5.4%**
+  - RSI<30, Exit>60, TP 2.0, SL 2.5: 184건, WR 68%, Net +28.2%, PF 1.64, MDD 5.4%
+  - Exit=60이 상위 20개 결과 전부 독점 (Exit=65/70은 순위권 밖)
+- **이전 대비**: Net +28.2→30.0% (+1.8%p), PF 1.64→1.68
+- **사유**: Exit>60이 더 빨리 청산해서 수익 보존, TP 2.5가 2.0보다 Net +1.8%p 개선
+
 ### 2026-03-08: 미완성 캔들 버그 수정 (critical)
 - **버그**: Upbit API도 현재 진행 중인 미완성 캔들을 마지막에 포함
 - **영향**: 부분 거래량으로 RSI/Volume 왜곡 → 잘못된 진입/미진입

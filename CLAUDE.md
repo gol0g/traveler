@@ -42,7 +42,7 @@
 - 백테스트: Sharpe 2.05, +23.6%
 
 ### Upbit RSI Scalp (9페어)
-- RSI(7)<30 entry, >65 exit, TP +2%, SL -2.5%, MaxBars 32
+- RSI(7)<30 entry, >60 exit, TP +2.5%, SL -2.5%, MaxBars 32
 - EMA50 필터 절대 제거 금지 (제거 시 -31%)
 - 페어: ETH, LINK, SOL, AVAX, SUI, XRP, ADA, DOGE, TRX
 
