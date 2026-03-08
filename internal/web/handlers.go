@@ -1724,11 +1724,13 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 		cancel()
 	}
 
-	// 7. Binance Futures (short scalp + BTC futures)
+	// 7. Binance Futures (short scalp + BTC futures + Flexible Earn)
 	if binanceData := s.readStatusFile("binance_status.json", 1*time.Hour); binanceData != nil {
 		var binance struct {
-			BalanceUSDT float64                        `json:"balance_usdt"`
-			Total       struct {
+			BalanceUSDT   float64 `json:"balance_usdt"`
+			EarnBalance   float64 `json:"earn_balance"`
+			EarnInterest  float64 `json:"earn_interest"`
+			Total         struct {
 				NetPnL  float64 `json:"net_pnl"`
 				WinRate float64 `json:"win_rate"`
 				Trades  int     `json:"trades"`
@@ -1737,8 +1739,9 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 		}
 		if json.Unmarshal(binanceData, &binance) == nil && binance.BalanceUSDT > 0 {
 			usdToKrw := 1450.0
-			balKRW := binance.BalanceUSDT * usdToKrw
-			netPnLKRW := binance.Total.NetPnL * usdToKrw
+			totalUSDT := binance.BalanceUSDT + binance.EarnBalance // Futures + Earn
+			balKRW := totalUSDT * usdToKrw
+			netPnLKRW := (binance.Total.NetPnL + binance.EarnInterest) * usdToKrw
 			investedKRW := balKRW - netPnLKRW
 			so := StrategyOverview{
 				Name:     "Binance Futures",
@@ -1752,11 +1755,14 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 			if investedKRW > 0 {
 				so.PnLPct = netPnLKRW / investedKRW * 100
 			}
-			if binance.Total.Trades > 0 {
-				so.ExtraInfo = fmt.Sprintf("$%.2f, WR: %.0f%% (%d trades)", binance.BalanceUSDT, binance.Total.WinRate, binance.Total.Trades)
-			} else {
-				so.ExtraInfo = fmt.Sprintf("$%.2f", binance.BalanceUSDT)
+			info := fmt.Sprintf("$%.2f", totalUSDT)
+			if binance.EarnBalance > 0 {
+				info += fmt.Sprintf(" (Earn: $%.2f)", binance.EarnBalance)
 			}
+			if binance.Total.Trades > 0 {
+				info += fmt.Sprintf(", WR: %.0f%% (%d trades)", binance.Total.WinRate, binance.Total.Trades)
+			}
+			so.ExtraInfo = info
 			resp.Strategies = append(resp.Strategies, so)
 			totalValue += balKRW
 			totalCost += investedKRW
