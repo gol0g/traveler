@@ -39,6 +39,9 @@ type BinanceScalpState struct {
 	LastScanTime    time.Time                               `json:"last_scan_time"`
 	RecentTrades    []BinanceScalpTradeRecord                `json:"recent_trades"`
 	FundingEarned   float64                                 `json:"funding_earned"` // Total funding fees received (USDT)
+	EarnDeposited   float64                                 `json:"earn_deposited"` // Total deposited to Flexible Earn
+	EarnInterest    float64                                 `json:"earn_interest"`  // Total interest earned from Flexible
+	LastEarnCheck   time.Time                               `json:"last_earn_check"`
 }
 
 // BinanceScalpDailyStats tracks today's performance.
@@ -83,6 +86,10 @@ type BinanceScalpDaemon struct {
 	cancel context.CancelFunc
 
 	dailyLossLimit float64 // USDT, e.g. -20
+
+	// Simple Earn Flexible: idle capital management
+	earnProductID string  // USDT Flexible product ID
+	earnAPY       float64 // current APY for logging
 }
 
 // NewBinanceScalpDaemon creates a new Binance short scalping daemon.
@@ -130,6 +137,9 @@ func (d *BinanceScalpDaemon) Run() error {
 	d.saveState()
 	d.saveStatusJSON()
 
+	// Initialize Simple Earn Flexible (non-blocking: log warning on failure)
+	d.initEarn()
+
 	// Two loops:
 	// 1. Fast loop (1 min): monitor active positions for SL/TP exit
 	// 2. Slow loop (15 min aligned): scan for new short entries
@@ -153,6 +163,9 @@ func (d *BinanceScalpDaemon) Run() error {
 
 			// Monitor active short positions
 			d.monitorPositions()
+
+			// Manage idle capital → Flexible Earn (every hour)
+			d.manageEarn()
 
 			// Check if it's time for a scan
 			if time.Now().After(nextScan) {
@@ -288,6 +301,16 @@ func (d *BinanceScalpDaemon) executeShort(sig strategy.ShortScalpSignal) error {
 
 	log.Printf("[BSCALP] SHORT %s: $%.2f (RSI=%.1f, Vol=%.1fx, strength=%.0f)",
 		sig.Symbol, orderAmount, sig.RSI, sig.VolumeRatio, sig.Strength)
+
+	// Check if Futures balance is sufficient; recall from Earn if needed
+	bal, err := d.broker.GetBalance(d.ctx)
+	if err == nil && bal.CashBalance < orderAmount {
+		deficit := orderAmount - bal.CashBalance + 5 // +$5 buffer
+		recovered := d.recallFromEarn(deficit)
+		if recovered > 0 {
+			log.Printf("[BSCALP] Recalled $%.2f from Earn for trade", recovered)
+		}
+	}
 
 	// Open short: SELL to open
 	order := broker.Order{
@@ -459,9 +482,171 @@ func (d *BinanceScalpDaemon) executeCoverShort(pos *strategy.ShortScalpPosition,
 	}
 	d.stateMu.Unlock()
 
+	// Slot opened — recall capital from Earn if any
+	if d.earnProductID != "" {
+		if earnBal, err := d.broker.EarnGetPosition(d.ctx, "USDT"); err == nil && earnBal >= 10 {
+			log.Printf("[BSCALP] Slot opened, recalling $%.2f from Earn", earnBal)
+			d.recallFromEarn(earnBal)
+		}
+	}
+
 	d.saveState()
 	d.saveStatusJSON()
 	return nil
+}
+
+// --- Simple Earn Flexible: idle capital management ---
+
+// initEarn fetches the USDT Flexible Earn product ID on startup.
+func (d *BinanceScalpDaemon) initEarn() {
+	productID, apy, err := d.broker.EarnGetProductID(d.ctx, "USDT")
+	if err != nil {
+		log.Printf("[BSCALP] Earn init failed (will retry): %v", err)
+		return
+	}
+	d.earnProductID = productID
+	d.earnAPY = apy
+	log.Printf("[BSCALP] Earn initialized: USDT Flexible productId=%s, APY=%.2f%%", productID, apy)
+
+	// Check current earn position
+	earnBal, err := d.broker.EarnGetPosition(d.ctx, "USDT")
+	if err != nil {
+		log.Printf("[BSCALP] Earn position check failed: %v", err)
+	} else if earnBal > 0 {
+		log.Printf("[BSCALP] Current Earn balance: $%.2f", earnBal)
+	}
+}
+
+// manageEarn sweeps idle USDT from Futures → Spot → Flexible Earn (every hour).
+// Reserve = max positions × $100 (enough for dynamic sizing with small balance).
+// Only moves excess above reserve.
+func (d *BinanceScalpDaemon) manageEarn() {
+	if d.earnProductID == "" {
+		return // Earn not initialized
+	}
+
+	d.stateMu.RLock()
+	lastCheck := d.state.LastEarnCheck
+	d.stateMu.RUnlock()
+
+	// Only check every hour
+	if time.Since(lastCheck) < 1*time.Hour {
+		return
+	}
+
+	d.stateMu.Lock()
+	d.state.LastEarnCheck = time.Now()
+	d.stateMu.Unlock()
+
+	// Get Futures available balance
+	bal, err := d.broker.GetBalance(d.ctx)
+	if err != nil {
+		return
+	}
+
+	d.stateMu.RLock()
+	activeCount := len(d.state.ActivePositions)
+	d.stateMu.RUnlock()
+
+	remainingSlots := d.config.MaxPositions - activeCount
+
+	// Only sweep when ALL position slots are full.
+	// With balance-proportional sizing (available / remainingSlots), the entire
+	// available balance is the trading reserve. Sweeping with open slots would
+	// reduce order sizes and weaken the compounding effect.
+	// When all slots are full, no new trades can be placed → excess is truly idle.
+	if remainingSlots > 0 {
+		return
+	}
+
+	// All slots full: keep small buffer for margin/fees, sweep the rest
+	reserve := 20.0 // $20 margin buffer
+	excess := bal.CashBalance - reserve
+	const minSweep = 10.0
+
+	if excess >= minSweep {
+		// Transfer Futures → Spot → Flexible Earn
+		log.Printf("[BSCALP] Earn sweep: available=$%.2f, reserve=$%.2f, sweeping $%.2f to Flexible",
+			bal.CashBalance, reserve, excess)
+
+		if err := d.broker.Transfer(d.ctx, "USDT", excess, "UMFUTURE_MAIN"); err != nil {
+			log.Printf("[BSCALP] Earn: Futures→Spot transfer failed: %v", err)
+			return
+		}
+
+		if err := d.broker.EarnSubscribe(d.ctx, d.earnProductID, excess); err != nil {
+			log.Printf("[BSCALP] Earn: subscribe failed, returning to Futures: %v", err)
+			// Try to return to Futures
+			d.broker.Transfer(d.ctx, "USDT", excess, "MAIN_UMFUTURE")
+			return
+		}
+
+		d.stateMu.Lock()
+		d.state.EarnDeposited += excess
+		d.stateMu.Unlock()
+
+		log.Printf("[BSCALP] Earn: $%.2f deposited to Flexible Earn (APY %.2f%%)", excess, d.earnAPY)
+		d.saveState()
+	}
+}
+
+// recallFromEarn redeems USDT from Flexible Earn back to Futures when needed for trading.
+// Returns the amount recovered (may be 0 if nothing in Earn).
+func (d *BinanceScalpDaemon) recallFromEarn(needed float64) float64 {
+	if d.earnProductID == "" {
+		return 0
+	}
+
+	earnBal, err := d.broker.EarnGetPosition(d.ctx, "USDT")
+	if err != nil || earnBal < 1 {
+		return 0
+	}
+
+	redeemAmount := needed
+	if redeemAmount > earnBal {
+		redeemAmount = earnBal
+	}
+
+	log.Printf("[BSCALP] Earn recall: need $%.2f, earn has $%.2f, redeeming $%.2f",
+		needed, earnBal, redeemAmount)
+
+	// Track interest: difference between earn balance and deposited amount
+	d.stateMu.RLock()
+	deposited := d.state.EarnDeposited
+	d.stateMu.RUnlock()
+	if earnBal > deposited {
+		interest := earnBal - deposited
+		d.stateMu.Lock()
+		d.state.EarnInterest += interest
+		d.state.EarnDeposited = earnBal - interest // reset baseline
+		d.stateMu.Unlock()
+		log.Printf("[BSCALP] Earn interest accrued: $%.4f", interest)
+	}
+
+	if err := d.broker.EarnRedeem(d.ctx, d.earnProductID, redeemAmount); err != nil {
+		log.Printf("[BSCALP] Earn: redeem failed: %v", err)
+		return 0
+	}
+
+	// Wait briefly for redemption to settle
+	time.Sleep(2 * time.Second)
+
+	// Transfer Spot → Futures
+	if err := d.broker.Transfer(d.ctx, "USDT", redeemAmount, "MAIN_UMFUTURE"); err != nil {
+		log.Printf("[BSCALP] Earn: Spot→Futures transfer failed: %v", err)
+		return 0
+	}
+
+	d.stateMu.Lock()
+	d.state.EarnDeposited -= redeemAmount
+	if d.state.EarnDeposited < 0 {
+		d.state.EarnDeposited = 0
+	}
+	d.stateMu.Unlock()
+
+	log.Printf("[BSCALP] Earn: $%.2f returned to Futures", redeemAmount)
+	d.saveState()
+	return redeemAmount
 }
 
 // checkDayRollover resets daily stats at midnight UTC (Binance uses UTC).
@@ -555,10 +740,13 @@ func (d *BinanceScalpDaemon) saveStatusJSON() {
 	wr := binanceScalpWinRate(d.state.TotalStats.TotalWins, totalTrades)
 
 	// Fetch current balance for web display
-	var balanceUSDT, availableUSDT float64
+	var balanceUSDT, availableUSDT, earnBalUSDT float64
 	if bal, err := d.broker.GetBalance(d.ctx); err == nil {
 		balanceUSDT = bal.TotalEquity
 		availableUSDT = bal.CashBalance
+	}
+	if d.earnProductID != "" {
+		earnBalUSDT, _ = d.broker.EarnGetPosition(d.ctx, "USDT")
 	}
 
 	status := map[string]interface{}{
@@ -595,7 +783,10 @@ func (d *BinanceScalpDaemon) saveStatusJSON() {
 			"win_streak_max":  d.state.TotalStats.WinStreakMax,
 			"lose_streak_max": d.state.TotalStats.LoseStreakMax,
 		},
-		"funding_earned": d.state.FundingEarned,
+		"funding_earned":  d.state.FundingEarned,
+		"earn_balance":    earnBalUSDT,
+		"earn_deposited":  d.state.EarnDeposited,
+		"earn_interest":   d.state.EarnInterest,
 		"bar_counter":    d.state.BarCounter,
 		"last_scan":      d.state.LastScanTime,
 		"updated_at":     time.Now(),

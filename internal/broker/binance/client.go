@@ -479,6 +479,100 @@ func (c *Client) GetFundingIncome(ctx context.Context, symbol string, startTime 
 	return total, nil
 }
 
+// --- Simple Earn Flexible API ---
+
+// EarnGetProductID returns the Flexible Earn productId for a given asset (e.g. "USDT").
+func (c *Client) EarnGetProductID(ctx context.Context, asset string) (string, float64, error) {
+	c.rateLimit()
+	params := url.Values{}
+	params.Set("asset", asset)
+	params.Set("current", "1")
+	params.Set("size", "10")
+
+	resp, err := c.spotSignedRequest(ctx, "GET", "/sapi/v1/simple-earn/flexible/list", params)
+	if err != nil {
+		return "", 0, err
+	}
+
+	var result struct {
+		Rows []struct {
+			ProductId      string `json:"productId"`
+			Asset          string `json:"asset"`
+			LatestAnnualPR string `json:"latestAnnualPercentageRate"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return "", 0, fmt.Errorf("parse earn products: %w", err)
+	}
+
+	for _, row := range result.Rows {
+		if row.Asset == asset {
+			apy, _ := strconv.ParseFloat(row.LatestAnnualPR, 64)
+			return row.ProductId, apy * 100, nil // convert to percentage
+		}
+	}
+	return "", 0, fmt.Errorf("no Flexible Earn product found for %s", asset)
+}
+
+// EarnGetPosition returns the current Flexible Earn balance for an asset.
+func (c *Client) EarnGetPosition(ctx context.Context, asset string) (float64, error) {
+	c.rateLimit()
+	params := url.Values{}
+	params.Set("asset", asset)
+	params.Set("current", "1")
+	params.Set("size", "10")
+
+	resp, err := c.spotSignedRequest(ctx, "GET", "/sapi/v1/simple-earn/flexible/position", params)
+	if err != nil {
+		return 0, err
+	}
+
+	var result struct {
+		Rows []struct {
+			Asset       string `json:"asset"`
+			TotalAmount string `json:"totalAmount"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return 0, fmt.Errorf("parse earn position: %w", err)
+	}
+
+	for _, row := range result.Rows {
+		if row.Asset == asset {
+			amount, _ := strconv.ParseFloat(row.TotalAmount, 64)
+			return amount, nil
+		}
+	}
+	return 0, nil // no position
+}
+
+// EarnSubscribe deposits an amount into Simple Earn Flexible.
+func (c *Client) EarnSubscribe(ctx context.Context, productId string, amount float64) error {
+	c.rateLimit()
+	params := url.Values{}
+	params.Set("productId", productId)
+	params.Set("amount", strconv.FormatFloat(amount, 'f', 8, 64))
+
+	_, err := c.spotSignedRequest(ctx, "POST", "/sapi/v1/simple-earn/flexible/subscribe", params)
+	return err
+}
+
+// EarnRedeem withdraws an amount from Simple Earn Flexible.
+// If amount <= 0, redeems all.
+func (c *Client) EarnRedeem(ctx context.Context, productId string, amount float64) error {
+	c.rateLimit()
+	params := url.Values{}
+	params.Set("productId", productId)
+	if amount <= 0 {
+		params.Set("redeemAll", "true")
+	} else {
+		params.Set("amount", strconv.FormatFloat(amount, 'f', 8, 64))
+	}
+
+	_, err := c.spotSignedRequest(ctx, "POST", "/sapi/v1/simple-earn/flexible/redeem", params)
+	return err
+}
+
 // spotSignedRequest sends a signed request to the Spot API (api.binance.com).
 func (c *Client) spotSignedRequest(ctx context.Context, method, path string, params url.Values) ([]byte, error) {
 	signed := c.sign(params)
