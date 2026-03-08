@@ -94,12 +94,20 @@
 - **이전 대비**: Net +28.2→30.0% (+1.8%p), PF 1.64→1.68
 - **사유**: Exit>60이 더 빨리 청산해서 수익 보존, TP 2.5가 2.0보다 Net +1.8%p 개선
 
-### 2026-03-08: 미완성 캔들 버그 수정 (critical)
-- **버그**: Upbit API도 현재 진행 중인 미완성 캔들을 마지막에 포함
+### 2026-03-09: CheckExit 미완성 캔들 버그 수정 (critical)
+- **버그**: CheckExit()에서 RSI 계산 시 미완성(진행 중) 캔들 포함
+- **영향**: 미완성 캔들의 부분 데이터로 RSI가 왜곡 → 조기 청산
+- **증거**: Binance SOL 숏 — RSI 75→29.6 (46포인트 급락), 가격은 $0.03(0.04%)만 이동.
+  미완성 캔들이 RSI를 과도하게 낮춤 → 1시간 만에 청산 → 수수료($0.13)가 수익($0.06) 초과
+- **수정**: `completedCandles = candles[:len-1]`로 RSI 계산, currentPrice는 최신 캔들 유지
+- **적용 범위**: crypto_scalp.go (Upbit) + short_scalp.go (Binance) 양쪽 모두
+
+### 2026-03-08: 미완성 캔들 버그 수정 (진입 측 — Scan)
+- **버그**: Upbit/Binance API가 현재 진행 중인 미완성 캔들을 마지막에 포함
 - **영향**: 부분 거래량으로 RSI/Volume 왜곡 → 잘못된 진입/미진입
-- **수정**: `completedCandles = candles[:len(candles)-1]` (Binance와 동일)
+- **수정**: `completedCandles = candles[:len(candles)-1]` (Scan 메서드만 수정)
 - **실거래 성과**: 5건, WR 20%, Net -803원 (백테스트 WR 70% 대비 심각한 괴리)
-- **이 버그가 괴리의 주요 원인일 가능성 높음** — 수정 후 모니터링 필요
+- **CheckExit은 미수정 상태로 남아있었음** → 2026-03-09에 발견/수정
 
 ### 2026-03-08: RSI Exit 조정
 - **변경**: RSIExit 60→65

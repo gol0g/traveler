@@ -157,12 +157,17 @@ func (s *ShortScalper) Scan(ctx context.Context, activePositions map[string]*Sho
 // CheckExit determines if a short position should be closed.
 func (s *ShortScalper) CheckExit(ctx context.Context, pos *ShortScalpPosition, currentBar int) (shouldExit bool, reason string, currentPrice float64) {
 	candles, err := s.provider.GetRecentMinuteCandles(ctx, pos.Symbol, s.config.CandleInterval, 10)
-	if err != nil || len(candles) == 0 {
+	if err != nil || len(candles) < 2 {
 		return false, "", 0
 	}
 
-	latest := candles[len(candles)-1]
-	currentPrice = latest.Close
+	// Use latest candle for current price (even if incomplete — that's the real price)
+	currentPrice = candles[len(candles)-1].Close
+
+	// But use completed candles for RSI calculation (drop last incomplete candle)
+	completedCandles := candles[:len(candles)-1]
+	latest := completedCandles[len(completedCandles)-1]
+	_ = latest
 
 	// SHORT PnL: profit when price drops
 	pnlPct := (pos.EntryPrice - currentPrice) / pos.EntryPrice * 100
@@ -189,8 +194,9 @@ func (s *ShortScalper) CheckExit(ctx context.Context, pos *ShortScalpPosition, c
 	}
 
 	// 3. RSI exit — mean reverted DOWN (RSI dropped back to normal)
-	if len(candles) >= s.config.RSIPeriod+1 {
-		rsi := CalculateRSI(candles, s.config.RSIPeriod)
+	// Use completedCandles to avoid incomplete candle distorting RSI
+	if len(completedCandles) >= s.config.RSIPeriod+1 {
+		rsi := CalculateRSI(completedCandles, s.config.RSIPeriod)
 		if rsi <= s.config.RSIExit {
 			return true, fmt.Sprintf("rsi_exit (RSI=%.1f, pnl=%.2f%%)", rsi, pnlPct), currentPrice
 		}

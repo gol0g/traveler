@@ -176,14 +176,16 @@ func (s *CryptoScalper) Scan(ctx context.Context, activePositions map[string]*Sc
 
 // CheckExit determines if an active position should be closed.
 func (s *CryptoScalper) CheckExit(ctx context.Context, pos *ScalpPosition, currentBar int) (shouldExit bool, reason string, currentPrice float64) {
-	// Get latest price via 1 candle
+	// Get latest candles — last one may be incomplete (in-progress)
 	candles, err := s.provider.GetRecentMinuteCandles(ctx, pos.Symbol, s.config.CandleInterval, 10)
-	if err != nil || len(candles) == 0 {
+	if err != nil || len(candles) < 2 {
 		return false, "", 0
 	}
 
-	latest := candles[len(candles)-1]
-	currentPrice = latest.Close
+	// Use latest candle for current price (real-time, even if incomplete)
+	currentPrice = candles[len(candles)-1].Close
+	// Use completed candles for RSI calculation (drop incomplete last candle)
+	completedCandles := candles[:len(candles)-1]
 	pnlPct := (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100
 
 	// 1. Stop loss
@@ -210,8 +212,8 @@ func (s *CryptoScalper) CheckExit(ctx context.Context, pos *ScalpPosition, curre
 	// 3. RSI exit (mean reverted)
 	//    Exit when RSI normalizes regardless of P&L.
 	//    Small RSI-exit losses (-0.5%) are better than holding to SL (-2.5%).
-	if len(candles) >= s.config.RSIPeriod+1 {
-		rsi := CalculateRSI(candles, s.config.RSIPeriod)
+	if len(completedCandles) >= s.config.RSIPeriod+1 {
+		rsi := CalculateRSI(completedCandles, s.config.RSIPeriod)
 		if rsi >= s.config.RSIExit {
 			return true, fmt.Sprintf("rsi_exit (RSI=%.1f, pnl=%.2f%%)", rsi, pnlPct), currentPrice
 		}
