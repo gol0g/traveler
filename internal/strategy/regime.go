@@ -70,13 +70,15 @@ func (rd *RegimeDetector) Detect(ctx context.Context) Regime {
 
 // RegimeInfo contains detailed regime detection results for display
 type RegimeInfo struct {
-	Regime    Regime  `json:"regime"`
-	Symbol    string  `json:"symbol"`
-	Price     float64 `json:"price"`
-	MA20      float64 `json:"ma20"`
-	MA50      float64 `json:"ma50"`
-	RSI14     float64 `json:"rsi14"`
-	MA20Slope float64 `json:"ma20_slope"`
+	Regime       Regime  `json:"regime"`
+	Symbol       string  `json:"symbol"`
+	Price        float64 `json:"price"`
+	PrevClose    float64 `json:"prev_close"`
+	DayChangePct float64 `json:"day_change_pct"` // % change from previous close
+	MA20         float64 `json:"ma20"`
+	MA50         float64 `json:"ma50"`
+	RSI14        float64 `json:"rsi14"`
+	MA20Slope    float64 `json:"ma20_slope"`
 }
 
 // DetectWithInfo returns regime along with benchmark indicator details
@@ -86,14 +88,25 @@ func (rd *RegimeDetector) DetectWithInfo(ctx context.Context) RegimeInfo {
 		return RegimeInfo{Regime: rd.Detect(ctx), Symbol: rd.symbol}
 	}
 	ind := CalculateIndicators(candles)
+	price := candles[len(candles)-1].Close
+	prevClose := 0.0
+	dayChangePct := 0.0
+	if len(candles) >= 2 {
+		prevClose = candles[len(candles)-2].Close
+		if prevClose > 0 {
+			dayChangePct = (price - prevClose) / prevClose * 100
+		}
+	}
 	return RegimeInfo{
-		Regime:    rd.Detect(ctx),
-		Symbol:    rd.symbol,
-		Price:     candles[len(candles)-1].Close,
-		MA20:      ind.MA20,
-		MA50:      ind.MA50,
-		RSI14:     ind.RSI14,
-		MA20Slope: ind.MA20Slope,
+		Regime:       rd.Detect(ctx),
+		Symbol:       rd.symbol,
+		Price:        price,
+		PrevClose:    prevClose,
+		DayChangePct: dayChangePct,
+		MA20:         ind.MA20,
+		MA50:         ind.MA50,
+		RSI14:        ind.RSI14,
+		MA20Slope:    ind.MA20Slope,
 	}
 }
 

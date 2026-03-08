@@ -282,6 +282,12 @@ func (s *PullbackStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 	volumeOK := volumePattern || !s.config.RequireVolumePattern
 	bouncingOK := bouncing || !s.config.RequireBouncing
 
+	// 낙하 중 진입 방지: 오늘 종가가 전일 종가보다 낮으면 아직 조정 진행 중 → 반등 확인 후 진입
+	closingHigher := today.Close >= yesterday.Close
+	if !closingHigher {
+		return nil, nil
+	}
+
 	if uptrendOK && touchedMA20 && hasReversalSign && volumeOK && bouncingOK && rsiOK {
 		signalType = SignalBuy
 		if s.config.RequireUptrend {

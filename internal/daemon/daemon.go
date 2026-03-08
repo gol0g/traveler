@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"traveler/internal/ai"
@@ -79,6 +80,11 @@ type Daemon struct {
 
 	// AI signal filter
 	aiClient *ai.GeminiClient
+
+	// Pre-scan regime info (shared with intraday)
+	regimeInfo strategy.RegimeInfo
+	vix        float64 // VIX index (US), 0 if unavailable
+	fearGreed  int     // Crypto Fear & Greed (0-100), 0 if unavailable
 
 	windDown chan struct{} // signal to stop intraday loop on shutdown
 
@@ -174,13 +180,23 @@ func (d *Daemon) Run() error {
 	}
 	log.Printf("[DAEMON] Market status: %s (%s: %s)", status.Reason, tzLabel, status.CurrentTimeET.Format("15:04"))
 
+	isSim := strings.HasPrefix(d.broker.Name(), "sim-")
+
 	if !status.IsOpen {
 		if !d.config.WaitForMarket {
+			if isSim {
+				log.Println("[DAEMON] Market closed (sim mode): checking positions for SL before exit...")
+				d.processSimStopLosses()
+			}
 			log.Println("[DAEMON] Market closed and WaitForMarket=false. Exiting.")
 			return d.shutdown("market_closed")
 		}
 
 		if status.TimeToOpen > d.config.MaxWaitTime {
+			if isSim {
+				log.Println("[DAEMON] Market closed (sim mode): checking positions for SL before exit...")
+				d.processSimStopLosses()
+			}
 			log.Printf("[DAEMON] Wait time too long (%s > %s). Exiting.",
 				FormatDuration(status.TimeToOpen), FormatDuration(d.config.MaxWaitTime))
 			return d.shutdown("wait_too_long")
@@ -300,6 +316,11 @@ func (d *Daemon) Run() error {
 		d.autoTrader.GetMonitor().SetTradeHistory(d.history, d.config.Market)
 	}
 
+	// Monitor에 Provider 연결 (ETF 시그널 역전 체크용)
+	if d.provider != nil {
+		d.autoTrader.GetMonitor().SetProvider(d.provider)
+	}
+
 	// 자본 추적 콜백 등록
 	if d.capital != nil {
 		d.autoTrader.GetMonitor().SetOnSell(func(investedAmount, sellAmount float64) {
@@ -398,8 +419,8 @@ func (d *Daemon) Run() error {
 		log.Printf("[DAEMON] Monitor-only mode: skipping scan, will only watch existing positions")
 	} else {
 	state := d.tracker.GetState()
-	if !d.config.ForceScan && state.TradeCount > 0 {
-		log.Printf("[DAEMON] Already traded today (%d trades). Skipping scan.", state.TradeCount)
+	if !d.config.ForceScan && (state.TradeCount > 0 || state.ScanDone) {
+		log.Printf("[DAEMON] Scan already done today (trades=%d, scanDone=%v). Skipping scan.", state.TradeCount, state.ScanDone)
 	} else {
 		if d.config.ForceScan {
 			log.Printf("[DAEMON] Force scan enabled (existing trades: %d). Running scan...", state.TradeCount)
@@ -415,6 +436,7 @@ func (d *Daemon) Run() error {
 			log.Printf("[DAEMON] Scan complete: %d signals found in %s",
 				len(d.preMarketSigs), scanResult.ScanTime.Round(time.Second))
 		}
+		d.tracker.MarkScanDone()
 	}
 	} // end !monitorOnly
 
@@ -621,7 +643,7 @@ type daemonScanResult struct {
 // adaptiveScan 적응형 멀티 전략 스캔
 func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 	var strategies []strategy.Strategy
-	var regimeInfo strategy.RegimeInfo
+	var regimeInfo strategy.RegimeInfo // local, saved to d.regimeInfo below
 	var activeStrats []string
 
 	// Capital tier 결정
@@ -655,13 +677,42 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		log.Printf("[DAEMON] Stock meta strategy: %s (bull=%v, sideways=%v, bear=%v)",
 			metaCfg.Name, metaCfg.Bull, metaCfg.Sideways, metaCfg.Bear)
 	}
-	log.Printf("[DAEMON] Regime: %s (benchmark=%s, price=%.2f, MA20=%.2f, RSI=%.1f), active=%v",
-		regimeInfo.Regime, regimeInfo.Symbol, regimeInfo.Price, regimeInfo.MA20, regimeInfo.RSI14, activeStrats)
+	log.Printf("[DAEMON] Regime: %s (benchmark=%s, price=%.2f, MA20=%.2f, RSI=%.1f, dayChg=%.1f%%), active=%v",
+		regimeInfo.Regime, regimeInfo.Symbol, regimeInfo.Price, regimeInfo.MA20, regimeInfo.RSI14, regimeInfo.DayChangePct, activeStrats)
+
+	// Save for intraday gate
+	d.regimeInfo = regimeInfo
+
+	// Fetch fear indicators for AI filter
+	d.vix = 0
+	d.fearGreed = 0
+	if !d.isCrypto() {
+		// VIX from Yahoo (^VIX) — global fear indicator for both US and KR
+		vixCandles, err := provider.NewYahooProvider().GetDailyCandles(d.ctx, "^VIX", 2)
+		if err == nil && len(vixCandles) > 0 {
+			d.vix = vixCandles[len(vixCandles)-1].Close
+			log.Printf("[DAEMON] VIX: %.1f", d.vix)
+		}
+	}
+	if d.isCrypto() {
+		// Crypto Fear & Greed
+		fg, err := provider.NewFearGreedClient().GetIndex(d.ctx)
+		if err == nil {
+			d.fearGreed = fg.Value
+			log.Printf("[DAEMON] Fear&Greed: %d (%s)", fg.Value, fg.Classification)
+		}
+	}
+
 	stratNames := make([]string, len(strategies))
 	for i, s := range strategies {
 		stratNames[i] = s.Name()
 	}
 	log.Printf("[DAEMON] Multi-strategy scan (%d strategies: %v)", len(strategies), stratNames)
+
+	// VIX 로깅 (하드 게이트는 스캔 후 필터링으로 적용)
+	if d.vix >= 30 {
+		log.Printf("[DAEMON] VIX=%.1f (>=30): HIGH FEAR — only inverse/bear ETF entries allowed", d.vix)
+	}
 
 	// 스캔 함수: 메타전략이 레짐 감지 + 전략 선택 + 시그널 선택을 모두 처리
 	scanFunc := func(ctx context.Context, stocks []model.Stock) ([]strategy.Signal, error) {
@@ -770,17 +821,53 @@ func (d *Daemon) adaptiveScan() (*daemonScanResult, error) {
 		return nil, err
 	}
 
+	// VIX 하드 게이트: VIX >= 30 → 인버스/bear ETF만 허용, 나머지 롱 차단
+	if d.vix >= 30 && len(result.Signals) > 0 {
+		var kept []strategy.Signal
+		for _, sig := range result.Signals {
+			// 인버스 ETF (114800=KODEX인버스, SQQQ, SOXS 등) 또는 bear 전략만 허용
+			isInverse := sig.Stock.Symbol == "114800" || sig.Stock.Symbol == "252670" ||
+				sig.Stock.Symbol == "SQQQ" || sig.Stock.Symbol == "SOXS"
+			isBearStrategy := strings.Contains(sig.Strategy, "bear") || strings.Contains(sig.Strategy, "inverse")
+			if isInverse || isBearStrategy {
+				kept = append(kept, sig)
+			} else {
+				log.Printf("[DAEMON] VIX=%.1f: blocked %s (%s) — only inverse/bear allowed", d.vix, sig.Stock.Symbol, sig.Strategy)
+			}
+		}
+		blocked := len(result.Signals) - len(kept)
+		if blocked > 0 {
+			log.Printf("[DAEMON] VIX fear gate: %d blocked, %d inverse/bear passed", blocked, len(kept))
+		}
+		result.Signals = kept
+	}
+
 	// AI signal filter + SL/TP optimization (after fundamentals, before sizing)
 	var aiFiltered int
 	var aiRejections []ai.AIRejection
 	if d.aiClient != nil && len(result.Signals) > 0 {
 		before := len(result.Signals)
 		regime := string(regimeInfo.Regime)
-		result.Signals, aiRejections = d.aiClient.FilterSignals(d.ctx, result.Signals, regime, d.config.Market)
+
+		// Build market context for AI risk assessment (token-efficient)
+		mktCtx := ai.MarketContext{
+			BenchmarkSymbol: regimeInfo.Symbol,
+			BenchmarkPrice:  regimeInfo.Price,
+			BenchmarkMA20:   regimeInfo.MA20,
+			BenchmarkRSI:    regimeInfo.RSI14,
+			IsMonday:        time.Now().Weekday() == time.Monday,
+			VIX:             d.vix,
+			FearGreed:       d.fearGreed,
+		}
+		result.Signals, aiRejections = d.aiClient.FilterSignals(d.ctx, result.Signals, regime, d.config.Market, mktCtx)
 		aiFiltered = before - len(result.Signals)
 
 		if len(result.Signals) > 0 {
+			beforeOpt := len(result.Signals)
 			result.Signals = d.aiClient.OptimizeGuides(d.ctx, result.Signals, regime, d.config.Market)
+			if blocked := beforeOpt - len(result.Signals); blocked > 0 {
+				aiFiltered += blocked
+			}
 		}
 	}
 
@@ -827,6 +914,96 @@ func (d *Daemon) checkStopConditions() (bool, string) {
 }
 
 // shutdown 종료 처리
+// processSimStopLosses checks sim positions for SL breaches and closes them.
+// Called when market is closed but positions may have breached SL during unmonitored time.
+func (d *Daemon) processSimStopLosses() {
+	dataDir := d.config.DataDir
+	if dataDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dataDir = filepath.Join(home, ".traveler")
+		}
+	}
+
+	planStore, err := trader.NewPlanStore(dataDir)
+	if err != nil {
+		log.Printf("[SIM-SL] Could not load plan store: %v", err)
+		return
+	}
+
+	positions, err := d.broker.GetPositions(d.ctx)
+	if err != nil {
+		log.Printf("[SIM-SL] Could not get positions: %v", err)
+		return
+	}
+
+	history, _ := trader.NewTradeHistory(dataDir)
+
+	log.Printf("[SIM-SL] Found %d positions, %d plans", len(positions), len(planStore.GetAll()))
+	for _, pos := range positions {
+		plan := planStore.Get(pos.Symbol)
+		if plan == nil || plan.StopLoss <= 0 {
+			log.Printf("[SIM-SL] %s: no plan or no SL, skipping", pos.Symbol)
+			continue
+		}
+
+		// Use provider directly for closing price (broker may fallback to avgCost after hours)
+		currentPrice := pos.CurrentPrice
+		if d.provider != nil {
+			candles, err := d.provider.GetDailyCandles(d.ctx, pos.Symbol, 2)
+			if err != nil {
+				log.Printf("[SIM-SL] %s: provider GetDailyCandles failed: %v", pos.Symbol, err)
+			} else if len(candles) > 0 {
+				provPrice := candles[len(candles)-1].Close
+				if provPrice > 0 && provPrice != pos.AvgCost {
+					currentPrice = provPrice
+					log.Printf("[SIM-SL] %s: provider price=%.0f", pos.Symbol, currentPrice)
+				}
+			}
+		} else {
+			log.Printf("[SIM-SL] %s: no provider available", pos.Symbol)
+		}
+
+		log.Printf("[SIM-SL] %s: price=%.0f, SL=%.0f, avgCost=%.0f", pos.Symbol, currentPrice, plan.StopLoss, pos.AvgCost)
+
+		if currentPrice > plan.StopLoss {
+			continue
+		}
+
+		log.Printf("[SIM-SL] %s: price ₩%.0f < SL ₩%.0f — closing position", pos.Symbol, currentPrice, plan.StopLoss)
+
+		result, err := d.broker.PlaceOrder(d.ctx, broker.Order{
+			Symbol:     pos.Symbol,
+			Side:       broker.OrderSideSell,
+			Type:       broker.OrderTypeLimit,
+			Quantity:   pos.Quantity,
+			LimitPrice: currentPrice,
+		})
+		if err != nil {
+			log.Printf("[SIM-SL] Failed to sell %s: %v", pos.Symbol, err)
+			continue
+		}
+
+		pnl := (currentPrice - pos.AvgCost) * pos.Quantity
+		log.Printf("[SIM-SL] SOLD %s x%.0f @ ₩%.0f (PnL: ₩%.0f) order=%s",
+			pos.Symbol, pos.Quantity, currentPrice, pnl, result.OrderID)
+
+		planStore.Delete(pos.Symbol)
+
+		if history != nil {
+			history.Append(trader.TradeRecord{
+				Market:   d.config.Market,
+				Symbol:   pos.Symbol,
+				Side:     "sell",
+				Quantity: pos.Quantity,
+				Price:    pos.CurrentPrice,
+				Strategy: plan.Strategy,
+				Reason:   "stop_loss",
+				PnL:     pnl,
+			})
+		}
+	}
+}
+
 func (d *Daemon) shutdown(reason string) error {
 	log.Printf("[DAEMON] Shutting down. Reason: %s", reason)
 
@@ -1130,6 +1307,32 @@ func (d *Daemon) runIntradayLoop() {
 		log.Printf("[INTRADAY] Regime=%s, proceeding with intraday ORB", regime)
 	}
 
+	// VIX 하드 게이트: VIX >= 30 → 장중 매매도 차단
+	if d.vix >= 30 {
+		log.Printf("[INTRADAY] VIX=%.1f (>=30): MARKET FEAR — skipping intraday", d.vix)
+		return
+	}
+
+	// 주식: 벤치마크 실시간 체크 — 전일 종가 대비 -1% 이상 하락 또는 MA20 아래면 dip buying 차단
+	if !d.isCrypto() && d.regimeInfo.Symbol != "" {
+		benchLive, err := d.broker.GetQuote(d.ctx, d.regimeInfo.Symbol)
+		if err == nil && benchLive > 0 && d.regimeInfo.Price > 0 {
+			changePct := (benchLive - d.regimeInfo.Price) / d.regimeInfo.Price * 100
+			if changePct < -1.0 {
+				log.Printf("[INTRADAY] Benchmark %s gap down %.1f%% (prev=%.0f, now=%.0f), skipping intraday",
+					d.regimeInfo.Symbol, changePct, d.regimeInfo.Price, benchLive)
+				return
+			}
+			if d.regimeInfo.MA20 > 0 && benchLive < d.regimeInfo.MA20 {
+				log.Printf("[INTRADAY] Benchmark %s below MA20 (now=%.0f < MA20=%.0f), skipping intraday",
+					d.regimeInfo.Symbol, benchLive, d.regimeInfo.MA20)
+				return
+			}
+			log.Printf("[INTRADAY] Benchmark %s OK (now=%.0f, chg=%.1f%%, MA20=%.0f), intraday enabled",
+				d.regimeInfo.Symbol, benchLive, changePct, d.regimeInfo.MA20)
+		}
+	}
+
 	// 1단계: 종목 초기화 (전일 OHLC 설정 — 구조적 타겟용)
 	log.Printf("[INTRADAY] Initializing %d symbols with previous close...", len(d.intradaySymbols))
 	for _, sym := range d.intradaySymbols {
@@ -1258,8 +1461,12 @@ func (d *Daemon) executeIntradaySignals() {
 
 	log.Printf("[INTRADAY] Found %d intraday signals", len(signals))
 
-	// 포지션 사이징 적용
-	sizer := trader.NewPositionSizer(d.config.Sizer)
+	// 포지션 사이징 적용 (intraday는 R/R 기준 완화 — 단기 매매 특성)
+	intradaySizerCfg := d.config.Sizer
+	if intradaySizerCfg.MinRiskReward > 1.2 {
+		intradaySizerCfg.MinRiskReward = 1.2
+	}
+	sizer := trader.NewPositionSizer(intradaySizerCfg)
 	sized := sizer.ApplyToSignals(signals)
 
 	if len(sized) == 0 {
@@ -1278,6 +1485,31 @@ func (d *Daemon) executeIntradaySignals() {
 			}
 		}
 		return
+	}
+
+	// AI 필터: 기술적 시그널을 Gemini로 리스크 평가
+	if d.aiClient != nil {
+		mktCtx := ai.MarketContext{
+			BenchmarkSymbol: d.regimeInfo.Symbol,
+			BenchmarkPrice:  d.regimeInfo.Price,
+			BenchmarkMA20:   d.regimeInfo.MA20,
+			BenchmarkRSI:    d.regimeInfo.RSI14,
+			IsMonday:        time.Now().Weekday() == time.Monday,
+			VIX:             d.vix,
+			FearGreed:       d.fearGreed,
+		}
+		regime := string(d.regimeInfo.Regime)
+		filtered, rejections := d.aiClient.FilterSignals(d.ctx, sized, regime, d.config.Market, mktCtx)
+		for _, rej := range rejections {
+			log.Printf("[INTRADAY] AI REJECTED %s: %s", rej.Symbol, rej.Reason)
+		}
+		if len(rejections) > 0 {
+			log.Printf("[INTRADAY] AI filter: %d passed, %d rejected", len(filtered), len(rejections))
+		}
+		sized = filtered
+		if len(sized) == 0 {
+			return
+		}
 	}
 
 	// AutoTrader로 실행

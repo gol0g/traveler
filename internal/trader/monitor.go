@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
 	"traveler/internal/broker"
+	"traveler/internal/provider"
 )
 
 // ActivePosition 활성 포지션 (진입 정보 포함)
@@ -45,6 +47,7 @@ type Monitor struct {
 	history      *TradeHistory
 	market       string // "us" or "kr"
 	onSell       SellCallback
+	provider     provider.Provider // ETF 시그널 역전 체크용
 
 	mu        sync.RWMutex
 	positions map[string]*ActivePosition
@@ -65,6 +68,11 @@ func NewMonitor(b broker.Broker, executor *Executor, cfg Config, planStore *Plan
 func (m *Monitor) SetTradeHistory(h *TradeHistory, market string) {
 	m.history = h
 	m.market = market
+}
+
+// SetProvider sets the data provider for signal-based exits (ETF SMA checks)
+func (m *Monitor) SetProvider(p provider.Provider) {
+	m.provider = p
 }
 
 // SetOnSell 매도 콜백 설정 (자본 추적용)
@@ -245,6 +253,35 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			continue
 		}
 
+		// Breakeven stop: 수익이 리스크(entry-SL)의 50% 이상이면 SL을 본전+수수료로 올림
+		// → TP에 못 미쳐서 되돌아와도 최소한 손실은 방지
+		if !active.Target1Hit && !strings.Contains(active.Strategy, "etf-momentum") {
+			risk := active.EntryPrice - active.StopLoss
+			if risk > 0 {
+				unrealizedPct := (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+				threshold := risk * 0.5 // 리스크의 50% 수익 시
+				if currentPrice >= active.EntryPrice+threshold {
+					// 수수료 감안한 본전 라인 (편도 0.25% × 2 = 0.5%)
+					commBuffer := active.EntryPrice * 0.005
+					breakevenSL := active.EntryPrice + commBuffer
+					if breakevenSL > active.StopLoss {
+						m.mu.Lock()
+						if pos, ok := m.positions[symbol]; ok {
+							pos.StopLoss = breakevenSL
+						}
+						m.mu.Unlock()
+						active.StopLoss = breakevenSL
+
+						if m.planStore != nil {
+							m.planStore.UpdateStopLoss(symbol, breakevenSL)
+						}
+						log.Printf("[BREAKEVEN] %s: +%.1f%% → SL raised to breakeven %.2f (was %.2f)",
+							symbol, unrealizedPct, breakevenSL, active.EntryPrice-commBuffer)
+					}
+				}
+			}
+		}
+
 		// Post-T1: T2 profit taking + trailing stop protection
 		if active.Target1Hit {
 			// T2 check always applies (fixed profit target)
@@ -406,6 +443,13 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			continue
 		}
 
+		// ETF 시그널 역전 체크: SMA200 이탈 시 청산 (가격 기반 SL 대신)
+		if m.provider != nil && strings.Contains(active.Strategy, "etf-momentum") {
+			if m.checkETFSignalReversal(ctx, symbol, active, currentPrice) {
+				continue
+			}
+		}
+
 		// Time stop: 최대 보유일 초과
 		if active.MaxHoldDays > 0 && !active.EntryTime.IsZero() {
 			// 크립토는 주말 포함 달력일 기준, 주식은 거래일 기준
@@ -425,6 +469,68 @@ func (m *Monitor) CheckPositions(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// checkETFSignalReversal checks if the ETF timing signal has reversed.
+// For KR timing (069500/114800): exit when KODEX200 crosses SMA200 against position.
+// For GEM (SPY/VXUS/SHY): exit when 12-month momentum ranking changes.
+// Returns true if position was sold.
+func (m *Monitor) checkETFSignalReversal(ctx context.Context, symbol string, active *ActivePosition, currentPrice float64) bool {
+	// KR ETF timing: KODEX200 vs SMA200
+	if symbol == "069500" || symbol == "114800" {
+		benchCandles, err := m.provider.GetDailyCandles(ctx, "069500", 210)
+		if err != nil || len(benchCandles) < 200 {
+			return false
+		}
+		benchPrice := benchCandles[len(benchCandles)-1].Close
+		sma200 := 0.0
+		for i := len(benchCandles) - 200; i < len(benchCandles); i++ {
+			sma200 += benchCandles[i].Close
+		}
+		sma200 /= 200
+
+		// 069500 보유 중인데 SMA200 아래로 → 매도
+		if symbol == "069500" && benchPrice < sma200 {
+			pnlPct := (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+			reason := fmt.Sprintf("signal_reversal: KODEX200 %.0f < SMA200 %.0f (P&L: %.1f%%)", benchPrice, sma200, pnlPct)
+			log.Printf("[ETF-REVERSAL] %s %s", symbol, reason)
+			m.executeSell(ctx, symbol, active.Quantity, reason, currentPrice)
+			return true
+		}
+		// 114800(인버스) 보유 중인데 SMA200 위로 → 매도
+		if symbol == "114800" && benchPrice > sma200 {
+			pnlPct := (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+			reason := fmt.Sprintf("signal_reversal: KODEX200 %.0f > SMA200 %.0f (P&L: %.1f%%)", benchPrice, sma200, pnlPct)
+			log.Printf("[ETF-REVERSAL] %s %s", symbol, reason)
+			m.executeSell(ctx, symbol, active.Quantity, reason, currentPrice)
+			return true
+		}
+	}
+
+	// US GEM: SPY/VXUS/SHY — 12-month momentum 재계산은 비용이 크므로
+	// 간이 체크: 보유 ETF가 SMA200 아래로 떨어지면 청산
+	if symbol == "SPY" || symbol == "VXUS" || symbol == "SHY" {
+		candles, err := m.provider.GetDailyCandles(ctx, symbol, 210)
+		if err != nil || len(candles) < 200 {
+			return false
+		}
+		price := candles[len(candles)-1].Close
+		sma200 := 0.0
+		for i := len(candles) - 200; i < len(candles); i++ {
+			sma200 += candles[i].Close
+		}
+		sma200 /= 200
+
+		if price < sma200*0.98 { // 2% 마진 (whipsaw 방지)
+			pnlPct := (currentPrice - active.EntryPrice) / active.EntryPrice * 100
+			reason := fmt.Sprintf("signal_reversal: %s %.2f < SMA200 %.2f (P&L: %.1f%%)", symbol, price, sma200, pnlPct)
+			log.Printf("[ETF-REVERSAL] %s %s", symbol, reason)
+			m.executeSell(ctx, symbol, active.Quantity, reason, currentPrice)
+			return true
+		}
+	}
+
+	return false
 }
 
 // recordSellFailure 매도 실패 카운트 증가

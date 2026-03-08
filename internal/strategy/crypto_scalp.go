@@ -64,7 +64,7 @@ func DefaultScalpConfig() ScalpConfig {
 
 		RSIPeriod: 7,
 		RSIEntry:  30.0, // optimized from 25 → 30 (more opportunities)
-		RSIExit:   60.0, // optimized from 50 → 60 (capture larger mean-reversion)
+		RSIExit:   65.0, // raised from 60 → 65 (hold longer for larger moves)
 
 		VolumePeriod: 20,
 		VolumeMin:    1.5,
@@ -84,16 +84,17 @@ func DefaultScalpConfig() ScalpConfig {
 		CommissionPct: 0.05,
 
 		Pairs: []string{
-			// Top 8 by backtest PnL (90d, 15min, EMA50)
-			// Net +35.6%, WR 70%, PF 2.13, MDD 5.4%, Sharpe 11.2
-			"KRW-SOL",  // +7.16%, PF 3.12
-			"KRW-AVAX", // +7.42%, PF 2.55
-			"KRW-LINK", // +7.66%, PF 3.30
-			"KRW-ETH",  // +3.78%, PF 2.47
-			"KRW-XRP",  // +2.78%, PF 5.13
-			"KRW-ADA",  // +3.67%, PF 1.48
-			"KRW-DOGE", // +1.64%, PF 1.24
-			"KRW-TRX",  // +1.49%, PF 1.60
+			// DCA 보유 코인도 포함: preBuyQty delta로 자기 수량만 매도 (Bug #016)
+			// 90일 Upbit 15분봉 백테스트 기준 (2026-03-08)
+			"KRW-ETH",  // 7건, WR 86%, +4.9%, PF 5.26
+			"KRW-LINK", // 4건, WR 75%, +2.7%, PF 4.19
+			"KRW-SOL",  // 2건, WR 100%, +2.5%
+			"KRW-AVAX", // 2건, WR 100%, +1.5%
+			"KRW-SUI",  // 6건, WR 67%, +1.4%, PF 1.50 (신규 추가)
+			"KRW-XRP",  // 4건, WR 50%, +0.9%, PF 3.85
+			"KRW-ADA",  // 0건 (약세장), 상승장 대비 유지
+			"KRW-DOGE", // 0건 (약세장), 상승장 대비 유지
+			"KRW-TRX",  // 0건 (약세장), 상승장 대비 유지
 		},
 	}
 }
@@ -114,16 +115,17 @@ type ScalpSignal struct {
 
 // ScalpPosition tracks an active scalping position.
 type ScalpPosition struct {
-	Symbol     string    `json:"symbol"`
-	EntryPrice float64   `json:"entry_price"`
-	Quantity   float64   `json:"quantity"`
-	AmountKRW  float64   `json:"amount_krw"`
-	EntryTime  time.Time `json:"entry_time"`
-	EntryBar   int       `json:"entry_bar"` // candle index at entry
-	StopLoss   float64   `json:"stop_loss"`
-	TakeProfit float64   `json:"take_profit"`
-	Strategy   string    `json:"strategy"` // "rsi-mean-revert"
-	RSIAtEntry float64   `json:"rsi_at_entry"`
+	Symbol       string    `json:"symbol"`
+	EntryPrice   float64   `json:"entry_price"`
+	Quantity     float64   `json:"quantity"`
+	AmountKRW    float64   `json:"amount_krw"`
+	EntryTime    time.Time `json:"entry_time"`
+	EntryBar     int       `json:"entry_bar"` // candle index at entry
+	StopLoss     float64   `json:"stop_loss"`
+	TakeProfit   float64   `json:"take_profit"`
+	Strategy     string    `json:"strategy"` // "rsi-mean-revert"
+	RSIAtEntry   float64   `json:"rsi_at_entry"`
+	BreakevenHit bool      `json:"breakeven_hit,omitempty"` // breakeven stop 활성화 여부
 }
 
 // ScalpResult summarizes one scan cycle.
@@ -194,6 +196,17 @@ func (s *CryptoScalper) CheckExit(ctx context.Context, pos *ScalpPosition, curre
 		return true, fmt.Sprintf("take_profit (+%.2f%%)", pnlPct), currentPrice
 	}
 
+	// 2.5. Breakeven stop: 수익이 SL의 50% 도달 시 활성화, 이후 본전 아래로 내려오면 청산
+	breakevenThreshold := s.config.StopLossPct * 0.5 // SL 2.5% → 1.25% 수익 시 활성
+	commPct := 0.1                                    // 왕복 수수료 0.1%
+	breakevenPrice := pos.EntryPrice * (1 + commPct/100)
+	if !pos.BreakevenHit && pnlPct >= breakevenThreshold {
+		pos.BreakevenHit = true
+	}
+	if pos.BreakevenHit && currentPrice <= breakevenPrice {
+		return true, fmt.Sprintf("breakeven_stop (%.2f%%)", pnlPct), currentPrice
+	}
+
 	// 3. RSI exit (mean reverted)
 	//    Exit when RSI normalizes regardless of P&L.
 	//    Small RSI-exit losses (-0.5%) are better than holding to SL (-2.5%).
@@ -220,21 +233,31 @@ func (s *CryptoScalper) analyze(ctx context.Context, symbol string) (*ScalpSigna
 		return nil, fmt.Errorf("%s: %w", symbol, err)
 	}
 
-	if len(candles) < s.config.EMAPeriod+1 {
+	if len(candles) < s.config.EMAPeriod+2 {
 		return nil, nil // insufficient data
 	}
 
-	latest := candles[len(candles)-1]
+	// Use second-to-last candle (last COMPLETED candle) for signal analysis.
+	// Upbit API returns current in-progress candle as last element,
+	// which has partial volume and incomplete OHLC.
+	completedCandles := candles[:len(candles)-1]
+	latest := completedCandles[len(completedCandles)-1]
 	price := latest.Close
 
+	// 0. Minimum price filter — 저가 코인은 틱사이즈(₩1) 영향이 너무 커서 스캘핑 부적합
+	// ₩1,000 미만: 틱 1원 = 0.1%+, RSI가 가격 변동 없이 극단값 왕복 → 수수료만 손실
+	if price < 1000 {
+		return nil, nil
+	}
+
 	// 1. RSI(7) check — must be oversold
-	rsi := CalculateRSI(candles, s.config.RSIPeriod)
+	rsi := CalculateRSI(completedCandles, s.config.RSIPeriod)
 	if rsi >= s.config.RSIEntry {
 		return nil, nil
 	}
 
 	// 2. Volume filter — current candle volume must exceed average
-	avgVol := CalculateAvgVolume(candles[:len(candles)-1], s.config.VolumePeriod)
+	avgVol := CalculateAvgVolume(completedCandles[:len(completedCandles)-1], s.config.VolumePeriod)
 	currentVol := float64(latest.Volume)
 	volRatio := 0.0
 	if avgVol > 0 {
@@ -247,13 +270,13 @@ func (s *CryptoScalper) analyze(ctx context.Context, symbol string) (*ScalpSigna
 	// 3. EMA trend filter — price must be above EMA
 	//    EMA50 on 15min = 12.5h lookback — best backtest result (Net +29.8%, PF 1.86)
 	//    Tested EMA20 (-4.2%) and no-EMA (-31%): EMA50 is optimal.
-	ema := CalculateEMA(candles, s.config.EMAPeriod)
+	ema := CalculateEMA(completedCandles, s.config.EMAPeriod)
 	if ema <= 0 || price <= ema {
 		return nil, nil
 	}
 
 	// 4. Bollinger Band lower touch — additional confirmation
-	bbUpper, bbLower, _ := CalculateBollingerBands(candles, int(s.config.BBPeriod), s.config.BBStdDev)
+	bbUpper, bbLower, _ := CalculateBollingerBands(completedCandles, int(s.config.BBPeriod), s.config.BBStdDev)
 	nearBBLower := price <= bbLower*1.005 // within 0.5% of lower band
 
 	// Calculate signal strength (0-100)

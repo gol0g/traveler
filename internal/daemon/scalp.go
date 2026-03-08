@@ -191,8 +191,8 @@ func (d *ScalpDaemon) scanAndExecute() {
 		return
 	}
 
-	// Check broker positions to detect coins held by other daemons (crypto/DCA)
-	otherDaemonSymbols := d.getOtherDaemonSymbols(positions)
+	// Note: preBuyQty delta tracking handles position isolation per-daemon.
+	// No need to skip DCA-held coins — scalp's sell uses its own tracked quantity.
 
 	result, err := d.scalper.Scan(d.ctx, positions)
 	if err != nil {
@@ -216,11 +216,6 @@ func (d *ScalpDaemon) scanAndExecute() {
 			continue
 		}
 
-		// Skip coins held by other daemons to avoid position conflicts
-		if otherDaemonSymbols[sig.Symbol] {
-			log.Printf("[SCALP] %s skipped: held by another daemon", sig.Symbol)
-			continue
-		}
 
 		err := d.executeBuy(sig)
 		if err != nil {
@@ -390,17 +385,19 @@ func (d *ScalpDaemon) executeSell(pos *strategy.ScalpPosition, exitPrice float64
 		return fmt.Errorf("place sell: %w", err)
 	}
 
-	// Calculate PnL
+	// Calculate PnL (매수+매도 수수료 모두 차감)
 	grossPnL := (exitPrice - pos.EntryPrice) * pos.Quantity
+	buyCommission := pos.EntryPrice * pos.Quantity * d.config.CommissionPct / 100.0
 	sellCommission := exitPrice * pos.Quantity * d.config.CommissionPct / 100.0
-	netPnL := grossPnL - sellCommission
+	totalCommission := buyCommission + sellCommission
+	netPnL := grossPnL - totalCommission
 
 	isWin := netPnL > 0
 	pnlPct := (exitPrice - pos.EntryPrice) / pos.EntryPrice * 100
 	holdDuration := time.Since(pos.EntryTime).Round(time.Minute)
 
-	log.Printf("[SCALP] CLOSED %s: pnl=₩%.0f (%.2f%%), net=₩%.0f, hold=%s, reason=%s",
-		pos.Symbol, grossPnL, pnlPct, netPnL, holdDuration, reason)
+	log.Printf("[SCALP] CLOSED %s: pnl=₩%.0f (%.2f%%), comm=₩%.0f, net=₩%.0f, hold=%s, reason=%s",
+		pos.Symbol, grossPnL, pnlPct, totalCommission, netPnL, holdDuration, reason)
 
 	// Update stats
 	d.stateMu.Lock()
@@ -409,12 +406,12 @@ func (d *ScalpDaemon) executeSell(pos *strategy.ScalpPosition, exitPrice float64
 	d.state.DailyStats.Trades++
 	d.state.DailyStats.GrossPnL += grossPnL
 	d.state.DailyStats.NetPnL += netPnL
-	d.state.DailyStats.Commission += sellCommission
+	d.state.DailyStats.Commission += totalCommission
 
 	d.state.TotalStats.TotalTrades++
 	d.state.TotalStats.TotalGrossPnL += grossPnL
 	d.state.TotalStats.TotalNetPnL += netPnL
-	d.state.TotalStats.TotalCommission += sellCommission
+	d.state.TotalStats.TotalCommission += totalCommission
 
 	if isWin {
 		d.state.DailyStats.Wins++

@@ -662,7 +662,8 @@ func (c *Client) getDomesticBalance(ctx context.Context) (*broker.AccountBalance
 		balance.BuyingPower = d2Cash
 
 		totalStockValue := parseFloat(summary.SCTS_EVLU_AMT)
-		balance.TotalEquity = d2Cash + totalStockValue
+		// T+0 현금 + 주식평가로 일관성 유지 (D+2 예수금 사용 시 매수 당일 PnL 왜곡)
+		balance.TotalEquity = balance.CashBalance + totalStockValue
 	}
 
 	return balance, nil

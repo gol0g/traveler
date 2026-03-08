@@ -80,6 +80,14 @@ func (d *DCADaemon) Run() error {
 			log.Printf("[DCA] Cycle #%d complete: F&G=%d (%s), mult=%.2fx, spent=₩%.0f, buys=%d, sells=%d, rebalanced=%v",
 				result.CycleNumber, result.FearGreed, result.FGLabel, result.Multiplier,
 				result.TotalSpent, len(result.Buys), len(result.Sells), result.Rebalanced)
+
+			// Check restore signal: F&G recovered from extreme fear
+			if d.config.ReducedMode && result.FearGreed >= d.config.RestoreFGThreshold {
+				log.Println("[DCA] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+				log.Printf("[DCA] RESTORE SIGNAL: F&G=%d — Extreme Fear 탈출!", result.FearGreed)
+				log.Printf("[DCA] 기본금액 ₩%.0f → ₩%.0f 원복을 권장합니다", d.config.BaseDCAAmount, d.config.OriginalAmount)
+				log.Println("[DCA] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+			}
 		}
 		log.Println("[DCA] ========== DCA Cycle End ==========")
 

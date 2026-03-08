@@ -6,8 +6,8 @@
 #   make deploy-pi     — Pi로 빌드 + 배포
 #   make update-pi     — Pi 바이너리만 업데이트
 
-PI_HOST ?= raspberrypi.local
-PI_USER ?= pi
+PI_HOST ?= 100.78.139.68
+PI_USER ?= junghyun
 
 .PHONY: all windows linux-arm64 deploy-pi update-pi clean
 

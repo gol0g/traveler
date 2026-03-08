@@ -30,6 +30,7 @@ type Order struct {
 	Amount     float64 // Upbit 시장가 매수 시 KRW 금액
 	LimitPrice float64 // limit 주문시 가격
 	StopPrice  float64 // stop loss 가격 (참고용)
+	ReduceOnly bool    // Futures 전용: 포지션 청산 주문 (기존 브로커는 무시)
 }
 
 // OrderResult 주문 결과

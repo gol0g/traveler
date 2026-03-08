@@ -173,8 +173,13 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/dca/status", s.handleDCAStatus)
 	mux.HandleFunc("/api/dca/feargreed", s.handleDCAFearGreed)
 	mux.HandleFunc("/api/scalp/status", s.handleScalpStatus)
+	mux.HandleFunc("/api/binance-scalp/status", s.handleBinanceScalpStatus)
+	mux.HandleFunc("/api/binance-arb/status", s.handleBinanceArbStatus)
+	mux.HandleFunc("/api/btc-futures/status", s.handleBTCFuturesStatus)
+	mux.HandleFunc("/api/btc-futures/chart-data", s.handleBTCFuturesChartData)
 	mux.HandleFunc("/api/kr-dca/status", s.handleKRDCAStatus)
 	mux.HandleFunc("/api/portfolio/overview", s.handlePortfolioOverview)
+	mux.HandleFunc("/api/collector/status", s.handleCollectorStatus)
 
 	// Static files (no-cache to prevent stale JS)
 	staticFS, err := fs.Sub(staticFiles, "static")

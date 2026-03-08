@@ -47,6 +47,11 @@ type Config struct {
 
 	ExtGreedSellPct float64 // sell % of position in extreme greed (0.05)
 
+	// Capital conservation: reduce base amount during extreme fear, signal when safe to restore
+	ReducedMode        bool    // true = base amount was reduced for capital conservation
+	OriginalAmount     float64 // original base amount to restore to
+	RestoreFGThreshold int     // F&G >= this value triggers restore signal (default: 25)
+
 	// Profit-taking tiers (sorted by PctThreshold ascending)
 	TakeProfitEnabled bool
 	TakeProfitTiers   []TakeProfitTier
@@ -64,8 +69,13 @@ func DefaultConfig() Config {
 	return Config{
 		Interval:       24 * time.Hour,
 		DCATimeKST:     "09:00",
-		BaseDCAAmount:  50000,
+		BaseDCAAmount:  20000, // Reduced from 50000 for capital conservation during extreme fear
 		MinOrderAmount: 5000,
+
+		// Restore signal: when F&G recovers above this, signal to restore original amount
+		ReducedMode:        true,
+		OriginalAmount:     50000,
+		RestoreFGThreshold: 25, // Out of Extreme Fear
 		Targets: []AssetTarget{
 			{Symbol: "KRW-BTC", TargetPct: 0.40},
 			{Symbol: "KRW-ETH", TargetPct: 0.20},
@@ -129,6 +139,8 @@ type DCAStatus struct {
 	NextDCATime       time.Time      `json:"next_dca_time"`
 	LastDCATime       time.Time      `json:"last_dca_time"`
 	TotalInvested     float64        `json:"total_invested"`
+	TotalSold         float64        `json:"total_sold"`
+	RealizedPnL       float64        `json:"realized_pnl"`
 	CurrentValue      float64        `json:"current_value"`
 	UnrealizedPnL     float64        `json:"unrealized_pnl"`
 	UnrealizedPct     float64        `json:"unrealized_pct"`
@@ -136,6 +148,11 @@ type DCAStatus struct {
 	Assets            []AssetStatus  `json:"assets"`
 	TotalDCACycles    int            `json:"total_dca_cycles"`
 	History           []DCAHistoryEntry `json:"history"`
+
+	// Capital conservation restore signal
+	ReducedMode    bool   `json:"reduced_mode,omitempty"`
+	RestoreSignal  bool   `json:"restore_signal,omitempty"`
+	RestoreMessage string `json:"restore_message,omitempty"`
 }
 
 // AssetStatus shows current state of a DCA asset
@@ -423,12 +440,15 @@ func (e *Engine) GetStatus(ctx context.Context) *DCAStatus {
 		NextDCATime:       state.NextDCATime,
 		LastDCATime:       state.LastDCATime,
 		TotalInvested:     state.TotalInvested,
+		TotalSold:         state.TotalSold,
+		RealizedPnL:       state.RealizedPnL,
 		TotalDCACycles:    state.TotalDCACycles,
 		History:           state.History,
 	}
 
 	// Build asset statuses
 	var totalCurrentValue float64
+	var totalAssetInvested float64 // sum of asset-level invested (accurate, sells deducted)
 	for _, target := range e.config.Targets {
 		a := state.Assets[target.Symbol]
 		as := AssetStatus{
@@ -440,6 +460,7 @@ func (e *Engine) GetStatus(ctx context.Context) *DCAStatus {
 			as.TotalInvested = a.TotalInvested
 			as.AvgCost = a.AvgCost
 			as.Quantity = a.TotalQuantity
+			totalAssetInvested += a.TotalInvested
 
 			// Fetch current price
 			candles, err := e.provider.GetDailyCandles(ctx, target.Symbol, 1)
@@ -465,10 +486,25 @@ func (e *Engine) GetStatus(ctx context.Context) *DCAStatus {
 		}
 	}
 
+	// Use asset-level sum (accurate) instead of state.TotalInvested (inflated by sell bug)
+	status.TotalInvested = totalAssetInvested
 	status.CurrentValue = totalCurrentValue
-	status.UnrealizedPnL = totalCurrentValue - state.TotalInvested
-	if state.TotalInvested > 0 {
-		status.UnrealizedPct = status.UnrealizedPnL / state.TotalInvested * 100
+	status.UnrealizedPnL = totalCurrentValue - totalAssetInvested
+	if totalAssetInvested > 0 {
+		status.UnrealizedPct = status.UnrealizedPnL / totalAssetInvested * 100
+	}
+
+	// Check restore signal
+	if e.config.ReducedMode {
+		status.ReducedMode = true
+		if fgData != nil && fgData.Value >= e.config.RestoreFGThreshold {
+			status.RestoreSignal = true
+			status.RestoreMessage = fmt.Sprintf(
+				"F&G %d (%s) — Extreme Fear 탈출. DCA 기본금액 ₩%.0f → ₩%.0f 원복 권장",
+				fgData.Value, fgData.Classification,
+				e.config.BaseDCAAmount, e.config.OriginalAmount,
+			)
+		}
 	}
 
 	return status

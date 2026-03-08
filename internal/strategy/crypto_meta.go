@@ -37,13 +37,13 @@ func NewCryptoMetaStrategy(p provider.Provider, capital ...float64) *CryptoMetaS
 	tier := GetCapitalTier("crypto", cap)
 
 	if tier == "btc-only" {
-		// 소액: BTC 트렌드 팔로잉만 — 모든 레짐에서 동일
+		// 소액: BTC 중심, 레짐별 전략 분리
 		trend := NewCryptoTrendStrategy(p)
 		return &CryptoMetaStrategy{
 			regime:   NewRegimeDetector(p),
 			bull:     []Strategy{trend},
-			sideways: []Strategy{trend},
-			bear:     []Strategy{trend},
+			sideways: []Strategy{NewRSIContrarianStrategy(p, 25), NewWBottomStrategy(p)},
+			bear:     []Strategy{NewRSIContrarianStrategy(p, 20)},
 		}
 	}
 

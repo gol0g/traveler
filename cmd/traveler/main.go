@@ -23,6 +23,7 @@ import (
 	"traveler/internal/analyzer"
 	"traveler/internal/backtest"
 	"traveler/internal/broker"
+	binanceBroker "traveler/internal/broker/binance"
 	"traveler/internal/dca"
 	"traveler/internal/broker/kis"
 	"traveler/internal/broker/sim"
@@ -81,6 +82,12 @@ var (
 	scalpAmount     float64 // 스캘핑 1회 매수 금액 (KRW)
 	krDCAMode       bool    // KR 주식 DCA 모드
 	krDCAShares     int     // KR DCA 기본 매수 주수
+	binanceScalpMode bool   // Binance Futures 숏 스캘핑 모드
+	binanceAmount   float64 // Binance 1회 매매 금액 (USDT)
+	binanceArbMode  bool    // Binance 펀딩비 차익거래 모드
+	binanceArbCap   float64 // 차익거래 최대 자본 (USDT)
+	btcFuturesMode  bool    // BTC Futures 펀딩레이트 롱 전략
+	btcFuturesAmt   float64 // BTC Futures 1회 매매 금액 (USDT)
 )
 
 func main() {
@@ -142,6 +149,12 @@ Examples:
 	rootCmd.Flags().Float64Var(&scalpAmount, "scalp-amount", 50000, "scalp order amount in KRW per trade")
 	rootCmd.Flags().BoolVar(&krDCAMode, "kr-dca", false, "KR stock DCA mode (KODEX 200 weekly)")
 	rootCmd.Flags().IntVar(&krDCAShares, "kr-dca-shares", 1, "KR DCA base shares per cycle")
+	rootCmd.Flags().BoolVar(&binanceScalpMode, "binance-scalp", false, "Binance Futures short scalping mode")
+	rootCmd.Flags().Float64Var(&binanceAmount, "binance-amount", 80, "Binance short scalp order amount in USDT per trade")
+	rootCmd.Flags().BoolVar(&binanceArbMode, "binance-arb", false, "Binance funding rate arbitrage mode")
+	rootCmd.Flags().Float64Var(&binanceArbCap, "binance-arb-cap", 150, "Max USDT capital for funding rate arb")
+	rootCmd.Flags().BoolVar(&btcFuturesMode, "btc-futures", false, "BTC Futures funding-rate long strategy")
+	rootCmd.Flags().Float64Var(&btcFuturesAmt, "btc-futures-amount", 80, "BTC Futures order amount in USDT")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -198,6 +211,21 @@ func run(cmd *cobra.Command, args []string) error {
 	// KR DCA mode - KR stock weekly DCA
 	if daemonMode && krDCAMode {
 		return runKRDCAMode(cfg)
+	}
+
+	// BTC Futures funding-rate long strategy
+	if daemonMode && btcFuturesMode {
+		return runBTCFuturesMode()
+	}
+
+	// Binance funding rate arbitrage
+	if daemonMode && binanceArbMode {
+		return runBinanceArbMode()
+	}
+
+	// Binance Futures short scalping
+	if daemonMode && binanceScalpMode {
+		return runBinanceScalpMode()
 	}
 
 	// Scalp mode - crypto scalping
@@ -364,6 +392,20 @@ func setupLogging(dir string) (*os.File, error) {
 }
 
 func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
+	// Ensure .env is loaded for all daemon modes (nohup, systemd, etc.)
+	loadEnvFile()
+	// Refresh KIS credentials from env (may not have been set at initial config load)
+	if key := os.Getenv("KIS_KR_APP_KEY"); key != "" && cfg.KIS.Domestic.AppKey == "" {
+		cfg.KIS.Domestic.AppKey = key
+		cfg.KIS.Domestic.AppSecret = os.Getenv("KIS_KR_APP_SECRET")
+		cfg.KIS.Domestic.AccountNo = os.Getenv("KIS_KR_ACCOUNT_NO")
+	}
+	if key := os.Getenv("KIS_APP_KEY"); key != "" && cfg.KIS.AppKey == "" {
+		cfg.KIS.AppKey = key
+		cfg.KIS.AppSecret = os.Getenv("KIS_APP_SECRET")
+		cfg.KIS.AccountNo = os.Getenv("KIS_ACCOUNT_NO")
+	}
+
 	isCrypto := marketFlag == "crypto"
 	isKR := marketFlag == "kr"
 	marketLabel := "US"
@@ -522,6 +564,7 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 		}
 		server := web.NewServer(cfg, p, accountBalance, universe, webKISBroker, resolvedDir)
 		// KR market
+		var daemonKRProvider provider.Provider
 		if cfg.KIS.Domestic.AppKey != "" {
 			krCreds := kis.Credentials{
 				AppKey:    cfg.KIS.Domestic.AppKey,
@@ -529,9 +572,9 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 				AccountNo: cfg.KIS.Domestic.AccountNo,
 			}
 			krBroker := kis.NewDomesticClient(krCreds)
-			krProvider := provider.NewKISProvider(krCreds)
+			daemonKRProvider = provider.NewKISProvider(krCreds)
 			if krBroker.IsReady() {
-				server.SetKoreanMarket(krBroker, krProvider)
+				server.SetKoreanMarket(krBroker, daemonKRProvider)
 				log.Printf("[DAEMON] KR market connected for web UI")
 			}
 		}
@@ -547,7 +590,7 @@ func runDaemonMode(cfg *config.Config, p *provider.FallbackProvider) error {
 			server.SetAIClient(aiClient)
 		}
 		// 모의투자 sim 디렉토리가 있으면 SimBroker 등록
-		registerSimMarkets(server, p, resolvedDir)
+		registerSimMarkets(server, p, daemonKRProvider, resolvedDir)
 		go func() {
 			if err := server.Start(webPort); err != nil {
 				log.Printf("[DAEMON] Web server error: %v", err)
@@ -785,6 +828,172 @@ func runScalpMode() error {
 	return scalpDaemon.Run()
 }
 
+func runBinanceScalpMode() error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER BINANCE SHORT SCALP - Futures RSI Overbought")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	resolvedDir := resolveDataDir()
+	loadEnvFile()
+
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	log.Printf("[BSCALP] Data directory: %s", resolvedDir)
+
+	// Binance Futures broker
+	cfg := strategy.DefaultShortScalpConfig()
+	if binanceAmount > 0 {
+		cfg.OrderAmountUSDT = binanceAmount
+	}
+
+	bClient := binanceBroker.NewClient(cfg.Leverage)
+	if !bClient.IsReady() {
+		return fmt.Errorf("Binance API credentials required (set BINANCE_API_KEY/BINANCE_SECRET_KEY)")
+	}
+
+	bProvider := provider.NewBinanceProvider()
+
+	fmt.Printf(" Exchange:        Binance USDT-M Futures\n")
+	fmt.Printf(" Order Amount:    $%.0f per trade\n", cfg.OrderAmountUSDT)
+	fmt.Printf(" Leverage:        %dx\n", cfg.Leverage)
+	fmt.Printf(" Max Positions:   %d\n", cfg.MaxPositions)
+	fmt.Printf(" Candle Interval: %d min\n", cfg.CandleInterval)
+	fmt.Printf(" Entry:           RSI(%d) > %.0f (overbought SHORT)\n", cfg.RSIPeriod, cfg.RSIEntry)
+	fmt.Printf(" Exit:            TP +%.1f%% / SL -%.1f%% / RSI < %.0f\n",
+		cfg.TakeProfitPct, cfg.StopLossPct, cfg.RSIExit)
+	fmt.Printf(" Pairs:           ")
+	for i, p := range cfg.Pairs {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		fmt.Print(p)
+	}
+	fmt.Println()
+	fmt.Println()
+
+	bscalpDaemon := daemon.NewBinanceScalpDaemon(cfg, bClient, bProvider, resolvedDir)
+
+	// Signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		bscalpDaemon.Stop()
+	}()
+
+	return bscalpDaemon.Run()
+}
+
+func runBTCFuturesMode() error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER BTC FUTURES - Funding Rate Long Strategy")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	resolvedDir := resolveDataDir()
+	loadEnvFile()
+
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
+	cfg := strategy.DefaultFundingLongConfig()
+	if btcFuturesAmt > 0 {
+		cfg.OrderAmountUSDT = btcFuturesAmt
+	}
+
+	bClient := binanceBroker.NewClient(cfg.Leverage)
+	if !bClient.IsReady() {
+		return fmt.Errorf("Binance API credentials required (set BINANCE_API_KEY/BINANCE_SECRET_KEY)")
+	}
+
+	bProvider := provider.NewBinanceProvider()
+
+	fmt.Printf(" Symbol:          %s\n", cfg.Symbol)
+	fmt.Printf(" Order Amount:    $%.0f per trade\n", cfg.OrderAmountUSDT)
+	fmt.Printf(" Leverage:        %dx\n", cfg.Leverage)
+	fmt.Printf(" Entry:           Funding < %.4f%%, RSI > %.0f\n", cfg.FundingThreshold*100, cfg.RSIMin)
+	fmt.Printf(" Exit:            TP=ATR*%.1f, SL=ATR*%.1f, MaxBars=%d\n",
+		cfg.TPAtrMultiple, cfg.SLAtrMultiple, cfg.MaxHoldBars)
+	fmt.Printf(" Data logging:    %s/btc_signals/\n", resolvedDir)
+	fmt.Println()
+
+	btcDaemon := daemon.NewBTCFuturesDaemon(cfg, bClient, bProvider, bClient, resolvedDir)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		btcDaemon.Stop()
+	}()
+
+	return btcDaemon.Run()
+}
+
+func runBinanceArbMode() error {
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println(" TRAVELER BINANCE FUNDING RATE ARB - Delta-Neutral")
+	fmt.Println("=" + strings.Repeat("=", 59))
+	fmt.Println()
+
+	resolvedDir := resolveDataDir()
+	loadEnvFile()
+
+	logFile, err := setupLogging(resolvedDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not setup log file: %v\n", err)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	log.Printf("[ARB] Data directory: %s", resolvedDir)
+
+	cfg := strategy.DefaultFundingArbConfig()
+	if binanceArbCap > 0 {
+		cfg.MaxCapitalUSDT = binanceArbCap
+	}
+
+	// Leverage 1x for arb (delta-neutral)
+	bClient := binanceBroker.NewClient(1)
+	if !bClient.IsReady() {
+		return fmt.Errorf("Binance API credentials required (set BINANCE_API_KEY/BINANCE_SECRET_KEY)")
+	}
+
+	fmt.Printf(" Strategy:        Funding Rate Arbitrage (Spot long + Futures short)\n")
+	fmt.Printf(" Max Capital:     $%.0f USDT\n", cfg.MaxCapitalUSDT)
+	fmt.Printf(" Min Funding:     %.4f%%\n", cfg.MinFundingRate*100)
+	fmt.Printf(" Pairs:           %v\n", cfg.Pairs)
+	fmt.Printf(" Check Interval:  %d min\n", cfg.CheckIntervalMin)
+	fmt.Println()
+
+	arbDaemon := daemon.NewBinanceArbDaemon(cfg, bClient, resolvedDir)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal...")
+		arbDaemon.Stop()
+	}()
+
+	return arbDaemon.Run()
+}
+
 func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -812,6 +1021,7 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 	server := web.NewServer(cfg, p, accountBalance, universe, kisBroker, resolveDataDir())
 
 	// Create Korean market broker/provider if domestic credentials available
+	var krProvider provider.Provider
 	if cfg.KIS.Domestic.AppKey != "" {
 		krCreds := kis.Credentials{
 			AppKey:    cfg.KIS.Domestic.AppKey,
@@ -819,7 +1029,7 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 			AccountNo: cfg.KIS.Domestic.AccountNo,
 		}
 		krBroker := kis.NewDomesticClient(krCreds)
-		krProvider := provider.NewKISProvider(krCreds)
+		krProvider = provider.NewKISProvider(krCreds)
 		if krBroker.IsReady() {
 			server.SetKoreanMarket(krBroker, krProvider)
 			fmt.Println("KIS Korean domestic broker connected")
@@ -842,7 +1052,7 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 	}
 
 	// 모의투자 sim 디렉토리가 있으면 SimBroker 등록
-	registerSimMarkets(server, p, resolveDataDir())
+	registerSimMarkets(server, p, krProvider, resolveDataDir())
 
 	go func() {
 		<-sigChan
@@ -856,7 +1066,7 @@ func runWebServer(cfg *config.Config, p *provider.FallbackProvider) error {
 }
 
 // registerSimMarkets detects sim data directories and registers SimBroker instances with the web server.
-func registerSimMarkets(server *web.Server, p provider.Provider, dataDir string) {
+func registerSimMarkets(server *web.Server, p provider.Provider, krProv provider.Provider, dataDir string) {
 	simUSDir := filepath.Join(dataDir, "sim_us")
 	simKRDir := filepath.Join(dataDir, "sim_kr")
 
@@ -871,7 +1081,12 @@ func registerSimMarkets(server *web.Server, p provider.Provider, dataDir string)
 		log.Printf("[WEB] SIM-US market registered (data: %s)", simUSDir)
 	}
 	if _, err := os.Stat(simKRDir); err == nil {
-		sb := sim.NewSimBroker("kr", 0, p, simKRDir)
+		// Use KR provider (KIS) for live Korean stock prices; fallback to main provider
+		simKRProv := p
+		if krProv != nil {
+			simKRProv = krProv
+		}
+		sb := sim.NewSimBroker("kr", 0, simKRProv, simKRDir)
 		sb.SetReadOnly(true)
 		bKR = sb
 		hKR, _ = trader.NewTradeHistory(simKRDir)

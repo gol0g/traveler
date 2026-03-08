@@ -89,38 +89,40 @@ type UniverseTier struct {
 }
 
 // GetUniverseTiers 잔고 기반 유니버스 티어 결정
+// us-etf를 항상 최우선 포함: ETF 모멘텀이 개별종목과 병행
 func GetUniverseTiers(balance float64) []UniverseTier {
 	// 티어 1: 잔고에 맞는 1차 유니버스
 	// 티어 2+: 확대 스캔용 추가 유니버스
 
 	switch {
 	case balance < 500:
-		// 소액: russell(저가주) 우선, 이후 대형주
+		// 소액: ETF + 대형주
 		return []UniverseTier{
-			{Name: "russell", Universe: symbols.UniverseRussell, Priority: 1},
-			{Name: "midcap", Universe: symbols.UniverseMidCap, Priority: 2},
-			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 3},
-			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 3},
+			{Name: "us-etf", Universe: symbols.UniverseUSETF, Priority: 1},
+			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 1},
+			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 1},
 		}
 	case balance < 5000:
-		// 중간: russell + midcap 우선
+		// 중간: ETF + 대형주 우선, 필요시 소형주 확대
 		return []UniverseTier{
-			{Name: "russell", Universe: symbols.UniverseRussell, Priority: 1},
-			{Name: "midcap", Universe: symbols.UniverseMidCap, Priority: 1},
-			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 2},
-			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 2},
+			{Name: "us-etf", Universe: symbols.UniverseUSETF, Priority: 1},
+			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 1},
+			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 1},
+			{Name: "midcap", Universe: symbols.UniverseMidCap, Priority: 2},
 		}
 	case balance < 25000:
-		// 중고액: 대형주 우선, 필요시 소형주로 확대
+		// 중고액: ETF + 대형주 우선, 필요시 소형주로 확대
 		return []UniverseTier{
+			{Name: "us-etf", Universe: symbols.UniverseUSETF, Priority: 1},
 			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 1},
 			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 1},
 			{Name: "midcap", Universe: symbols.UniverseMidCap, Priority: 2},
 			{Name: "russell", Universe: symbols.UniverseRussell, Priority: 2},
 		}
 	default:
-		// 고액: 전체 스캔
+		// 고액: ETF + 전체 스캔
 		return []UniverseTier{
+			{Name: "us-etf", Universe: symbols.UniverseUSETF, Priority: 1},
 			{Name: "nasdaq100", Universe: symbols.UniverseNasdaq100, Priority: 1},
 			{Name: "sp500", Universe: symbols.UniverseSP500, Priority: 1},
 			{Name: "russell", Universe: symbols.UniverseRussell, Priority: 1},
@@ -317,22 +319,26 @@ func (s *AdaptiveScanner) Scan(ctx context.Context, loader StockLoader) (*Adapti
 }
 
 // GetKRUniverseTiers 한국 시장 유니버스 티어 (KRW 기준)
+// kr-etf를 항상 최우선 포함: ETF 모멘텀 전략이 개별종목 시그널 없을 때도 작동
 func GetKRUniverseTiers(balance float64) []UniverseTier {
 	switch {
-	case balance < 5000000: // 500만원 미만: KOSDAQ(저가주) 우선 + KOSPI200 확대
+	case balance < 5000000: // 500만원 미만: ETF + KOSDAQ(저가주) 우선 + KOSPI200 확대
 		return []UniverseTier{
+			{Name: "kr-etf", Universe: symbols.UniverseKRETF, Priority: 1},
 			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
 			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 1},
 			{Name: "kospi200", Universe: symbols.UniverseKospi200, Priority: 2},
 		}
-	case balance < 50000000: // 5000만원 미만: KOSPI+KOSDAQ
+	case balance < 50000000: // 5000만원 미만: ETF + KOSPI+KOSDAQ
 		return []UniverseTier{
+			{Name: "kr-etf", Universe: symbols.UniverseKRETF, Priority: 1},
 			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 1},
 			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
 			{Name: "kospi200", Universe: symbols.UniverseKospi200, Priority: 2},
 		}
-	default: // 고액: 전체
+	default: // 고액: ETF + 전체
 		return []UniverseTier{
+			{Name: "kr-etf", Universe: symbols.UniverseKRETF, Priority: 1},
 			{Name: "kospi30", Universe: symbols.UniverseKospi30, Priority: 1},
 			{Name: "kosdaq30", Universe: symbols.UniverseKosdaq30, Priority: 1},
 			{Name: "kospi200", Universe: symbols.UniverseKospi200, Priority: 1},
@@ -358,11 +364,11 @@ func AdjustConfigForKRBalance(balance float64) SizerConfig {
 		cfg.MaxPositions = 2
 		cfg.MinRiskReward = 1.0
 		cfg.MinExpectedReturn = 0.005
-	case balance < 5000000: // 500만원 미만: 적극적
+	case balance < 5000000: // 500만원 미만: 적극적 (ETF R/R 1.25 허용)
 		cfg.RiskPerTrade = 0.02
 		cfg.MaxPositionPct = 0.25
 		cfg.MaxPositions = 5
-		cfg.MinRiskReward = 1.5
+		cfg.MinRiskReward = 1.2
 	case balance < 50000000: // 5000만원 미만
 		cfg.RiskPerTrade = 0.015
 		cfg.MaxPositionPct = 0.25

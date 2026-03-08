@@ -2,18 +2,25 @@ package web
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"traveler/internal/ai"
+	"database/sql"
+
+	_ "modernc.org/sqlite"
+
 	"traveler/internal/broker"
 	"traveler/internal/provider"
 	"traveler/internal/strategy"
@@ -1319,6 +1326,72 @@ func (s *Server) handleScalpStatus(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("}"))
 }
 
+// handleBinanceScalpStatus returns the current Binance short scalping status (read from binance_status.json)
+func (s *Server) handleBinanceScalpStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fp := filepath.Join(s.dataDir, "binance_status.json")
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active": false,
+			"error":  "Binance scalp daemon not running",
+		})
+		return
+	}
+
+	info, _ := os.Stat(fp)
+	active := info != nil && time.Since(info.ModTime()) < 1*time.Hour
+
+	w.Write([]byte(`{"active":`))
+	if active {
+		w.Write([]byte("true"))
+	} else {
+		w.Write([]byte("false"))
+	}
+	w.Write([]byte(`,"data":`))
+	w.Write(data)
+	w.Write([]byte("}"))
+}
+
+// handleBinanceArbStatus returns the current Binance funding arb status (read from arb_status.json)
+func (s *Server) handleBinanceArbStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fp := filepath.Join(s.dataDir, "arb_status.json")
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active": false,
+			"error":  "Binance arb daemon not running",
+		})
+		return
+	}
+
+	info, _ := os.Stat(fp)
+	active := info != nil && time.Since(info.ModTime()) < 1*time.Hour
+
+	w.Write([]byte(`{"active":`))
+	if active {
+		w.Write([]byte("true"))
+	} else {
+		w.Write([]byte("false"))
+	}
+	w.Write([]byte(`,"data":`))
+	w.Write(data)
+	w.Write([]byte("}"))
+}
+
 // handleKRDCAStatus returns the current KR stock DCA status (read from kr_dca_status.json)
 func (s *Server) handleKRDCAStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1414,18 +1487,24 @@ type StrategyOverview struct {
 	ExtraInfo string  `json:"extra_info,omitempty"` // 추가 정보 (F&G, RSI 등)
 }
 
+// FIREScenario contains projection for a single growth rate scenario
+type FIREScenario struct {
+	Label        string  `json:"label"`          // 시나리오 이름
+	AnnualReturn float64 `json:"annual_return"`  // 연 수익률 %
+	YearsTo4Pct  float64 `json:"years_to_4pct"`  // 4% 룰 도달 연수
+	YearsTo6Pct  float64 `json:"years_to_6pct"`  // 6% 룰 도달 연수
+	FireYear4Pct int     `json:"fire_year_4pct"` // 4% 룰 도달 연도
+	FireYear6Pct int     `json:"fire_year_6pct"` // 6% 룰 도달 연도
+}
+
 // FIREProjection contains retirement projection data
 type FIREProjection struct {
-	CurrentAssets     float64 `json:"current_assets"`      // 현재 총 자산 (KRW)
-	MonthlyInvestment float64 `json:"monthly_investment"`  // 월 투입 (KRW)
-	TargetMonthly     float64 `json:"target_monthly"`      // FIRE 목표 월소득 (KRW)
-	TargetAssets4Pct  float64 `json:"target_assets_4pct"`  // 4% 룰 목표 자산
-	TargetAssets6Pct  float64 `json:"target_assets_6pct"`  // 6% 룰 목표 자산
-	YearsTo4Pct       float64 `json:"years_to_4pct"`       // 4% 룰 도달 연수
-	YearsTo6Pct       float64 `json:"years_to_6pct"`       // 6% 룰 도달 연수
-	FireYear4Pct      int     `json:"fire_year_4pct"`      // 4% 룰 도달 연도
-	FireYear6Pct      int     `json:"fire_year_6pct"`      // 6% 룰 도달 연도
-	MonthlyGrowthRate float64 `json:"monthly_growth_rate"` // 월 복리 수익률 %
+	CurrentAssets     float64        `json:"current_assets"`      // 현재 총 자산 (KRW)
+	MonthlyInvestment float64        `json:"monthly_investment"`  // 월 투입 (KRW)
+	TargetMonthly     float64        `json:"target_monthly"`      // FIRE 목표 월소득 (KRW)
+	TargetAssets4Pct  float64        `json:"target_assets_4pct"`  // 4% 룰 목표 자산
+	TargetAssets6Pct  float64        `json:"target_assets_6pct"`  // 6% 룰 목표 자산
+	Scenarios         []FIREScenario `json:"scenarios"`           // 보수/중립/낙관 시나리오
 }
 
 // GrowthPoint represents a point in the growth projection
@@ -1450,6 +1529,9 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 	}
 
 	var totalValue, totalCost float64
+
+	// Load realized PnL from trade history
+	realizedPnL := s.getRealizedPnLByMarket()
 
 	// 1. Crypto DCA
 	if dcaData := s.readStatusFile("dca_status.json", 48*time.Hour); dcaData != nil {
@@ -1557,15 +1639,18 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 			usdToKrw := 1450.0 // 환율 근사치
 			valueKRW := bal.TotalEquity * usdToKrw
 
-			// positions에서 원가 합산
-			var posInvested float64
-			if positions, err := s.broker.GetPositions(ctx); err == nil {
+			// unrealized = current positions value - cost
+			var unrealizedPnL float64
+			if positions, err2 := s.broker.GetPositions(ctx); err2 == nil {
 				for _, pos := range positions {
-					posInvested += pos.AvgCost * pos.Quantity
+					unrealizedPnL += pos.UnrealizedPnL
 				}
 			}
-
-			investedUSD := bal.CashBalance + posInvested
+			// total PnL = realized (closed trades) + unrealized (open positions)
+			usRealizedPnL := realizedPnL[""]  // US market has empty market field
+			totalPnLUSD := usRealizedPnL + unrealizedPnL
+			// invested = current equity - total PnL (what we originally put in)
+			investedUSD := bal.TotalEquity - totalPnLUSD
 			investedKRW := investedUSD * usdToKrw
 			so := StrategyOverview{
 				Name:     "US Stock",
@@ -1573,11 +1658,11 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 				Active:   true,
 				Invested: investedKRW,
 				Value:    valueKRW,
-				PnL:      (bal.TotalEquity - investedUSD) * usdToKrw,
+				PnL:      totalPnLUSD * usdToKrw,
 				Currency: "USD",
 			}
 			if investedUSD > 0 {
-				so.PnLPct = (bal.TotalEquity - investedUSD) / investedUSD * 100
+				so.PnLPct = totalPnLUSD / investedUSD * 100
 			}
 			so.ExtraInfo = fmt.Sprintf("$%.2f (₩%.0f)", bal.TotalEquity, valueKRW)
 			resp.Strategies = append(resp.Strategies, so)
@@ -1587,28 +1672,30 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 		cancel()
 	}
 
-	// 5. KR Stock (broker balance)
+	// 5. KR Stock (broker balance + realized PnL from trade history)
 	if s.brokerKR != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if bal, err := s.brokerKR.GetBalance(ctx); err == nil && bal.TotalEquity > 0 {
-			var posInvested float64
+			var unrealizedPnL float64
 			if positions, err := s.brokerKR.GetPositions(ctx); err == nil {
 				for _, pos := range positions {
-					posInvested += pos.AvgCost * pos.Quantity
+					unrealizedPnL += pos.UnrealizedPnL
 				}
 			}
-			investedKRW := bal.CashBalance + posInvested
+			krRealizedPnL := realizedPnL["kr"]
+			totalPnL := krRealizedPnL + unrealizedPnL
+			investedKRW := bal.TotalEquity - totalPnL
 			so := StrategyOverview{
 				Name:     "KR Stock",
 				Type:     "kr-stock",
 				Active:   true,
 				Invested: investedKRW,
 				Value:    bal.TotalEquity,
-				PnL:      bal.TotalEquity - investedKRW,
+				PnL:      totalPnL,
 				Currency: "KRW",
 			}
 			if investedKRW > 0 {
-				so.PnLPct = (bal.TotalEquity - investedKRW) / investedKRW * 100
+				so.PnLPct = totalPnL / investedKRW * 100
 			}
 			resp.Strategies = append(resp.Strategies, so)
 			totalValue += bal.TotalEquity
@@ -1637,6 +1724,45 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 		cancel()
 	}
 
+	// 7. Binance Futures (short scalp + BTC futures)
+	if binanceData := s.readStatusFile("binance_status.json", 1*time.Hour); binanceData != nil {
+		var binance struct {
+			BalanceUSDT float64                        `json:"balance_usdt"`
+			Total       struct {
+				NetPnL  float64 `json:"net_pnl"`
+				WinRate float64 `json:"win_rate"`
+				Trades  int     `json:"trades"`
+			} `json:"total"`
+			FundingEarned float64 `json:"funding_earned"`
+		}
+		if json.Unmarshal(binanceData, &binance) == nil && binance.BalanceUSDT > 0 {
+			usdToKrw := 1450.0
+			balKRW := binance.BalanceUSDT * usdToKrw
+			netPnLKRW := binance.Total.NetPnL * usdToKrw
+			investedKRW := balKRW - netPnLKRW
+			so := StrategyOverview{
+				Name:     "Binance Futures",
+				Type:     "binance-futures",
+				Active:   true,
+				Invested: investedKRW,
+				Value:    balKRW,
+				PnL:      netPnLKRW,
+				Currency: "USD",
+			}
+			if investedKRW > 0 {
+				so.PnLPct = netPnLKRW / investedKRW * 100
+			}
+			if binance.Total.Trades > 0 {
+				so.ExtraInfo = fmt.Sprintf("$%.2f, WR: %.0f%% (%d trades)", binance.BalanceUSDT, binance.Total.WinRate, binance.Total.Trades)
+			} else {
+				so.ExtraInfo = fmt.Sprintf("$%.2f", binance.BalanceUSDT)
+			}
+			resp.Strategies = append(resp.Strategies, so)
+			totalValue += balKRW
+			totalCost += investedKRW
+		}
+	}
+
 	resp.TotalValue = totalValue
 	resp.TotalCost = totalCost
 	resp.TotalPnL = totalValue - totalCost
@@ -1644,71 +1770,131 @@ func (s *Server) handlePortfolioOverview(w http.ResponseWriter, r *http.Request)
 		resp.TotalPct = (totalValue - totalCost) / totalCost * 100
 	}
 
-	// FIRE Projection
+	// FIRE Projection — 실제 수익률 기반
 	monthlyInvestment := 2000000.0 // ₩200만/월
 	targetMonthly := 3000000.0     // ₩300만/월 (물가 보정 전)
 	inflationRate := 0.03          // 3%/년
-	monthlyGrowth := 0.02          // 월 2% 복리 (보수적)
 
-	// 인플레이션 보정 목표 (10년 후)
 	targetAssets4Pct := (targetMonthly * 12) / 0.04 // 4% 룰: 9억
 	targetAssets6Pct := (targetMonthly * 12) / 0.06 // 6% 룰: 6억
 
-	// 복리 성장 시뮬레이션
-	assets := totalValue
-	invested := totalCost
-	var projection []GrowthPoint
-	var years4, years6 float64
-	found4, found6 := false, false
-
-	for m := 1; m <= 240; m++ { // 20년
-		assets = assets*(1+monthlyGrowth) + monthlyInvestment
-		invested += monthlyInvestment
-
-		// 인플레이션 보정 목표 업데이트
-		yearsElapsed := float64(m) / 12.0
-		adjustedTarget4 := targetAssets4Pct * math.Pow(1+inflationRate, yearsElapsed)
-		adjustedTarget6 := targetAssets6Pct * math.Pow(1+inflationRate, yearsElapsed)
-
-		if !found4 && assets >= adjustedTarget4 {
-			years4 = yearsElapsed
-			found4 = true
+	// 실제 연환산 수익률 계산
+	actualAnnualReturn := 0.0
+	operatingDays := 0.0
+	if s.history != nil {
+		records := s.history.GetAll("")
+		if len(records) > 0 {
+			// 첫 거래일 ~ 현재 기간
+			firstTrade := records[0].Timestamp
+			operatingDays = time.Since(firstTrade).Hours() / 24
+			if operatingDays < 30 {
+				operatingDays = 30 // 최소 1개월
+			}
 		}
-		if !found6 && assets >= adjustedTarget6 {
-			years6 = yearsElapsed
-			found6 = true
-		}
-
-		// 24개월까지만 projection에 포함
-		if m <= 24 {
-			projection = append(projection, GrowthPoint{
-				Month:       m,
-				TotalAssets: assets,
-				Invested:    invested,
-				Growth:      assets - invested,
-			})
+	}
+	if operatingDays == 0 {
+		operatingDays = 30
+	}
+	operatingYears := operatingDays / 365.0
+	if totalCost > 0 && operatingYears > 0 {
+		// 총 수익률 → 연환산: (1 + totalReturn)^(1/years) - 1
+		totalReturn := (totalValue - totalCost) / totalCost
+		if totalReturn > -1 {
+			actualAnnualReturn = math.Pow(1+totalReturn, 1.0/operatingYears) - 1
 		}
 	}
 
-	if !found4 {
-		years4 = 20.0
+	// 시나리오: 현재 실적, S&P500 평균, 인덱스+적극투자
+	type scenario struct {
+		label        string
+		annualReturn float64
 	}
-	if !found6 {
-		years6 = 15.0
+	actualLabel := fmt.Sprintf("현재 실적 (연 %.1f%%)", actualAnnualReturn*100)
+	scenarios := []scenario{
+		{actualLabel, actualAnnualReturn},
+		{"S&P500 평균 (연 10%)", 0.10},
+		{"적극 투자 (연 15%)", 0.15},
 	}
 
 	currentYear := time.Now().Year()
+	var fireScenarios []FIREScenario
+
+	// 현재 실적 기반으로 projection 차트 생성
+	projRate := actualAnnualReturn
+	if projRate <= 0 {
+		projRate = 0.001 // 음수/0이면 projection용 최소값
+	}
+	projMonthlyGrowth := math.Pow(1+projRate, 1.0/12.0) - 1
+
+	var projection []GrowthPoint
+	assets := totalValue
+	invested := totalCost
+	for m := 1; m <= 24; m++ {
+		assets = assets*(1+projMonthlyGrowth) + monthlyInvestment
+		invested += monthlyInvestment
+		projection = append(projection, GrowthPoint{
+			Month:       m,
+			TotalAssets: assets,
+			Invested:    invested,
+			Growth:      assets - invested,
+		})
+	}
+
+	for _, sc := range scenarios {
+		annualRet := sc.annualReturn
+		a := totalValue
+		var years4, years6 float64
+		found4, found6 := false, false
+
+		if annualRet <= 0 {
+			// 수익률 0 이하면 목표 도달 불가
+			years4 = 50.0
+			years6 = 50.0
+		} else {
+			monthlyGrowth := math.Pow(1+annualRet, 1.0/12.0) - 1
+			for m := 1; m <= 600; m++ { // 50년
+				a = a*(1+monthlyGrowth) + monthlyInvestment
+				yearsElapsed := float64(m) / 12.0
+				adj4 := targetAssets4Pct * math.Pow(1+inflationRate, yearsElapsed)
+				adj6 := targetAssets6Pct * math.Pow(1+inflationRate, yearsElapsed)
+
+				if !found4 && a >= adj4 {
+					years4 = yearsElapsed
+					found4 = true
+				}
+				if !found6 && a >= adj6 {
+					years6 = yearsElapsed
+					found6 = true
+				}
+				if found4 && found6 {
+					break
+				}
+			}
+			if !found4 {
+				years4 = 50.0
+			}
+			if !found6 {
+				years6 = 50.0
+			}
+		}
+
+		fireScenarios = append(fireScenarios, FIREScenario{
+			Label:        sc.label,
+			AnnualReturn: annualRet * 100,
+			YearsTo4Pct:  math.Round(years4*10) / 10,
+			YearsTo6Pct:  math.Round(years6*10) / 10,
+			FireYear4Pct: currentYear + int(math.Ceil(years4)),
+			FireYear6Pct: currentYear + int(math.Ceil(years6)),
+		})
+	}
+
 	resp.FIRE = FIREProjection{
 		CurrentAssets:     totalValue,
 		MonthlyInvestment: monthlyInvestment,
 		TargetMonthly:     targetMonthly,
 		TargetAssets4Pct:  targetAssets4Pct,
 		TargetAssets6Pct:  targetAssets6Pct,
-		YearsTo4Pct:       math.Round(years4*10) / 10,
-		YearsTo6Pct:       math.Round(years6*10) / 10,
-		FireYear4Pct:      currentYear + int(math.Ceil(years4)),
-		FireYear6Pct:      currentYear + int(math.Ceil(years6)),
-		MonthlyGrowthRate: monthlyGrowth * 100,
+		Scenarios:         fireScenarios,
 	}
 	resp.Projection = projection
 
@@ -1733,6 +1919,254 @@ func (s *Server) readStatusFile(filename string, maxAge time.Duration) json.RawM
 		return nil
 	}
 	return data
+}
+
+// handleBTCFuturesStatus returns the current BTC funding rate long strategy status
+func (s *Server) handleBTCFuturesStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	fp := filepath.Join(s.dataDir, "btc_futures_status.json")
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"active": false,
+			"error":  "BTC Futures daemon not running",
+		})
+		return
+	}
+
+	info, _ := os.Stat(fp)
+	active := info != nil && time.Since(info.ModTime()) < 1*time.Hour
+
+	w.Write([]byte(`{"active":`))
+	if active {
+		w.Write([]byte("true"))
+	} else {
+		w.Write([]byte("false"))
+	}
+	w.Write([]byte(`,"data":`))
+	w.Write(data)
+	w.Write([]byte("}"))
+}
+
+// handleBTCFuturesChartData returns parsed CSV data for BTC Futures charts
+func (s *Server) handleBTCFuturesChartData(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	signalsDir := filepath.Join(s.dataDir, "btc_signals")
+
+	// days parameter (default 1)
+	days := 1
+	if d := r.URL.Query().Get("days"); d != "" {
+		if v, err := strconv.Atoi(d); err == nil && v > 0 && v <= 7 {
+			days = v
+		}
+	}
+
+	type ScanPoint struct {
+		Time          int64   `json:"time"` // unix seconds
+		Price         float64 `json:"price"`
+		Funding       float64 `json:"funding"`
+		RSI           float64 `json:"rsi"`
+		ATR           float64 `json:"atr"`
+		EMA50         float64 `json:"ema50"`
+		Volume        float64 `json:"volume"`
+		AvgVol        float64 `json:"avg_volume"`
+		OI            float64 `json:"oi"`
+		OIChange      float64 `json:"oi_change"`
+		OIDivergence  string  `json:"oi_divergence"`
+		Signal        string  `json:"signal"`
+	}
+	type SignalPoint struct {
+		Time        int64   `json:"time"`
+		Price       float64 `json:"price"`
+		OBI5        float64 `json:"obi5"`
+		OBI10       float64 `json:"obi10"`
+		OBI20       float64 `json:"obi20"`
+		BidWall     float64 `json:"bid_wall"`
+		AskWall     float64 `json:"ask_wall"`
+		Spread      float64 `json:"spread"`
+		TakerBuy    float64 `json:"taker_buy"`
+		Volume5m    float64 `json:"volume_5m"`
+		OI          float64 `json:"oi"`
+		FundingRate float64 `json:"funding_rate"`
+		LSRatio     float64 `json:"ls_ratio"`
+	}
+	type TradePoint struct {
+		EntryTime    int64   `json:"entry_time"`
+		ExitTime     int64   `json:"exit_time"`
+		EntryPrice   float64 `json:"entry_price"`
+		ExitPrice    float64 `json:"exit_price"`
+		NetPnL       float64 `json:"net_pnl"`
+		PnLPct       float64 `json:"pnl_pct"`
+		CumPnL       float64 `json:"cum_pnl"`
+		EntryFunding float64 `json:"entry_funding"`
+		EntryRSI     float64 `json:"entry_rsi"`
+		ExitReason   string  `json:"exit_reason"`
+	}
+
+	resp := struct {
+		Scans   []ScanPoint   `json:"scans"`
+		Signals []SignalPoint `json:"signals"`
+		Trades  []TradePoint  `json:"trades"`
+	}{}
+
+	// Parse scan CSVs
+	for d := days - 1; d >= 0; d-- {
+		date := time.Now().AddDate(0, 0, -d).Format("2006-01-02")
+		fp := filepath.Join(signalsDir, "scan_"+date+".csv")
+		if rows, err := readCSVFile(fp); err == nil {
+			for _, row := range rows {
+				if len(row) < 10 {
+					continue
+				}
+				t, _ := time.Parse(time.RFC3339, row[0])
+				price, _ := strconv.ParseFloat(row[2], 64)
+				funding, _ := strconv.ParseFloat(row[3], 64)
+				rsi, _ := strconv.ParseFloat(row[4], 64)
+				atr, _ := strconv.ParseFloat(row[5], 64)
+				ema50, _ := strconv.ParseFloat(row[6], 64)
+				vol, _ := strconv.ParseFloat(row[7], 64)
+				avgVol, _ := strconv.ParseFloat(row[8], 64)
+				sp := ScanPoint{
+					Time: t.Unix(), Price: price, Funding: funding,
+					RSI: rsi, ATR: atr, EMA50: ema50,
+					Volume: vol, AvgVol: avgVol,
+				}
+				if len(row) >= 14 {
+					// New format with OI columns
+					sp.OI, _ = strconv.ParseFloat(row[9], 64)
+					sp.OIChange, _ = strconv.ParseFloat(row[10], 64)
+					sp.OIDivergence = row[11]
+					sp.Signal = row[12]
+				} else {
+					// Old format without OI
+					sp.Signal = row[9]
+				}
+				resp.Scans = append(resp.Scans, sp)
+			}
+		}
+	}
+
+	// Parse btc_signals CSVs (1-min data, downsample to 5-min for OBI)
+	for d := days - 1; d >= 0; d-- {
+		date := time.Now().AddDate(0, 0, -d).Format("2006-01-02")
+		fp := filepath.Join(signalsDir, "btc_signals_"+date+".csv")
+		if rows, err := readCSVFile(fp); err == nil {
+			count := 0
+			for _, row := range rows {
+				if len(row) < 17 {
+					continue
+				}
+				count++
+				// Downsample: every 5th row (~5 min)
+				if count%5 != 0 {
+					continue
+				}
+				t, _ := time.Parse(time.RFC3339, row[0])
+				price, _ := strconv.ParseFloat(row[1], 64)
+				obi5, _ := strconv.ParseFloat(row[5], 64)
+				obi10, _ := strconv.ParseFloat(row[6], 64)
+				obi20, _ := strconv.ParseFloat(row[7], 64)
+				bidWall, _ := strconv.ParseFloat(row[8], 64)
+				askWall, _ := strconv.ParseFloat(row[9], 64)
+				spread, _ := strconv.ParseFloat(row[10], 64)
+				takerBuy, _ := strconv.ParseFloat(row[11], 64)
+				vol5m, _ := strconv.ParseFloat(row[12], 64)
+				oi, _ := strconv.ParseFloat(row[13], 64)
+				funding, _ := strconv.ParseFloat(row[15], 64)
+				lsRatio, _ := strconv.ParseFloat(row[16], 64)
+				resp.Signals = append(resp.Signals, SignalPoint{
+					Time: t.Unix(), Price: price,
+					OBI5: obi5, OBI10: obi10, OBI20: obi20,
+					BidWall: bidWall, AskWall: askWall,
+					Spread: spread, TakerBuy: takerBuy,
+					Volume5m: vol5m, OI: oi,
+					FundingRate: funding, LSRatio: lsRatio,
+				})
+			}
+		}
+	}
+
+	// Parse trades from status JSON (recent_trades)
+	statusFP := filepath.Join(s.dataDir, "btc_futures_status.json")
+	if data, err := os.ReadFile(statusFP); err == nil {
+		var status struct {
+			RecentTrades []struct {
+				EntryTime    time.Time `json:"entry_time"`
+				ExitTime     time.Time `json:"exit_time"`
+				EntryPrice   float64   `json:"entry_price"`
+				ExitPrice    float64   `json:"exit_price"`
+				NetPnL       float64   `json:"net_pnl"`
+				PnLPct       float64   `json:"pnl_pct"`
+				EntryFunding float64   `json:"entry_funding"`
+				EntryRSI     float64   `json:"entry_rsi"`
+				ExitReason   string    `json:"exit_reason"`
+			} `json:"recent_trades"`
+		}
+		if json.Unmarshal(data, &status) == nil && len(status.RecentTrades) > 0 {
+			// Sort by exit time
+			sort.Slice(status.RecentTrades, func(i, j int) bool {
+				return status.RecentTrades[i].ExitTime.Before(status.RecentTrades[j].ExitTime)
+			})
+			cumPnL := 0.0
+			for _, t := range status.RecentTrades {
+				cumPnL += t.NetPnL
+				resp.Trades = append(resp.Trades, TradePoint{
+					EntryTime:    t.EntryTime.Unix(),
+					ExitTime:     t.ExitTime.Unix(),
+					EntryPrice:   t.EntryPrice,
+					ExitPrice:    t.ExitPrice,
+					NetPnL:       t.NetPnL,
+					PnLPct:       t.PnLPct,
+					CumPnL:       cumPnL,
+					EntryFunding: t.EntryFunding,
+					EntryRSI:     t.EntryRSI,
+					ExitReason:   t.ExitReason,
+				})
+			}
+		}
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// readCSVFile reads a CSV file and returns rows (skipping header).
+func readCSVFile(fp string) ([][]string, error) {
+	f, err := os.Open(fp)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	r.LazyQuotes = true
+	var rows [][]string
+	first := true
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+		if first {
+			first = false
+			continue // skip header
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // handleDCAFearGreed returns current and historical Fear & Greed data
@@ -1763,5 +2197,133 @@ func (s *Server) handleDCAFearGreed(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"current": current,
 		"history": history,
+	})
+}
+
+// getRealizedPnLByMarket returns net realized PnL per market from trade history.
+// Net = sum(sell pnl) - sum(all commissions) per market.
+func (s *Server) getRealizedPnLByMarket() map[string]float64 {
+	result := make(map[string]float64)
+	if s.history == nil {
+		return result
+	}
+
+	records := s.history.GetAll("")
+	// Accumulate gross PnL (sell pnl) and total commissions per market
+	grossPnL := make(map[string]float64)
+	totalComm := make(map[string]float64)
+
+	for _, r := range records {
+		mkt := r.Market // "" for US, "kr" for KR
+		totalComm[mkt] += r.Commission
+		if r.Side == "sell" {
+			grossPnL[mkt] += r.PnL
+		}
+	}
+
+	for mkt := range grossPnL {
+		result[mkt] = grossPnL[mkt] - totalComm[mkt]
+	}
+	// Include markets with only buys (all commission, no realized PnL)
+	for mkt := range totalComm {
+		if _, ok := result[mkt]; !ok {
+			result[mkt] = -totalComm[mkt]
+		}
+	}
+
+	return result
+}
+
+// handleCollectorStatus returns data collection statistics from the SQLite DB.
+func (s *Server) handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	dbPath := filepath.Join(s.dataDir, "traveler.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		json.NewEncoder(w).Encode(map[string]interface{}{"active": false})
+		return
+	}
+
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000&mode=ro", dbPath)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"active": false, "error": err.Error()})
+		return
+	}
+	defer db.Close()
+
+	type TableStat struct {
+		Market string `json:"market"`
+		Count  int64  `json:"count"`
+		Latest int64  `json:"latest"`
+	}
+
+	// Candle stats by market
+	var candleStats []TableStat
+	rows, err := db.Query("SELECT market, COUNT(*), COALESCE(MAX(time),0) FROM candles GROUP BY market")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ts TableStat
+			rows.Scan(&ts.Market, &ts.Count, &ts.Latest)
+			candleStats = append(candleStats, ts)
+		}
+	}
+
+	// Orderbook stats by market
+	var orderbookStats []TableStat
+	rows2, err := db.Query("SELECT market, COUNT(*), COALESCE(MAX(time),0) FROM orderbook GROUP BY market")
+	if err == nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var ts TableStat
+			rows2.Scan(&ts.Market, &ts.Count, &ts.Latest)
+			orderbookStats = append(orderbookStats, ts)
+		}
+	}
+
+	// Crypto signals stats
+	var signalCount int64
+	var signalLatest int64
+	db.QueryRow("SELECT COUNT(*), COALESCE(MAX(time),0) FROM crypto_signals").Scan(&signalCount, &signalLatest)
+
+	// DB file size
+	var dbSize int64
+	if info, err := os.Stat(dbPath); err == nil {
+		dbSize = info.Size()
+	}
+
+	// Today's candle counts by market+symbol
+	todayStart := time.Now().UTC().Truncate(24 * time.Hour).Unix()
+	type SymbolStat struct {
+		Market string `json:"market"`
+		Symbol string `json:"symbol"`
+		Count  int64  `json:"count"`
+	}
+	var todayStats []SymbolStat
+	rows3, err := db.Query("SELECT market, symbol, COUNT(*) FROM candles WHERE time >= ? GROUP BY market, symbol ORDER BY market, symbol", todayStart)
+	if err == nil {
+		defer rows3.Close()
+		for rows3.Next() {
+			var ss SymbolStat
+			rows3.Scan(&ss.Market, &ss.Symbol, &ss.Count)
+			todayStats = append(todayStats, ss)
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"active":    true,
+		"candles":   candleStats,
+		"orderbook": orderbookStats,
+		"signals": map[string]interface{}{
+			"count":  signalCount,
+			"latest": signalLatest,
+		},
+		"today":   todayStats,
+		"db_size": dbSize,
 	})
 }

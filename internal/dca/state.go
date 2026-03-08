@@ -14,6 +14,8 @@ type State struct {
 	NextDCATime    time.Time                `json:"next_dca_time"`
 	LastDCATime    time.Time                `json:"last_dca_time"`
 	TotalInvested  float64                  `json:"total_invested"`
+	TotalSold      float64                  `json:"total_sold"`
+	RealizedPnL    float64                  `json:"realized_pnl"`
 	TotalDCACycles int                      `json:"total_dca_cycles"`
 	Assets         map[string]*AssetState   `json:"assets"`
 	LastRebalance  time.Time                `json:"last_rebalance_time"`
@@ -141,11 +143,20 @@ func (sm *StateManager) RecordSell(symbol string, quantity, price, amount float6
 	if a.TotalQuantity < 0 {
 		a.TotalQuantity = 0
 	}
-	// Reduce invested proportionally
+	// Track realized PnL: sell proceeds - cost basis
+	costBasis := quantity * a.AvgCost
+	sm.state.TotalSold += amount
+	sm.state.RealizedPnL += amount - costBasis
+
+	// Reduce invested proportionally (both asset-level and state-level)
 	if quantity > 0 && a.AvgCost > 0 {
-		a.TotalInvested -= quantity * a.AvgCost
+		a.TotalInvested -= costBasis
 		if a.TotalInvested < 0 {
 			a.TotalInvested = 0
+		}
+		sm.state.TotalInvested -= costBasis
+		if sm.state.TotalInvested < 0 {
+			sm.state.TotalInvested = 0
 		}
 	}
 }

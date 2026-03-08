@@ -121,7 +121,11 @@ class TravelerApp {
         document.getElementById('panelHistory').classList.toggle('hidden', tab !== 'history');
         document.getElementById('panelStrategy').classList.toggle('hidden', tab !== 'strategy');
         document.getElementById('panelScalp').classList.toggle('hidden', tab !== 'scalp');
+        document.getElementById('panelBinanceScalp').classList.toggle('hidden', tab !== 'binance-scalp');
+        document.getElementById('panelBinanceArb').classList.toggle('hidden', tab !== 'binance-arb');
+        document.getElementById('panelBtcFutures').classList.toggle('hidden', tab !== 'btc-futures');
         document.getElementById('panelPortfolio').classList.toggle('hidden', tab !== 'portfolio');
+        document.getElementById('panelCollector').classList.toggle('hidden', tab !== 'collector');
 
         // DCA tab: market-aware (crypto → Crypto DCA, kr → KR DCA)
         const isDca = tab === 'dca';
@@ -149,8 +153,26 @@ class TravelerApp {
             this.loadScalpStatus();
         }
 
+        if (tab === 'binance-scalp') {
+            this.loadBinanceScalpStatus();
+        }
+
+        if (tab === 'binance-arb') {
+            this.loadBinanceArbStatus();
+        }
+
+        if (tab === 'btc-futures') {
+            this.loadBTCFuturesStatus();
+            this.initBTCFuturesChartEvents();
+            this.loadBTCFuturesChartData();
+        }
+
         if (tab === 'portfolio') {
             this.loadPortfolioOverview();
+        }
+
+        if (tab === 'collector') {
+            this.loadCollectorStatus();
         }
     }
 
@@ -1448,6 +1470,27 @@ class TravelerApp {
             fgFill.style.width = `${d.fear_greed || 50}%`;
             fgFill.className = 'h-2 rounded-full transition-all ' + this.fgColor(d.fear_greed);
 
+            // Restore signal banner
+            let banner = document.getElementById('dcaRestoreBanner');
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.id = 'dcaRestoreBanner';
+                banner.className = 'hidden mb-3 p-3 rounded-lg border text-sm font-medium';
+                const fgCard = fgValue.closest('.grid') || fgValue.closest('.bg-gray-800');
+                if (fgCard && fgCard.parentNode) fgCard.parentNode.insertBefore(banner, fgCard.nextSibling);
+            }
+            if (d.restore_signal) {
+                banner.textContent = d.restore_message || 'F&G 회복 — DCA 기본금액 원복 권장';
+                banner.className = 'mb-3 p-3 rounded-lg border border-yellow-500 bg-yellow-500/10 text-yellow-300 text-sm font-medium';
+                banner.classList.remove('hidden');
+            } else if (d.reduced_mode) {
+                banner.textContent = `절약 모드: 기본금액 ₩${Math.round(d.base_dca_amount).toLocaleString()} (Extreme Fear 탈출 시 원복 시그널)`;
+                banner.className = 'mb-3 p-3 rounded-lg border border-blue-500 bg-blue-500/10 text-blue-300 text-sm font-medium';
+                banner.classList.remove('hidden');
+            } else {
+                banner.classList.add('hidden');
+            }
+
             // Summary cards
             document.getElementById('dcaTotalInvested').textContent = `₩${Math.round(d.total_invested || 0).toLocaleString()}`;
             document.getElementById('dcaCycles').textContent = d.total_dca_cycles || 0;
@@ -1458,6 +1501,14 @@ class TravelerApp {
             const pnlEl = document.getElementById('dcaPnL');
             pnlEl.textContent = `${pnl >= 0 ? '+' : ''}₩${Math.round(pnl).toLocaleString()} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`;
             pnlEl.className = `text-sm mt-1 ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+            // Realized PnL (from sells)
+            const realPnl = d.realized_pnl || 0;
+            const realEl = document.getElementById('dcaRealizedPnL');
+            if (realEl) {
+                realEl.textContent = `실현: ${realPnl >= 0 ? '+' : ''}₩${Math.round(realPnl).toLocaleString()}`;
+                realEl.className = `text-xs mt-0.5 ${realPnl >= 0 ? 'text-green-500' : 'text-red-500'}`;
+            }
 
             // Next DCA
             if (d.next_dca_time) {
@@ -1516,19 +1567,32 @@ class TravelerApp {
         }
         // Show newest first
         const sorted = [...history].reverse();
-        tbody.innerHTML = sorted.map(h => {
+        tbody.innerHTML = sorted.map((h, i) => {
             const date = new Date(h.timestamp);
             const dateStr = date.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
             const fgClass = this.fgColor(h.fear_greed).replace('bg-', 'text-').replace('-600', '-400').replace('-500', '-400');
-            return `<tr class="border-b border-gray-700">
+            const buys = h.buys || [];
+            const sells = h.sells || [];
+            const rowId = `dca-detail-${i}`;
+            let detailRow = '';
+            if (buys.length > 0 || sells.length > 0) {
+                const items = [
+                    ...buys.map(b => `<span class="text-green-400">${b.symbol.replace('KRW-','')} ₩${Math.round(b.amount).toLocaleString()}</span>`),
+                    ...sells.map(s => `<span class="text-red-400">${s.symbol.replace('KRW-','')} -₩${Math.round(s.amount).toLocaleString()}</span>`)
+                ];
+                detailRow = `<tr id="${rowId}" class="hidden border-b border-gray-800">
+                    <td colspan="7" class="py-1 px-2 text-xs text-gray-400">${items.join(' | ')}</td>
+                </tr>`;
+            }
+            return `<tr class="border-b border-gray-700 cursor-pointer hover:bg-gray-800" onclick="document.getElementById('${rowId}')?.classList.toggle('hidden')">
                 <td class="py-2 px-2">${dateStr}</td>
                 <td class="py-2 px-2 text-right ${fgClass}">${h.fear_greed} <span class="text-gray-500 text-xs">${h.fg_label || ''}</span></td>
                 <td class="py-2 px-2 text-right">${(h.multiplier || 1).toFixed(2)}x</td>
                 <td class="py-2 px-2 text-right">₩${Math.round(h.total_amount || 0).toLocaleString()}</td>
-                <td class="py-2 px-2 text-center">${(h.buys || []).length}</td>
-                <td class="py-2 px-2 text-center">${(h.sells || []).length}</td>
+                <td class="py-2 px-2 text-center">${buys.length}</td>
+                <td class="py-2 px-2 text-center">${sells.length}</td>
                 <td class="py-2 px-2 text-center">${h.rebalanced ? '✓' : '-'}</td>
-            </tr>`;
+            </tr>${detailRow}`;
         }).join('');
     }
 
@@ -1546,13 +1610,14 @@ class TravelerApp {
                 return;
             }
 
+            const maxH = 108; // px (h-32=128px minus label ~20px)
             const bars = data.history.reverse().map(d => {
-                const height = Math.max(d.value, 5);
-                const color = this.fgColor(d.value).replace('bg-', 'bg-');
+                const barH = Math.max(Math.round(d.value / 100 * maxH), 4);
+                const color = this.fgColor(d.value);
                 const date = new Date(d.timestamp * 1000);
                 const label = `${date.getMonth()+1}/${date.getDate()}`;
-                return `<div class="flex flex-col items-center flex-1 min-w-0" title="${d.classification}: ${d.value}">
-                    <div class="w-full ${color} rounded-t" style="height:${height}%"></div>
+                return `<div class="flex flex-col items-end justify-end flex-1 min-w-0 h-full" title="${d.classification}: ${d.value}">
+                    <div class="w-full ${color} rounded-t" style="height:${barH}px"></div>
                     <div class="text-gray-600 text-xs mt-1 truncate w-full text-center">${label}</div>
                 </div>`;
             }).join('');
@@ -1659,7 +1724,7 @@ class TravelerApp {
     renderScalpTrades(trades) {
         const tbody = document.getElementById('scalpTradesTable');
         if (!trades.length) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No trades yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No trades yet</td></tr>';
             return;
         }
         // Show newest first
@@ -1670,9 +1735,11 @@ class TravelerApp {
             const pctColor = t.pnl_pct >= 0 ? 'text-green-400' : 'text-red-400';
             const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString('ko-KR', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '-';
             const reason = (t.exit_reason || '').replace('_', ' ');
+            const qty = t.quantity ? t.quantity.toFixed(4) : '-';
             return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
                 <td class="py-2 px-2 text-gray-300">${exitTime}</td>
                 <td class="py-2 px-2 font-medium">${name}</td>
+                <td class="py-2 px-2 text-right text-gray-400">${qty}</td>
                 <td class="py-2 px-2 text-right text-gray-300">₩${Math.round(t.entry_price).toLocaleString()}</td>
                 <td class="py-2 px-2 text-right text-gray-300">₩${Math.round(t.exit_price).toLocaleString()}</td>
                 <td class="py-2 px-2 text-right ${pnlColor}">₩${Math.round(t.net_pnl).toLocaleString()}</td>
@@ -1705,6 +1772,638 @@ class TravelerApp {
                 <td class="py-2 px-2 text-right text-gray-400">${timeStr}</td>
             </tr>`;
         }).join('');
+    }
+
+    // ==================== Binance Short Scalp Methods ====================
+
+    async loadBinanceScalpStatus() {
+        try {
+            const resp = await fetch('/api/binance-scalp/status');
+            const result = await resp.json();
+
+            const inactive = document.getElementById('bsInactive');
+            const panels = document.querySelectorAll('#panelBinanceScalp > .grid, #panelBinanceScalp > .bg-gray-800:not(#bsInactive)');
+
+            if (!result.active || !result.data) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            const d = result.data;
+            const daily = d.daily || {};
+            const total = d.total || {};
+            const fmtUSD = (v) => `$${v.toFixed(2)}`;
+
+            // Win Rate card
+            const wr = total.win_rate || 0;
+            const wrEl = document.getElementById('bsWinRate');
+            wrEl.textContent = `${wr.toFixed(1)}%`;
+            wrEl.className = `text-3xl font-bold ${wr >= 55 ? 'text-green-400' : wr >= 45 ? 'text-yellow-400' : 'text-red-400'}`;
+            document.getElementById('bsTotalTrades').textContent = total.trades || 0;
+
+            // Today PnL card
+            const dayPnL = daily.net_pnl || 0;
+            const dayEl = document.getElementById('bsDailyPnL');
+            dayEl.textContent = `${dayPnL >= 0 ? '+' : ''}${fmtUSD(dayPnL)}`;
+            dayEl.className = `text-2xl font-bold ${dayPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('bsDailyWins').textContent = daily.wins || 0;
+            document.getElementById('bsDailyLosses').textContent = daily.losses || 0;
+
+            // Total PnL card
+            const totPnL = total.net_pnl || 0;
+            const totEl = document.getElementById('bsTotalPnL');
+            totEl.textContent = `${totPnL >= 0 ? '+' : ''}${fmtUSD(totPnL)}`;
+            totEl.className = `text-2xl font-bold ${totPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('bsStartDate').textContent = total.start_date || '-';
+
+            // Active positions card
+            const positions = d.active_positions || {};
+            const posCount = Object.keys(positions).length;
+            document.getElementById('bsActiveCount').textContent = posCount;
+            document.getElementById('bsMaxPositions').textContent = d.max_positions || 3;
+
+            // Positions table
+            this.renderBinanceScalpPositions(positions, d.bar_counter || 0);
+
+            // Today stats detail
+            document.getElementById('bsToday').textContent = daily.date || '-';
+            document.getElementById('bsDayTradeCount').textContent = daily.trades || 0;
+            const dayTrades = daily.trades || 0;
+            const dayWins = daily.wins || 0;
+            document.getElementById('bsDayWR').textContent = dayTrades > 0 ? `${(dayWins / dayTrades * 100).toFixed(0)}%` : '0%';
+            document.getElementById('bsDayGross').textContent = fmtUSD(daily.gross_pnl || 0);
+            document.getElementById('bsDayComm').textContent = fmtUSD(daily.commission || 0);
+
+            // Lifetime stats
+            document.getElementById('bsBest').textContent = fmtUSD(total.best_trade || 0);
+            document.getElementById('bsWorst').textContent = fmtUSD(total.worst_trade || 0);
+            document.getElementById('bsWinStreak').textContent = total.win_streak_max || 0;
+            document.getElementById('bsLoseStreak').textContent = total.lose_streak_max || 0;
+            document.getElementById('bsTotalGross').textContent = fmtUSD(total.gross_pnl || 0);
+            document.getElementById('bsTotalComm').textContent = fmtUSD(total.commission || 0);
+            document.getElementById('bsFundingEarned').textContent = fmtUSD(d.funding_earned || 0);
+
+            // Config
+            document.getElementById('bsCandle').textContent = d.candle_min || 5;
+            document.getElementById('bsOrderAmt').textContent = (d.order_amount || 80).toFixed(0);
+            document.getElementById('bsLeverage').textContent = d.leverage || 2;
+            if (d.last_scan) {
+                const ls = new Date(d.last_scan);
+                document.getElementById('bsLastScan').textContent = ls.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            }
+            if (d.pairs) {
+                document.getElementById('bsPairs').textContent = d.pairs.join(', ');
+            }
+
+            // Recent trades
+            this.renderBinanceScalpTrades(d.recent_trades || []);
+        } catch (e) {
+            console.error('Binance scalp status error:', e);
+        }
+    }
+
+    renderBinanceScalpPositions(positions, barCounter) {
+        const tbody = document.getElementById('bsPositionsTable');
+        const entries = Object.values(positions);
+        if (!entries.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No active positions</td></tr>';
+            return;
+        }
+        tbody.innerHTML = entries.map(p => {
+            const entryTime = p.entry_time ? new Date(p.entry_time) : null;
+            const timeStr = entryTime ? entryTime.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+            return `<tr class="border-b border-gray-700 hover:bg-gray-750">
+                <td class="py-2 px-2 font-medium text-red-400">${p.symbol || ''}</td>
+                <td class="py-2 px-2 text-right">$${(p.entry_price || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right">$${(p.amount_usdt || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right">${p.leverage || 2}x</td>
+                <td class="py-2 px-2 text-right text-red-400">$${(p.stop_loss || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right text-green-400">$${(p.take_profit || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right">${(p.rsi_at_entry || 0).toFixed(1)}</td>
+                <td class="py-2 px-2 text-right text-gray-400">${timeStr}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    renderBinanceScalpTrades(trades) {
+        const tbody = document.getElementById('bsTradesTable');
+        if (!trades.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-4">No trades yet</td></tr>';
+            return;
+        }
+        const sorted = [...trades].reverse();
+        tbody.innerHTML = sorted.map(t => {
+            const pnlColor = t.net_pnl >= 0 ? 'text-green-400' : 'text-red-400';
+            const pctColor = t.pnl_pct >= 0 ? 'text-green-400' : 'text-red-400';
+            const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString('ko-KR', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '-';
+            const reason = (t.exit_reason || '').replace(/_/g, ' ');
+            return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 px-2 text-gray-300">${exitTime}</td>
+                <td class="py-2 px-2 font-medium">${t.symbol || ''}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${(t.entry_price || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${(t.exit_price || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right ${pnlColor}">$${(t.net_pnl || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right ${pctColor}">${t.pnl_pct >= 0 ? '+' : ''}${(t.pnl_pct || 0).toFixed(2)}%</td>
+                <td class="py-2 px-2 text-gray-400">${reason}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // ==================== BTC Futures Methods ====================
+
+    async loadBTCFuturesStatus() {
+        try {
+            const resp = await fetch('/api/btc-futures/status');
+            const result = await resp.json();
+
+            const inactive = document.getElementById('bfInactive');
+            const panels = document.querySelectorAll('#panelBtcFutures > .grid, #panelBtcFutures > .bg-gray-800:not(#bfInactive)');
+
+            if (!result.active || !result.data) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            const d = result.data;
+            const daily = d.daily || {};
+            const total = d.total || {};
+            const fmtUSD = (v) => `$${v.toFixed(2)}`;
+
+            // Win Rate card
+            const wr = total.win_rate || 0;
+            const wrEl = document.getElementById('bfWinRate');
+            wrEl.textContent = `${wr.toFixed(1)}%`;
+            wrEl.className = `text-3xl font-bold ${wr >= 55 ? 'text-green-400' : wr >= 45 ? 'text-yellow-400' : 'text-red-400'}`;
+            document.getElementById('bfTotalTrades').textContent = total.trades || 0;
+
+            // Today PnL card
+            const dayPnL = daily.net_pnl || 0;
+            const dayEl = document.getElementById('bfDailyPnL');
+            dayEl.textContent = `${dayPnL >= 0 ? '+' : ''}${fmtUSD(dayPnL)}`;
+            dayEl.className = `text-2xl font-bold ${dayPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('bfDailyWins').textContent = daily.wins || 0;
+            document.getElementById('bfDailyLosses').textContent = daily.losses || 0;
+
+            // Total PnL card
+            const totPnL = total.net_pnl || 0;
+            const totEl = document.getElementById('bfTotalPnL');
+            totEl.textContent = `${totPnL >= 0 ? '+' : ''}${fmtUSD(totPnL)}`;
+            totEl.className = `text-2xl font-bold ${totPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('bfStartDate').textContent = total.start_date || '-';
+
+            // Position status card
+            const pos = d.active_position;
+            const posEl = document.getElementById('bfPositionStatus');
+            if (pos) {
+                posEl.textContent = 'LONG';
+                posEl.className = 'text-2xl font-bold text-green-400';
+            } else {
+                posEl.textContent = 'None';
+                posEl.className = 'text-2xl font-bold text-gray-500';
+            }
+            if (d.last_scan) {
+                const ls = new Date(d.last_scan);
+                document.getElementById('bfLastScan').textContent = ls.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            }
+
+            // Position table
+            const posTbody = document.getElementById('bfPositionTable');
+            const posInfo = document.getElementById('bfPositionInfo');
+            if (pos) {
+                posInfo.classList.add('hidden');
+                const entryTime = pos.entry_time ? new Date(pos.entry_time) : null;
+                const timeStr = entryTime ? entryTime.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+                posTbody.innerHTML = `<tr class="border-b border-gray-700 hover:bg-gray-750">
+                    <td class="py-2 px-2 font-medium text-green-400">${pos.symbol || 'BTCUSDT'}</td>
+                    <td class="py-2 px-2 text-right">$${(pos.entry_price || 0).toFixed(1)}</td>
+                    <td class="py-2 px-2 text-right">$${(pos.amount_usdt || 0).toFixed(2)}</td>
+                    <td class="py-2 px-2 text-right">${pos.leverage || 2}x</td>
+                    <td class="py-2 px-2 text-right text-red-400">$${(pos.stop_loss || 0).toFixed(1)}</td>
+                    <td class="py-2 px-2 text-right text-green-400">$${(pos.take_profit || 0).toFixed(1)}</td>
+                    <td class="py-2 px-2 text-right text-yellow-400">${((pos.entry_funding || 0) * 100).toFixed(4)}%</td>
+                    <td class="py-2 px-2 text-right">${(pos.entry_rsi || 0).toFixed(1)}</td>
+                    <td class="py-2 px-2 text-right text-gray-400">${timeStr}</td>
+                </tr>`;
+            } else {
+                posInfo.classList.remove('hidden');
+                posTbody.innerHTML = '';
+            }
+
+            // Today stats detail
+            document.getElementById('bfToday').textContent = daily.date || '-';
+            document.getElementById('bfDayTradeCount').textContent = daily.trades || 0;
+            document.getElementById('bfDayNet').textContent = fmtUSD(daily.net_pnl || 0);
+            document.getElementById('bfDayComm').textContent = fmtUSD(daily.commission || 0);
+
+            // Lifetime stats
+            document.getElementById('bfBest').textContent = fmtUSD(total.best_trade || 0);
+            document.getElementById('bfWorst').textContent = fmtUSD(total.worst_trade || 0);
+            document.getElementById('bfTotalComm').textContent = fmtUSD(total.commission || 0);
+
+            // Config
+            document.getElementById('bfSymbol').textContent = d.symbol || 'BTCUSDT';
+            document.getElementById('bfCandle').textContent = d.candle_min || 15;
+            document.getElementById('bfOrderAmt').textContent = (d.order_amount || 80).toFixed(0);
+            document.getElementById('bfLeverage').textContent = d.leverage || 2;
+            document.getElementById('bfFundingThresh').textContent = `${(d.funding_thresh || -0.01).toFixed(2)}%`;
+            document.getElementById('bfRSIMin').textContent = d.rsi_min || 40;
+            document.getElementById('bfTPAtr').textContent = d.tp_atr_mult || 2.0;
+            document.getElementById('bfSLAtr').textContent = d.sl_atr_mult || 1.5;
+
+            // Recent trades
+            this.renderBTCFuturesTrades(d.recent_trades || []);
+        } catch (e) {
+            console.error('BTC Futures status error:', e);
+        }
+    }
+
+    // BTC Futures chart instances (for cleanup)
+    _bfCharts = {};
+
+    initBTCFuturesChartEvents() {
+        const select = document.getElementById('bfChartDays');
+        if (select && !select._bound) {
+            select.addEventListener('change', () => this.loadBTCFuturesChartData());
+            select._bound = true;
+        }
+    }
+
+    async loadBTCFuturesChartData() {
+        const days = document.getElementById('bfChartDays')?.value || '1';
+        try {
+            const resp = await fetch(`/api/btc-futures/chart-data?days=${days}`);
+            const data = await resp.json();
+            const hasData = (data.scans?.length > 0) || (data.signals?.length > 0);
+            document.getElementById('bfNoChartData').classList.toggle('hidden', hasData);
+            if (hasData) {
+                this.renderBTCFuturesCharts(data);
+            }
+        } catch (e) {
+            console.error('BTC Futures chart data error:', e);
+        }
+    }
+
+    destroyBFChart(id) {
+        if (this._bfCharts[id]) {
+            this._bfCharts[id].remove();
+            delete this._bfCharts[id];
+        }
+    }
+
+    createBFChart(containerId, height) {
+        this.destroyBFChart(containerId);
+        const el = document.getElementById(containerId);
+        if (!el) return null;
+        el.innerHTML = '';
+        const chart = LightweightCharts.createChart(el, {
+            width: el.clientWidth,
+            height: height || 300,
+            layout: { background: { color: '#1f2937' }, textColor: '#9ca3af' },
+            grid: { vertLines: { color: '#374151' }, horzLines: { color: '#374151' } },
+            crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+            timeScale: { timeVisible: true, secondsVisible: false },
+            rightPriceScale: { borderColor: '#374151' },
+        });
+        this._bfCharts[containerId] = chart;
+        const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }));
+        ro.observe(el);
+        return chart;
+    }
+
+    renderBTCFuturesCharts(data) {
+        const scans = data.scans || [];
+        const signals = data.signals || [];
+        const trades = data.trades || [];
+
+        // 1. Price chart + EMA50 + trade markers
+        if (scans.length > 0) {
+            const chart = this.createBFChart('bfChartPrice', 300);
+            if (chart) {
+                const priceSeries = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'BTC' });
+                priceSeries.setData(scans.map(s => ({ time: s.time, value: s.price })));
+
+                const emaSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'EMA50' });
+                emaSeries.setData(scans.filter(s => s.ema50 > 0).map(s => ({ time: s.time, value: s.ema50 })));
+
+                // Trade entry markers (green up) and exit markers (red down)
+                const markers = [];
+                for (const t of trades) {
+                    markers.push({
+                        time: t.entry_time, position: 'belowBar', color: '#22c55e',
+                        shape: 'arrowUp', text: `Buy $${t.entry_price.toFixed(0)}`
+                    });
+                    markers.push({
+                        time: t.exit_time, position: 'aboveBar',
+                        color: t.net_pnl >= 0 ? '#22c55e' : '#ef4444',
+                        shape: 'arrowDown', text: `${t.net_pnl >= 0 ? '+' : ''}$${t.net_pnl.toFixed(2)}`
+                    });
+                }
+                // Signal entry points (no trade executed)
+                for (const s of scans) {
+                    if (s.signal === 'long') {
+                        markers.push({
+                            time: s.time, position: 'belowBar', color: '#a78bfa',
+                            shape: 'circle', text: 'Signal'
+                        });
+                    } else if (s.signal === 'filtered_oi') {
+                        markers.push({
+                            time: s.time, position: 'aboveBar', color: '#f97316',
+                            shape: 'square', text: 'OI Block'
+                        });
+                    }
+                }
+                if (markers.length > 0) {
+                    markers.sort((a, b) => a.time - b.time);
+                    priceSeries.setMarkers(markers);
+                }
+                chart.timeScale().fitContent();
+            }
+        }
+
+        // 2. RSI chart
+        if (scans.length > 0) {
+            const chart = this.createBFChart('bfChartRSI', 200);
+            if (chart) {
+                const rsiSeries = chart.addLineSeries({ color: '#a78bfa', lineWidth: 2, title: 'RSI(7)' });
+                rsiSeries.setData(scans.filter(s => s.rsi > 0).map(s => ({ time: s.time, value: s.rsi })));
+
+                // Threshold lines
+                const rsi40 = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2, title: 'Min(40)' });
+                const rsi70 = chart.addLineSeries({ color: '#22c55e', lineWidth: 1, lineStyle: 2 });
+                const rsi30 = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lineStyle: 2 });
+                const times = scans.filter(s => s.rsi > 0).map(s => s.time);
+                if (times.length > 0) {
+                    rsi40.setData(times.map(t => ({ time: t, value: 40 })));
+                    rsi70.setData(times.map(t => ({ time: t, value: 70 })));
+                    rsi30.setData(times.map(t => ({ time: t, value: 30 })));
+                }
+                chart.timeScale().fitContent();
+            }
+        }
+
+        // 3. Funding Rate chart
+        if (scans.length > 0) {
+            const chart = this.createBFChart('bfChartFunding', 200);
+            if (chart) {
+                const fundingSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 2, title: 'Funding %' });
+                fundingSeries.setData(scans.map(s => ({ time: s.time, value: s.funding * 100 })));
+
+                // Threshold line at -0.01%
+                const threshSeries = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2, title: '-0.01%' });
+                const times = scans.map(s => s.time);
+                if (times.length > 0) {
+                    threshSeries.setData(times.map(t => ({ time: t, value: -0.01 })));
+                }
+
+                // Zero line
+                const zeroSeries = chart.addLineSeries({ color: '#6b7280', lineWidth: 1, lineStyle: 2 });
+                if (times.length > 0) {
+                    zeroSeries.setData(times.map(t => ({ time: t, value: 0 })));
+                }
+                chart.timeScale().fitContent();
+            }
+        }
+
+        // 4. Volume chart
+        if (scans.length > 0) {
+            const chart = this.createBFChart('bfChartVolume', 180);
+            if (chart) {
+                const volSeries = chart.addHistogramSeries({
+                    color: '#3b82f6', priceFormat: { type: 'volume' }, title: 'Volume'
+                });
+                volSeries.setData(scans.map(s => ({
+                    time: s.time, value: s.volume,
+                    color: s.volume > s.avg_volume * 1.5 ? '#22c55e' : '#3b82f680'
+                })));
+
+                // Average volume line
+                const avgSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'Avg' });
+                avgSeries.setData(scans.filter(s => s.avg_volume > 0).map(s => ({ time: s.time, value: s.avg_volume })));
+                chart.timeScale().fitContent();
+            }
+        }
+
+        // 5. OBI + Taker Buy Ratio chart
+        if (signals.length > 0) {
+            const chart = this.createBFChart('bfChartOBI', 200);
+            if (chart) {
+                const obi5Series = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'OBI-5' });
+                obi5Series.setData(signals.map(s => ({ time: s.time, value: s.obi5 })));
+
+                const obi20Series = chart.addLineSeries({ color: '#8b5cf6', lineWidth: 1, title: 'OBI-20' });
+                obi20Series.setData(signals.map(s => ({ time: s.time, value: s.obi20 })));
+
+                const takerSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'Taker Buy' });
+                takerSeries.setData(signals.map(s => ({ time: s.time, value: s.taker_buy })));
+
+                // 0.5 baseline
+                const baseSeries = chart.addLineSeries({ color: '#6b7280', lineWidth: 1, lineStyle: 2 });
+                const times = signals.map(s => s.time);
+                if (times.length > 0) {
+                    baseSeries.setData(times.map(t => ({ time: t, value: 0.5 })));
+                }
+                chart.timeScale().fitContent();
+            }
+        }
+
+        // 6. Cumulative PnL chart
+        if (trades.length > 0) {
+            const chart = this.createBFChart('bfChartPnL', 200);
+            if (chart) {
+                const pnlSeries = chart.addAreaSeries({
+                    topColor: 'rgba(34,197,94,0.3)', bottomColor: 'rgba(34,197,94,0.0)',
+                    lineColor: '#22c55e', lineWidth: 2, title: 'Cumulative P&L'
+                });
+                pnlSeries.setData(trades.map(t => ({ time: t.exit_time, value: t.cum_pnl })));
+
+                // Zero line
+                const zeroSeries = chart.addLineSeries({ color: '#6b7280', lineWidth: 1, lineStyle: 2 });
+                const times = trades.map(t => t.exit_time);
+                if (times.length > 0) {
+                    zeroSeries.setData(times.map(t => ({ time: t, value: 0 })));
+                }
+                chart.timeScale().fitContent();
+            }
+        }
+    }
+
+    renderBTCFuturesTrades(trades) {
+        const tbody = document.getElementById('bfTradesTable');
+        if (!trades.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No trades yet</td></tr>';
+            return;
+        }
+        const sorted = [...trades].reverse();
+        tbody.innerHTML = sorted.map(t => {
+            const pnlColor = t.net_pnl >= 0 ? 'text-green-400' : 'text-red-400';
+            const pctColor = t.pnl_pct >= 0 ? 'text-green-400' : 'text-red-400';
+            const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString('ko-KR', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '-';
+            const reason = (t.exit_reason || '').replace(/_/g, ' ');
+            return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 px-2 text-gray-300">${exitTime}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${(t.entry_price || 0).toFixed(1)}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${(t.exit_price || 0).toFixed(1)}</td>
+                <td class="py-2 px-2 text-right ${pnlColor}">$${(t.net_pnl || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right ${pctColor}">${t.pnl_pct >= 0 ? '+' : ''}${(t.pnl_pct || 0).toFixed(2)}%</td>
+                <td class="py-2 px-2 text-right text-yellow-400">${((t.entry_funding || 0) * 100).toFixed(4)}%</td>
+                <td class="py-2 px-2 text-right">${(t.entry_rsi || 0).toFixed(1)}</td>
+                <td class="py-2 px-2 text-gray-400">${reason}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // ==================== Binance Funding Arb Methods ====================
+
+    async loadBinanceArbStatus() {
+        try {
+            const resp = await fetch('/api/binance-arb/status');
+            const result = await resp.json();
+
+            const inactive = document.getElementById('baInactive');
+            const panels = document.querySelectorAll('#panelBinanceArb > .grid, #panelBinanceArb > .bg-gray-800:not(#baInactive)');
+
+            if (!result.active || !result.data) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            const d = result.data;
+            const total = d.total || {};
+            const fmtUSD = (v) => `$${v.toFixed(2)}`;
+
+            // Funding Earned card
+            const funding = total.total_funding || 0;
+            document.getElementById('baFundingEarned').textContent = fmtUSD(funding);
+            document.getElementById('baTrades').textContent = total.trades || 0;
+
+            // Net PnL card
+            const netPnL = total.net_pnl || 0;
+            const netEl = document.getElementById('baNetPnL');
+            netEl.textContent = `${netPnL >= 0 ? '+' : ''}${fmtUSD(netPnL)}`;
+            netEl.className = `text-2xl font-bold ${netPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+            // Commission card
+            document.getElementById('baCommission').textContent = fmtUSD(total.commission || 0);
+            document.getElementById('baStartDate').textContent = total.start_date || '-';
+
+            // Active positions card
+            const positions = d.active_positions || {};
+            const posCount = Object.keys(positions).length;
+            document.getElementById('baActiveCount').textContent = posCount;
+            document.getElementById('baMaxCap').textContent = (d.max_capital || 150).toFixed(0);
+
+            // Funding rates
+            this.renderFundingRates(d.last_funding_rates || {}, d.min_funding_rate || 0.0001);
+
+            // Active positions table
+            this.renderArbPositions(positions);
+
+            // Strategy params
+            document.getElementById('baMinRate').textContent = `${((d.min_funding_rate || 0.0001) * 100).toFixed(2)}%`;
+            document.getElementById('baMaxCapital').textContent = (d.max_capital || 150).toFixed(0);
+            if (d.last_check) {
+                const lc = new Date(d.last_check);
+                document.getElementById('baLastCheck').textContent = lc.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+            }
+            if (d.pairs) {
+                document.getElementById('baPairs').textContent = d.pairs.join(', ');
+            }
+
+            // Recent trades
+            this.renderArbTrades(d.recent_trades || []);
+        } catch (e) {
+            console.error('Binance arb status error:', e);
+        }
+    }
+
+    renderFundingRates(rates, minRate) {
+        const container = document.getElementById('baFundingRates');
+        const entries = Object.entries(rates);
+        if (!entries.length) {
+            container.innerHTML = '<div class="text-gray-500 text-center py-4 col-span-4">No funding rate data</div>';
+            return;
+        }
+        container.innerHTML = entries.map(([symbol, rate]) => {
+            const pct = (rate * 100).toFixed(4);
+            const isAboveMin = rate >= minRate;
+            const color = rate > 0 ? (isAboveMin ? 'text-green-400' : 'text-yellow-400') : 'text-red-400';
+            const bgColor = rate > 0 ? (isAboveMin ? 'bg-green-900/20 border-green-700/30' : 'bg-yellow-900/20 border-yellow-700/30') : 'bg-red-900/20 border-red-700/30';
+            const annualized = (rate * 3 * 365 * 100).toFixed(1);
+            return `<div class="rounded p-3 border ${bgColor}">
+                <div class="text-gray-300 font-medium">${symbol}</div>
+                <div class="${color} text-xl font-bold">${pct}%</div>
+                <div class="text-gray-500 text-xs">~${annualized}% APR</div>
+                ${isAboveMin ? '<div class="text-green-500 text-xs mt-1">Above threshold</div>' : '<div class="text-gray-500 text-xs mt-1">Below min ${(minRate * 100).toFixed(2)}%</div>'}
+            </div>`;
+        }).join('');
+    }
+
+    renderArbPositions(positions) {
+        const tbody = document.getElementById('baPositionsTable');
+        const entries = Object.values(positions);
+        if (!entries.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No active arb positions</td></tr>';
+            return;
+        }
+        tbody.innerHTML = entries.map(p => {
+            const openedAt = p.opened_at ? new Date(p.opened_at) : null;
+            const duration = openedAt ? this.formatDuration(Date.now() - openedAt.getTime()) : '-';
+            return `<tr class="border-b border-gray-700 hover:bg-gray-750">
+                <td class="py-2 px-2 font-medium text-blue-400">${p.symbol || ''}</td>
+                <td class="py-2 px-2 text-right">$${(p.capital_used || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right">$${(p.spot_entry_price || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right">$${(p.futures_entry || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${(p.basis || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right text-yellow-400">$${(p.funding_collected || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right">${p.funding_payments || 0}</td>
+                <td class="py-2 px-2 text-right text-gray-400">${duration}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    renderArbTrades(trades) {
+        const tbody = document.getElementById('baTradesTable');
+        if (!trades.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No trades yet</td></tr>';
+            return;
+        }
+        const sorted = [...trades].reverse();
+        tbody.innerHTML = sorted.map(t => {
+            const pnlColor = t.net_pnl >= 0 ? 'text-green-400' : 'text-red-400';
+            const closedAt = t.closed_at ? new Date(t.closed_at).toLocaleString('ko-KR', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '-';
+            const basisPnL = (t.net_pnl || 0) - (t.funding_collected || 0) + (t.total_commission || 0);
+            const reason = (t.exit_reason || '').replace(/_/g, ' ');
+            return `<tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                <td class="py-2 px-2 text-gray-300">${closedAt}</td>
+                <td class="py-2 px-2 font-medium">${t.symbol || ''}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${(t.capital_used || 0).toFixed(2)}</td>
+                <td class="py-2 px-2 text-right text-yellow-400">$${(t.funding_collected || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right text-gray-300">$${basisPnL.toFixed(4)}</td>
+                <td class="py-2 px-2 text-right ${pnlColor}">$${(t.net_pnl || 0).toFixed(4)}</td>
+                <td class="py-2 px-2 text-right text-gray-400">${t.hold_duration || '-'}</td>
+                <td class="py-2 px-2 text-gray-400">${reason}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    formatDuration(ms) {
+        const hours = Math.floor(ms / 3600000);
+        if (hours < 24) return `${hours}h`;
+        const days = Math.floor(hours / 24);
+        const remainHours = hours % 24;
+        return `${days}d ${remainHours}h`;
     }
 
     // ==================== KR DCA Methods ====================
@@ -1833,12 +2532,28 @@ class TravelerApp {
             const activeCount = data.strategies.filter(s => s.active).length;
             document.getElementById('pfStrategies').textContent = `${activeCount} strategies active`;
 
-            // FIRE cards
+            // FIRE scenarios
             const fire = data.fire || {};
-            document.getElementById('pfFireYear6').textContent = fire.fire_year_6pct || '-';
-            document.getElementById('pfFireYears6').textContent = fire.years_to_6pct ? `${fire.years_to_6pct}y (Active Trading)` : '-';
-            document.getElementById('pfFireYear4').textContent = fire.fire_year_4pct || '-';
-            document.getElementById('pfFireYears4').textContent = fire.years_to_4pct ? `${fire.years_to_4pct}y (Passive)` : '-';
+            const scenarios = fire.scenarios || [];
+
+            // Top cards: 현재 실적 기반 (첫 번째 시나리오)
+            const actual = scenarios[0] || {};
+            const yr6 = actual.years_to_6pct >= 50 ? '50+' : actual.fire_year_6pct;
+            const yr4 = actual.years_to_4pct >= 50 ? '50+' : actual.fire_year_4pct;
+            const retLabel = actual.annual_return !== undefined ? `현재 실적 연 ${actual.annual_return.toFixed(1)}%` : '-';
+            document.getElementById('pfFireYear6').textContent = yr6 || '-';
+            document.getElementById('pfFireYears6').textContent = actual.years_to_6pct ? `${actual.years_to_6pct}년 · ${retLabel}` : '-';
+            document.getElementById('pfFireYear4').textContent = yr4 || '-';
+            document.getElementById('pfFireYears4').textContent = actual.years_to_4pct ? `${actual.years_to_4pct}년 · ${retLabel}` : '-';
+
+            // 수익률 음수면 빨간색
+            if (actual.annual_return < 0) {
+                document.getElementById('pfFireYear6').className = 'text-2xl font-bold text-red-400';
+                document.getElementById('pfFireYear4').className = 'text-2xl font-bold text-red-400';
+            } else {
+                document.getElementById('pfFireYear6').className = 'text-2xl font-bold text-yellow-400';
+                document.getElementById('pfFireYear4').className = 'text-2xl font-bold text-orange-400';
+            }
 
             // FIRE Progress Bar
             const target6 = fire.target_assets_6pct || 1;
@@ -1850,11 +2565,26 @@ class TravelerApp {
             // FIRE Parameters
             document.getElementById('pfMonthlyInvest').textContent = `₩${Math.round(fire.monthly_investment || 0).toLocaleString()}`;
             document.getElementById('pfTargetMonthly').textContent = `₩${Math.round(fire.target_monthly || 0).toLocaleString()}/월`;
-            document.getElementById('pfTarget4').textContent = `₩${Math.round(fire.target_assets_4pct || 0).toLocaleString()}`;
-            document.getElementById('pfTarget6').textContent = `₩${Math.round(fire.target_assets_6pct || 0).toLocaleString()}`;
-            document.getElementById('pfGrowthRate').textContent = `${(fire.monthly_growth_rate || 0).toFixed(1)}%/월`;
-            document.getElementById('pfCurrentTotal').textContent = `₩${Math.round(data.total_value || 0).toLocaleString()}`;
 
+            // Scenario table
+            const tbody = document.getElementById('pfScenarioBody');
+            if (tbody) {
+                tbody.innerHTML = scenarios.map((sc, i) => {
+                    const isActual = i === 0;
+                    const rowClass = isActual ? 'bg-gray-700/30 font-bold' : '';
+                    const labelColor = isActual
+                        ? (sc.annual_return < 0 ? 'text-red-400' : 'text-green-400')
+                        : (sc.annual_return <= 10 ? 'text-blue-400' : 'text-yellow-400');
+                    const y6 = sc.years_to_6pct >= 50 ? '50+년' : `${sc.years_to_6pct}년 (${sc.fire_year_6pct})`;
+                    const y4 = sc.years_to_4pct >= 50 ? '50+년' : `${sc.years_to_4pct}년 (${sc.fire_year_4pct})`;
+                    const marker = isActual ? ' ◀' : '';
+                    return `<tr class="border-b border-gray-700/50 ${rowClass}">
+                        <td class="py-2 px-1 ${labelColor}">${sc.label}${marker}</td>
+                        <td class="py-2 px-1 text-center text-yellow-400">${y6}</td>
+                        <td class="py-2 px-1 text-center text-orange-400">${y4}</td>
+                    </tr>`;
+                }).join('');
+            }
             // Strategy Table
             this.renderPortfolioStrategies(data.strategies);
 
@@ -1950,6 +2680,101 @@ class TravelerApp {
         if (projection.length >= 12) document.getElementById('pfProj12m').textContent = fmt(projection[11].total_assets);
         if (projection.length >= 18) document.getElementById('pfProj18m').textContent = fmt(projection[17].total_assets);
         if (projection.length >= 24) document.getElementById('pfProj24m').textContent = fmt(projection[23].total_assets);
+    }
+
+    // ==================== Collector Methods ====================
+
+    async loadCollectorStatus() {
+        try {
+            const resp = await fetch('/api/collector/status');
+            const data = await resp.json();
+
+            const inactive = document.getElementById('collectorInactive');
+            const panels = document.querySelectorAll('#panelCollector > .grid, #panelCollector > .bg-gray-800:not(#collectorInactive)');
+
+            if (!data.active) {
+                inactive.classList.remove('hidden');
+                panels.forEach(el => el.classList.add('hidden'));
+                return;
+            }
+
+            inactive.classList.add('hidden');
+            panels.forEach(el => el.classList.remove('hidden'));
+
+            // DB Size
+            const dbMB = (data.db_size / (1024 * 1024)).toFixed(1);
+            document.getElementById('colDbSize').textContent = `${dbMB} MB`;
+
+            // Total counts
+            const candles = data.candles || [];
+            const orderbook = data.orderbook || [];
+            const totalCandles = candles.reduce((s, c) => s + c.count, 0);
+            const totalOrderbook = orderbook.reduce((s, o) => s + o.count, 0);
+            document.getElementById('colTotalCandles').textContent = totalCandles.toLocaleString();
+            document.getElementById('colTotalOrderbook').textContent = totalOrderbook.toLocaleString();
+            document.getElementById('colTotalSignals').textContent = (data.signals?.count || 0).toLocaleString();
+
+            // Market summary table
+            const tbody = document.getElementById('colMarketTable');
+            const now = Date.now() / 1000;
+            let rows = '';
+
+            for (const c of candles) {
+                const age = now - c.latest;
+                const ageStr = age < 120 ? `${Math.floor(age)}s ago` : age < 7200 ? `${Math.floor(age/60)}m ago` : `${Math.floor(age/3600)}h ago`;
+                const status = age < 300 ? '<span class="text-green-400">Active</span>' : age < 3600 ? '<span class="text-yellow-400">Delayed</span>' : '<span class="text-red-400">Stale</span>';
+                rows += `<tr class="border-b border-gray-700/50">
+                    <td class="py-2 px-2 text-gray-300">Candles</td>
+                    <td class="py-2 px-2 text-white">${c.market}</td>
+                    <td class="py-2 px-2 text-right text-gray-300">${c.count.toLocaleString()}</td>
+                    <td class="py-2 px-2 text-right text-gray-400">${ageStr}</td>
+                    <td class="py-2 px-2 text-center">${status}</td>
+                </tr>`;
+            }
+
+            for (const o of orderbook) {
+                const age = now - o.latest;
+                const ageStr = age < 120 ? `${Math.floor(age)}s ago` : age < 7200 ? `${Math.floor(age/60)}m ago` : `${Math.floor(age/3600)}h ago`;
+                const status = age < 300 ? '<span class="text-green-400">Active</span>' : age < 3600 ? '<span class="text-yellow-400">Delayed</span>' : '<span class="text-red-400">Stale</span>';
+                rows += `<tr class="border-b border-gray-700/50">
+                    <td class="py-2 px-2 text-gray-300">Orderbook</td>
+                    <td class="py-2 px-2 text-white">${o.market}</td>
+                    <td class="py-2 px-2 text-right text-gray-300">${o.count.toLocaleString()}</td>
+                    <td class="py-2 px-2 text-right text-gray-400">${ageStr}</td>
+                    <td class="py-2 px-2 text-center">${status}</td>
+                </tr>`;
+            }
+
+            if (data.signals?.count > 0) {
+                const age = now - data.signals.latest;
+                const ageStr = age < 120 ? `${Math.floor(age)}s ago` : age < 7200 ? `${Math.floor(age/60)}m ago` : `${Math.floor(age/3600)}h ago`;
+                const status = age < 300 ? '<span class="text-green-400">Active</span>' : age < 3600 ? '<span class="text-yellow-400">Delayed</span>' : '<span class="text-red-400">Stale</span>';
+                rows += `<tr class="border-b border-gray-700/50">
+                    <td class="py-2 px-2 text-gray-300">Crypto Signals</td>
+                    <td class="py-2 px-2 text-white">binance_futures</td>
+                    <td class="py-2 px-2 text-right text-gray-300">${data.signals.count.toLocaleString()}</td>
+                    <td class="py-2 px-2 text-right text-gray-400">${ageStr}</td>
+                    <td class="py-2 px-2 text-center">${status}</td>
+                </tr>`;
+            }
+
+            tbody.innerHTML = rows || '<tr><td colspan="5" class="text-center text-gray-500 py-4">No data</td></tr>';
+
+            // Today's collection
+            const todayBody = document.getElementById('colTodayTable');
+            const today = data.today || [];
+            if (today.length === 0) {
+                todayBody.innerHTML = '<tr><td colspan="3" class="text-center text-gray-500 py-4">No data collected today</td></tr>';
+            } else {
+                todayBody.innerHTML = today.map(t => `<tr class="border-b border-gray-700/50">
+                    <td class="py-1 px-2 text-gray-400">${t.market}</td>
+                    <td class="py-1 px-2 text-white">${t.symbol}</td>
+                    <td class="py-1 px-2 text-right text-green-400">${t.count.toLocaleString()}</td>
+                </tr>`).join('');
+            }
+        } catch (e) {
+            console.error('Collector status error:', e);
+        }
     }
 }
 

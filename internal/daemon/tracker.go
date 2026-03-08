@@ -52,6 +52,7 @@ type DailyState struct {
 	TotalPnL        float64     `json:"total_pnl"`        // 수수료 차감 후
 	TotalPnLPct     float64     `json:"total_pnl_pct"`
 	TradeCount      int         `json:"trade_count"`
+	ScanDone        bool        `json:"scan_done"`         // true if scan was already completed today
 	WinCount        int         `json:"win_count"`
 	LossCount       int         `json:"loss_count"`
 	Trades          []TradeLog  `json:"trades"`
@@ -230,6 +231,14 @@ func (t *DailyTracker) GetState() DailyState {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.state
+}
+
+// MarkScanDone marks today's scan as complete (prevents re-scan on restart)
+func (t *DailyTracker) MarkScanDone() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.state.ScanDone = true
+	t.saveState()
 }
 
 // GetConfig 설정 조회

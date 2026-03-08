@@ -34,7 +34,11 @@
             <button class="tab-btn" data-tab="strategy">Strategy</button>
             <button class="tab-btn" data-tab="dca">DCA</button>
             <button class="tab-btn" data-tab="scalp">Scalp</button>
+            <button class="tab-btn" data-tab="binance-scalp">B-Short</button>
+            <button class="tab-btn" data-tab="binance-arb">B-Arb</button>
+            <button class="tab-btn" data-tab="btc-futures">BTC-F</button>
             <button class="tab-btn" data-tab="portfolio">Portfolio</button>
+            <button class="tab-btn" data-tab="collector">Collector</button>
         </nav>
     </header>
 
@@ -303,20 +307,20 @@
                     <div>
                         <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">US 최적 구성 (breakout-bull)</h4>
                         <div class="strategy-guide">
-                            <div class="guide-row"><span class="text-green-400">Bull</span><span>breakout</span></div>
-                            <div class="guide-row"><span class="text-yellow-400">Sideways</span><span>mean-reversion, pullback, oversold</span></div>
-                            <div class="guide-row"><span class="text-red-400">Bear</span><span>oversold</span></div>
+                            <div class="guide-row"><span class="text-green-400">Bull</span><span>ETF momentum, TQQQ/SMA, breakout</span></div>
+                            <div class="guide-row"><span class="text-yellow-400">Sideways</span><span>ETF momentum, oversold</span></div>
+                            <div class="guide-row"><span class="text-red-400">Bear</span><span>ETF momentum, oversold</span></div>
                         </div>
-                        <p class="text-gray-500 text-xs mt-2">Sharpe 1.18, +5.2% (120일 백테스트)</p>
+                        <p class="text-gray-500 text-xs mt-2">Sharpe 0.60, +2.2% (120일 백테스트)</p>
                     </div>
                     <div>
                         <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">KR 최적 구성 (extended-hold)</h4>
                         <div class="strategy-guide">
-                            <div class="guide-row"><span class="text-green-400">Bull</span><span>breakout, pullback</span></div>
-                            <div class="guide-row"><span class="text-yellow-400">Sideways</span><span>mean-reversion, pullback, oversold</span></div>
-                            <div class="guide-row"><span class="text-red-400">Bear</span><span>oversold</span></div>
+                            <div class="guide-row"><span class="text-green-400">Bull</span><span>ETF momentum, breakout</span></div>
+                            <div class="guide-row"><span class="text-yellow-400">Sideways</span><span>ETF momentum, mean-reversion, oversold</span></div>
+                            <div class="guide-row"><span class="text-red-400">Bear</span><span>ETF momentum, oversold</span></div>
                         </div>
-                        <p class="text-gray-500 text-xs mt-2">Sharpe 0.76, +6.2% (120일 백테스트). Breakout 보유 20일.</p>
+                        <p class="text-gray-500 text-xs mt-2">Sharpe 2.05, +23.6% (120일 백테스트). Breakout 보유 20일.</p>
                     </div>
                 </div>
             </div>
@@ -354,9 +358,9 @@
                         <h4 class="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-2">4. Time Stop</h4>
                         <div class="strategy-guide">
                             <div class="guide-row"><span class="text-gray-400">Breakout</span><span>15일 (KR 20일)</span></div>
-                            <div class="guide-row"><span class="text-gray-400">Pullback</span><span>7일</span></div>
                             <div class="guide-row"><span class="text-gray-400">Mean-Rev</span><span>5일</span></div>
                             <div class="guide-row"><span class="text-gray-400">Oversold</span><span>5일</span></div>
+                            <div class="guide-row"><span class="text-gray-400">Scalp</span><span>32바 (8시간)</span></div>
                         </div>
                     </div>
                 </div>
@@ -365,37 +369,6 @@
             <!-- ===== Strategies ===== -->
             <h3 class="text-lg font-semibold mb-3">Strategies</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <!-- Pullback -->
-                <div class="strategy-card strategy-card-pullback">
-                    <div class="flex items-center gap-3 mb-4">
-                        <span class="strategy-badge strategy-pullback text-sm">PULLBACK</span>
-                        <span class="text-gray-400 text-sm">추세 추종</span>
-                    </div>
-                    <p class="text-gray-300 text-sm mb-4">상승 추세에서 MA20까지 조정받은 종목의 반등을 노리는 스윙 매매 전략</p>
-
-                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
-                    <ul class="strategy-conditions mb-4">
-                        <li><span class="condition-tag condition-required">필수</span> 주가 > MA50 (상승 추세 확인)</li>
-                        <li><span class="condition-tag condition-required">필수</span> MA50 기울기 > 0 또는 MA20 > MA50</li>
-                        <li><span class="condition-tag condition-required">필수</span> 주가가 MA20 ±2% 범위 조정</li>
-                        <li><span class="condition-tag condition-required">필수</span> 반전 캔들 (양봉 또는 아래꼬리 > 몸통×1.5)</li>
-                        <li><span class="condition-tag condition-support">보조</span> 3일 평균 거래량 < 20일 평균 (매도세 약화)</li>
-                        <li><span class="condition-tag condition-support">보조</span> RSI < 70 (과매수 아님)</li>
-                    </ul>
-
-                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
-                    <div class="strategy-guide">
-                        <div class="guide-row"><span class="text-red-400">손절</span><span>MAX(1.5ATR, MA20×0.98, 진입가×0.95)</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 + Risk × 1.5</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 + Risk × 2.5</span></div>
-                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.0x</span></div>
-                        <div class="guide-row"><span class="text-gray-400">승률</span><span>45 ~ 65%</span></div>
-                    </div>
-
-                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
-                    <p class="text-gray-400 text-xs">종가 < MA20 이 2일 연속 → 포지션 청산</p>
-                </div>
-
                 <!-- Breakout -->
                 <div class="strategy-card strategy-card-breakout">
                     <div class="flex items-center gap-3 mb-4">
@@ -458,34 +431,35 @@
                     <p class="text-gray-400 text-xs">진입 2일 후에도 RSI < 35 + 종가 < BB하단 → 청산</p>
                 </div>
 
-                <!-- Volatility Breakout (Crypto) -->
-                <div class="strategy-card strategy-card-crypto">
+                <!-- Upbit RSI Scalp (Long) -->
+                <div class="strategy-card" style="border-top-color: #10b981;">
                     <div class="flex items-center gap-3 mb-4">
-                        <span class="strategy-badge strategy-volatility-breakout text-sm">VOLATILITY BREAKOUT</span>
-                        <span class="text-gray-400 text-sm">크립토 전용</span>
+                        <span class="strategy-badge bg-emerald-600 text-sm">UPBIT RSI SCALP</span>
+                        <span class="text-gray-400 text-sm">크립토 롱 스캘핑</span>
                     </div>
-                    <p class="text-gray-300 text-sm mb-4">래리 윌리엄스 변동성 돌파 전략을 크립토에 적용. 전일 변동폭 기반으로 당일 진입가 결정.</p>
+                    <p class="text-gray-300 text-sm mb-4">RSI(7) 과매도 평균회귀 롱 전략. Upbit 15분봉 기반, 9페어 동시 스캔. DCA 보유 코인도 delta 방식으로 스캘핑 가능.</p>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
                     <ul class="strategy-conditions mb-4">
-                        <li><span class="condition-tag condition-required">필수</span> 현재가 > 시가 + (전일고가 - 전일저가) × K</li>
-                        <li><span class="condition-tag condition-required">필수</span> K값 0.5 (기본) — 변동폭의 50% 돌파</li>
-                        <li><span class="condition-tag condition-required">필수</span> RSI < 75 (과매수 아님)</li>
-                        <li><span class="condition-tag condition-support">보조</span> BTC 레짐 필터 (BTC RSI > 30)</li>
-                        <li><span class="condition-tag condition-support">보조</span> 거래량 > 20일 평균 × 1.2</li>
+                        <li><span class="condition-tag condition-required">필수</span> RSI(7) < 30 (과매도)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 거래량 > 20MA × 1.5</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 > EMA50 (상승 추세 필터)</li>
+                        <li><span class="condition-tag condition-support">보조</span> BB 하단 터치 (0.5% 이내)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 시그널 강도 ≥ 30</li>
                     </ul>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
                     <div class="strategy-guide">
-                        <div class="guide-row"><span class="text-red-400">손절</span><span>진입가 × (1 - K×0.5) 또는 당일 시가</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 × (1 + K)</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 × (1 + K×2)</span></div>
-                        <div class="guide-row"><span class="text-gray-400">R:R</span><span>2.0x</span></div>
-                        <div class="guide-row"><span class="text-gray-400">마켓</span><span>Upbit KRW (24/7)</span></div>
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>-2.5%</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표</span><span>+2.0% 또는 RSI > 65</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유</span><span>최대 32바 (8시간)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">자본</span><span>₩50,000/건, 최대 3포지션</span></div>
+                        <div class="guide-row"><span class="text-gray-400">수수료</span><span>0.05% (Upbit 왕복 0.1%)</span></div>
                     </div>
 
-                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
-                    <p class="text-gray-400 text-xs">당일 종가 기준 청산 (1일 보유). 손절가 이탈 시 즉시 청산.</p>
+                    <h4 class="text-xs font-semibold text-emerald-400 uppercase tracking-wider mt-4 mb-2">페어 (9종)</h4>
+                    <p class="text-gray-400 text-xs">ETH, LINK, SOL, AVAX, SUI, XRP, ADA, DOGE, TRX</p>
+                    <p class="text-gray-500 text-xs mt-1">백테스트: 175건, WR 70%, PF 2.13, MDD 5.4%</p>
                 </div>
 
                 <!-- Oversold -->
@@ -553,31 +527,78 @@
                     </div>
                 </div>
 
-                <!-- Crypto Trend -->
-                <div class="strategy-card" style="border-top-color: #10b981;">
+                <!-- Binance Short Scalp -->
+                <div class="strategy-card" style="border-top-color: #ef4444;">
                     <div class="flex items-center gap-3 mb-4">
-                        <span class="strategy-badge bg-emerald-600 text-sm">CRYPTO TREND</span>
-                        <span class="text-gray-400 text-sm">BTC 소액 전용</span>
+                        <span class="strategy-badge bg-red-600 text-sm">SHORT SCALP</span>
+                        <span class="text-gray-400 text-sm">Binance Futures 숏</span>
                     </div>
-                    <p class="text-gray-300 text-sm mb-4">크립토 소액 계좌(₩200K 미만)에서 BTC만 집중 거래. EMA 크로스오버 + RSI 필터로 트렌드 팔로잉.</p>
+                    <p class="text-gray-300 text-sm mb-4">RSI(7) 과매수 평균회귀 숏 전략. Binance USDT-M 15분봉, 8페어 동시 스캔. 2배 레버리지.</p>
 
                     <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
                     <ul class="strategy-conditions mb-4">
-                        <li><span class="condition-tag condition-required">필수</span> BTC EMA12 > EMA50 (상승 추세)</li>
-                        <li><span class="condition-tag condition-required">필수</span> RSI(14) > 40 (하락 추세 제외)</li>
-                        <li><span class="condition-tag condition-required">필수</span> KRW-BTC만 대상 (다른 코인 무시)</li>
+                        <li><span class="condition-tag condition-required">필수</span> RSI(7) > 75 (강한 과매수)</li>
+                        <li><span class="condition-tag condition-required">필수</span> 거래량 > 20MA × 1.5</li>
+                        <li><span class="condition-tag condition-required">필수</span> 주가 < EMA50 (하락 추세 필터)</li>
+                        <li><span class="condition-tag condition-support">보조</span> BB 상단 터치 (0.5% 이내)</li>
+                        <li><span class="condition-tag condition-support">보조</span> 시그널 강도 ≥ 15</li>
+                    </ul>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">매매 가이드</h4>
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>+3.0% (가격 상승)</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표</span><span>-3.0% (가격 하락) 또는 RSI < 45</span></div>
+                        <div class="guide-row"><span class="text-gray-400">보유</span><span>최대 32바 (8시간)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">자본</span><span>$80/건 × 2x, 최대 4포지션</span></div>
+                        <div class="guide-row"><span class="text-gray-400">수수료</span><span>0.04% (Futures taker)</span></div>
+                    </div>
+
+                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">페어 (8종)</h4>
+                    <p class="text-gray-400 text-xs">ETH, SOL, XRP, LINK, DOGE, ADA, AVAX, BNB</p>
+                    <p class="text-gray-500 text-xs mt-1">백테스트: 86건, WR 77%, PF 2.97, MDD 4.1%, Net +30.9%</p>
+                </div>
+
+                <!-- BTC Futures Funding Long -->
+                <div class="strategy-card" style="border-top-color: #f59e0b;">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge bg-amber-600 text-sm">FUNDING LONG</span>
+                        <span class="text-gray-400 text-sm">BTC Futures</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">펀딩비 음수(숏 과잉) 시 BTC 롱 진입. 평균회귀 + 펀딩 수익 동시 추구.</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입 조건</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">필수</span> 펀딩비 < -0.005%</li>
+                        <li><span class="condition-tag condition-required">필수</span> RSI > 35</li>
                     </ul>
 
                     <div class="strategy-guide">
-                        <div class="guide-row"><span class="text-red-400">손절</span><span>2.5 × ATR trailing</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 1</span><span>진입가 + 3 × ATR</span></div>
-                        <div class="guide-row"><span class="text-green-400">목표 2</span><span>진입가 + 5 × ATR</span></div>
-                        <div class="guide-row"><span class="text-gray-400">보유</span><span>최대 60일 (트렌드 종료까지)</span></div>
-                        <div class="guide-row"><span class="text-gray-400">자본</span><span>Crypto < ₩200K</span></div>
+                        <div class="guide-row"><span class="text-green-400">목표</span><span>ATR × 2.5</span></div>
+                        <div class="guide-row"><span class="text-red-400">손절</span><span>ATR × 1.5</span></div>
+                        <div class="guide-row"><span class="text-gray-400">페어</span><span>BTCUSDT only</span></div>
                     </div>
+                    <p class="text-gray-500 text-xs mt-2">백테스트 180일: 49건, WR 49%, PF 1.55, Sharpe 1.31, MDD 4.07%</p>
+                </div>
 
-                    <h4 class="text-xs font-semibold text-red-400 uppercase tracking-wider mt-4 mb-2">자동 청산</h4>
-                    <p class="text-gray-400 text-xs">EMA12 < EMA50 크로스 시 매도. 60일 타임스탑.</p>
+                <!-- Funding Arb -->
+                <div class="strategy-card" style="border-top-color: #8b5cf6;">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="strategy-badge bg-violet-600 text-sm">FUNDING ARB</span>
+                        <span class="text-gray-400 text-sm">시장 중립</span>
+                    </div>
+                    <p class="text-gray-300 text-sm mb-4">Spot 롱 + Futures 숏 = 시장 중립. 양(+) 펀딩비를 8시간마다 수취하는 차익거래.</p>
+
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">진입/청산</h4>
+                    <ul class="strategy-conditions mb-4">
+                        <li><span class="condition-tag condition-required">진입</span> 펀딩비 > 0.01%, 손익분기 < 42주기</li>
+                        <li><span class="condition-tag condition-required">청산</span> 펀딩비 음수 전환</li>
+                    </ul>
+
+                    <div class="strategy-guide">
+                        <div class="guide-row"><span class="text-gray-400">페어</span><span>BTCUSDT only (레버리지 충돌 방지)</span></div>
+                        <div class="guide-row"><span class="text-gray-400">자본</span><span>$150 max</span></div>
+                        <div class="guide-row"><span class="text-gray-400">수수료</span><span>Spot 0.10% + Futures 0.04%</span></div>
+                    </div>
                 </div>
             </div>
 
@@ -777,6 +798,7 @@
                     <div class="text-gray-400 text-sm mb-1">Current Value</div>
                     <div id="dcaCurrentValue" class="text-2xl font-bold text-white">-</div>
                     <div id="dcaPnL" class="text-sm mt-1">-</div>
+                    <div id="dcaRealizedPnL" class="text-xs mt-0.5 text-gray-500">-</div>
                 </div>
                 <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
                     <div class="text-gray-400 text-sm mb-1">Next DCA</div>
@@ -930,6 +952,7 @@
                             <tr class="text-gray-400 border-b border-gray-700">
                                 <th class="text-left py-2 px-2">Time</th>
                                 <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Qty</th>
                                 <th class="text-right py-2 px-2">Entry</th>
                                 <th class="text-right py-2 px-2">Exit</th>
                                 <th class="text-right py-2 px-2">P&L</th>
@@ -960,6 +983,239 @@
             <div id="scalpInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
                 <p class="text-gray-400 text-lg mb-2">Scalp daemon is not running</p>
                 <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --market crypto --scalp</code></p>
+            </div>
+        </div>
+
+        <!-- ==================== BINANCE SHORT SCALP TAB ==================== -->
+        <div id="panelBinanceScalp" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Binance Short Scalping</h2>
+                <p class="text-gray-400 text-sm">RSI Overbought Short on Binance Futures (USDT-M)</p>
+            </div>
+
+            <!-- Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Win Rate</div>
+                    <div id="bsWinRate" class="text-3xl font-bold">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="bsTotalTrades">0</span> trades</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Today P&L</div>
+                    <div id="bsDailyPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="bsDailyWins">0</span>W / <span id="bsDailyLosses">0</span>L</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Net P&L</div>
+                    <div id="bsTotalPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1">since <span id="bsStartDate">-</span></div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Active Positions</div>
+                    <div id="bsActiveCount" class="text-3xl font-bold text-blue-400">0</div>
+                    <div class="text-gray-500 text-xs mt-1">/ <span id="bsMaxPositions">3</span> max</div>
+                </div>
+            </div>
+
+            <!-- Active Positions -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Active Short Positions</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Entry</th>
+                                <th class="text-right py-2 px-2">Amount</th>
+                                <th class="text-right py-2 px-2">Leverage</th>
+                                <th class="text-right py-2 px-2">Stop Loss</th>
+                                <th class="text-right py-2 px-2">Take Profit</th>
+                                <th class="text-right py-2 px-2">RSI</th>
+                                <th class="text-right py-2 px-2">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bsPositionsTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Today (<span id="bsToday">-</span>)</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Trades:</span> <span id="bsDayTradeCount">0</span></div>
+                        <div><span class="text-gray-400">Win Rate:</span> <span id="bsDayWR">0%</span></div>
+                        <div><span class="text-gray-400">Gross P&L:</span> <span id="bsDayGross">$0</span></div>
+                        <div><span class="text-gray-400">Commission:</span> <span id="bsDayComm">$0</span></div>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Lifetime</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Best Trade:</span> <span id="bsBest" class="text-green-400">$0</span></div>
+                        <div><span class="text-gray-400">Worst Trade:</span> <span id="bsWorst" class="text-red-400">$0</span></div>
+                        <div><span class="text-gray-400">Win Streak:</span> <span id="bsWinStreak">0</span></div>
+                        <div><span class="text-gray-400">Lose Streak:</span> <span id="bsLoseStreak">0</span></div>
+                        <div><span class="text-gray-400">Gross P&L:</span> <span id="bsTotalGross">$0</span></div>
+                        <div><span class="text-gray-400">Commission:</span> <span id="bsTotalComm">$0</span></div>
+                        <div><span class="text-gray-400">Funding Earned:</span> <span id="bsFundingEarned" class="text-yellow-400">$0</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Trades -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Recent Trades</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Time</th>
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Entry</th>
+                                <th class="text-right py-2 px-2">Exit</th>
+                                <th class="text-right py-2 px-2">P&L</th>
+                                <th class="text-right py-2 px-2">%</th>
+                                <th class="text-left py-2 px-2">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bsTradesTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Config -->
+            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <h3 class="font-semibold mb-3">Strategy Config</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div><span class="text-gray-400">Candle:</span> <span id="bsCandle">5</span>min</div>
+                    <div><span class="text-gray-400">Order:</span> $<span id="bsOrderAmt">80</span></div>
+                    <div><span class="text-gray-400">Leverage:</span> <span id="bsLeverage">2</span>x</div>
+                    <div><span class="text-gray-400">Last Scan:</span> <span id="bsLastScan">-</span></div>
+                </div>
+                <div class="mt-2 text-xs text-gray-500">
+                    Pairs: <span id="bsPairs">-</span>
+                </div>
+            </div>
+
+            <div id="bsInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">Binance Short Scalp daemon is not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --binance-scalp</code></p>
+            </div>
+        </div>
+
+        <!-- ==================== BINANCE FUNDING ARB TAB ==================== -->
+        <div id="panelBinanceArb" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Binance Funding Rate Arbitrage</h2>
+                <p class="text-gray-400 text-sm">Delta-Neutral: Spot Long + Futures Short = Funding Fee Income</p>
+            </div>
+
+            <!-- Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Funding Earned</div>
+                    <div id="baFundingEarned" class="text-3xl font-bold text-yellow-400">$0</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="baTrades">0</span> trades</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Net P&L</div>
+                    <div id="baNetPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1">funding + basis - commission</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Commission</div>
+                    <div id="baCommission" class="text-2xl font-bold text-red-400">$0</div>
+                    <div class="text-gray-500 text-xs mt-1">since <span id="baStartDate">-</span></div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Active Positions</div>
+                    <div id="baActiveCount" class="text-3xl font-bold text-blue-400">0</div>
+                    <div class="text-gray-500 text-xs mt-1">max $<span id="baMaxCap">150</span></div>
+                </div>
+            </div>
+
+            <!-- Funding Rates -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Current Funding Rates</h3>
+                <div id="baFundingRates" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div class="text-gray-500 text-center py-4">Waiting for data...</div>
+                </div>
+            </div>
+
+            <!-- Active Arb Positions -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Active Arb Positions</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Capital</th>
+                                <th class="text-right py-2 px-2">Spot Entry</th>
+                                <th class="text-right py-2 px-2">Futures Entry</th>
+                                <th class="text-right py-2 px-2">Basis</th>
+                                <th class="text-right py-2 px-2">Funding</th>
+                                <th class="text-right py-2 px-2">Periods</th>
+                                <th class="text-right py-2 px-2">Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody id="baPositionsTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Strategy Info -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Strategy Parameters</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Min Funding Rate:</span> <span id="baMinRate">0.01%</span></div>
+                        <div><span class="text-gray-400">Max Capital:</span> $<span id="baMaxCapital">150</span></div>
+                        <div><span class="text-gray-400">Last Check:</span> <span id="baLastCheck">-</span></div>
+                        <div><span class="text-gray-400">Check Interval:</span> 30min</div>
+                    </div>
+                    <div class="mt-2 text-xs text-gray-500">
+                        Pairs: <span id="baPairs">-</span>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">How It Works</h3>
+                    <div class="text-sm text-gray-400 space-y-1">
+                        <p>1. Spot Buy (Long) + Futures Short = Price Neutral</p>
+                        <p>2. Positive funding rate = Short holders receive payment</p>
+                        <p>3. Funding paid every 8 hours (00:00, 08:00, 16:00 UTC)</p>
+                        <p>4. Exit when funding rate turns negative</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Trades -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Recent Trades</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Time</th>
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Capital</th>
+                                <th class="text-right py-2 px-2">Funding</th>
+                                <th class="text-right py-2 px-2">Basis PnL</th>
+                                <th class="text-right py-2 px-2">Net P&L</th>
+                                <th class="text-right py-2 px-2">Duration</th>
+                                <th class="text-left py-2 px-2">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="baTradesTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="baInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">Binance Arb daemon is not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --binance-arb</code></p>
             </div>
         </div>
 
@@ -1085,6 +1341,176 @@
             </div>
         </div>
 
+        <!-- ==================== BTC FUTURES TAB ==================== -->
+        <div id="panelBtcFutures" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">BTC Funding Rate Long</h2>
+                <p class="text-gray-400 text-sm">Negative funding rate + RSI filter on Binance Futures (BTCUSDT)</p>
+            </div>
+
+            <!-- Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Win Rate</div>
+                    <div id="bfWinRate" class="text-3xl font-bold">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="bfTotalTrades">0</span> trades</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Today P&L</div>
+                    <div id="bfDailyPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1"><span id="bfDailyWins">0</span>W / <span id="bfDailyLosses">0</span>L</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Net P&L</div>
+                    <div id="bfTotalPnL" class="text-2xl font-bold text-white">-</div>
+                    <div class="text-gray-500 text-xs mt-1">since <span id="bfStartDate">-</span></div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Position</div>
+                    <div id="bfPositionStatus" class="text-2xl font-bold text-blue-400">None</div>
+                    <div class="text-gray-500 text-xs mt-1">last scan: <span id="bfLastScan">-</span></div>
+                </div>
+            </div>
+
+            <!-- Active Position -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Active Long Position</h3>
+                <div id="bfPositionInfo" class="text-gray-500 text-center py-4">No active position</div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Entry</th>
+                                <th class="text-right py-2 px-2">Amount</th>
+                                <th class="text-right py-2 px-2">Leverage</th>
+                                <th class="text-right py-2 px-2">Stop Loss</th>
+                                <th class="text-right py-2 px-2">Take Profit</th>
+                                <th class="text-right py-2 px-2">Funding</th>
+                                <th class="text-right py-2 px-2">RSI</th>
+                                <th class="text-right py-2 px-2">Entry Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bfPositionTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Today (<span id="bfToday">-</span>)</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Trades:</span> <span id="bfDayTradeCount">0</span></div>
+                        <div><span class="text-gray-400">Net P&L:</span> <span id="bfDayNet">$0</span></div>
+                        <div><span class="text-gray-400">Commission:</span> <span id="bfDayComm">$0</span></div>
+                    </div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <h3 class="font-semibold mb-3">Lifetime</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm">
+                        <div><span class="text-gray-400">Best Trade:</span> <span id="bfBest" class="text-green-400">$0</span></div>
+                        <div><span class="text-gray-400">Worst Trade:</span> <span id="bfWorst" class="text-red-400">$0</span></div>
+                        <div><span class="text-gray-400">Total Commission:</span> <span id="bfTotalComm">$0</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Trades -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Recent Trades</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Exit Time</th>
+                                <th class="text-right py-2 px-2">Entry</th>
+                                <th class="text-right py-2 px-2">Exit</th>
+                                <th class="text-right py-2 px-2">P&L</th>
+                                <th class="text-right py-2 px-2">%</th>
+                                <th class="text-right py-2 px-2">Funding</th>
+                                <th class="text-right py-2 px-2">RSI</th>
+                                <th class="text-left py-2 px-2">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bfTradesTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Config -->
+            <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <h3 class="font-semibold mb-3">Strategy Config</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    <div><span class="text-gray-400">Symbol:</span> <span id="bfSymbol">BTCUSDT</span></div>
+                    <div><span class="text-gray-400">Candle:</span> <span id="bfCandle">15</span>min</div>
+                    <div><span class="text-gray-400">Order:</span> $<span id="bfOrderAmt">80</span></div>
+                    <div><span class="text-gray-400">Leverage:</span> <span id="bfLeverage">2</span>x</div>
+                    <div><span class="text-gray-400">Funding Thresh:</span> <span id="bfFundingThresh">-0.01%</span></div>
+                    <div><span class="text-gray-400">RSI Min:</span> <span id="bfRSIMin">40</span></div>
+                    <div><span class="text-gray-400">TP ATR:</span> <span id="bfTPAtr">2.0</span>x</div>
+                    <div><span class="text-gray-400">SL ATR:</span> <span id="bfSLAtr">1.5</span>x</div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div id="bfChartsSection" class="mt-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-bold">Charts</h3>
+                    <select id="bfChartDays" class="bg-gray-700 text-gray-200 text-sm rounded px-3 py-1 border border-gray-600">
+                        <option value="1">Today</option>
+                        <option value="3">3 Days</option>
+                        <option value="7">7 Days</option>
+                    </select>
+                </div>
+
+                <!-- Price + EMA50 + Trade Markers -->
+                <div class="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-2">BTC Price + EMA50 + Trades</h4>
+                    <div id="bfChartPrice" style="height: 300px;"></div>
+                </div>
+
+                <!-- RSI Chart -->
+                <div class="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-2">RSI (7) — Entry threshold: 40</h4>
+                    <div id="bfChartRSI" style="height: 200px;"></div>
+                </div>
+
+                <!-- Funding Rate Chart -->
+                <div class="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-2">Funding Rate — Entry threshold: -0.01%</h4>
+                    <div id="bfChartFunding" style="height: 200px;"></div>
+                </div>
+
+                <!-- Volume Chart -->
+                <div class="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-2">Volume (15-min)</h4>
+                    <div id="bfChartVolume" style="height: 180px;"></div>
+                </div>
+
+                <!-- OBI (Order Book Imbalance) -->
+                <div class="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-2">Order Book Imbalance (OBI) + Taker Buy Ratio</h4>
+                    <div id="bfChartOBI" style="height: 200px;"></div>
+                </div>
+
+                <!-- Cumulative PnL -->
+                <div class="bg-gray-800 rounded-xl p-4 mb-4 border border-gray-700">
+                    <h4 class="text-sm font-semibold text-gray-300 mb-2">Cumulative P&L ($)</h4>
+                    <div id="bfChartPnL" style="height: 200px;"></div>
+                </div>
+
+                <div id="bfNoChartData" class="hidden bg-gray-800 rounded-xl p-6 text-center border border-gray-700">
+                    <p class="text-gray-500">No chart data available yet. Data collection starts when the daemon runs.</p>
+                </div>
+            </div>
+
+            <div id="bfInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">BTC Futures daemon is not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">traveler --daemon --btc-futures</code></p>
+            </div>
+        </div>
+
         <!-- ==================== PORTFOLIO TAB ==================== -->
         <div id="panelPortfolio" class="tab-panel hidden">
             <div class="mb-6">
@@ -1105,12 +1531,12 @@
                     <div id="pfStrategies" class="text-xs text-gray-500 mt-1">0 strategies active</div>
                 </div>
                 <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
-                    <div class="text-gray-400 text-sm mb-1">FIRE Target (6%)</div>
+                    <div class="text-gray-400 text-sm mb-1">FIRE (6% Rule)</div>
                     <div id="pfFireYear6" class="text-2xl font-bold text-yellow-400">-</div>
                     <div id="pfFireYears6" class="text-xs text-gray-500 mt-1">-</div>
                 </div>
                 <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
-                    <div class="text-gray-400 text-sm mb-1">FIRE Target (4%)</div>
+                    <div class="text-gray-400 text-sm mb-1">FIRE (4% Rule)</div>
                     <div id="pfFireYear4" class="text-2xl font-bold text-orange-400">-</div>
                     <div id="pfFireYears4" class="text-xs text-gray-500 mt-1">-</div>
                 </div>
@@ -1160,35 +1586,30 @@
                     <div id="pfAllocationChart" class="space-y-2"></div>
                 </div>
 
-                <!-- FIRE Parameters -->
+                <!-- FIRE Scenarios -->
                 <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
-                    <h3 class="font-semibold mb-3">FIRE Parameters</h3>
-                    <div class="grid grid-cols-2 gap-3 text-sm">
+                    <h3 class="font-semibold mb-3">FIRE Scenarios</h3>
+                    <div class="grid grid-cols-2 gap-3 text-sm mb-3">
                         <div class="bg-gray-700/50 rounded p-3">
-                            <div class="text-gray-400 text-xs">Monthly Investment</div>
+                            <div class="text-gray-400 text-xs">월 투자</div>
                             <div id="pfMonthlyInvest" class="font-bold">-</div>
                         </div>
                         <div class="bg-gray-700/50 rounded p-3">
-                            <div class="text-gray-400 text-xs">Target Monthly Income</div>
+                            <div class="text-gray-400 text-xs">목표 월소득</div>
                             <div id="pfTargetMonthly" class="font-bold">-</div>
                         </div>
-                        <div class="bg-gray-700/50 rounded p-3">
-                            <div class="text-gray-400 text-xs">Target Assets (4%)</div>
-                            <div id="pfTarget4" class="font-bold text-orange-400">-</div>
-                        </div>
-                        <div class="bg-gray-700/50 rounded p-3">
-                            <div class="text-gray-400 text-xs">Target Assets (6%)</div>
-                            <div id="pfTarget6" class="font-bold text-yellow-400">-</div>
-                        </div>
-                        <div class="bg-gray-700/50 rounded p-3">
-                            <div class="text-gray-400 text-xs">Monthly Growth Rate</div>
-                            <div id="pfGrowthRate" class="font-bold">-</div>
-                        </div>
-                        <div class="bg-gray-700/50 rounded p-3">
-                            <div class="text-gray-400 text-xs">Current Total</div>
-                            <div id="pfCurrentTotal" class="font-bold text-white">-</div>
-                        </div>
                     </div>
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-1">시나리오</th>
+                                <th class="text-center py-2 px-1">6% Rule</th>
+                                <th class="text-center py-2 px-1">4% Rule</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pfScenarioBody"></tbody>
+                    </table>
+                    <div class="mt-2 text-xs text-gray-500">인플레이션 3%/년 반영, 6% Rule = 공격적, 4% Rule = 보수적</div>
                 </div>
             </div>
 
@@ -1222,6 +1643,75 @@
             <div id="pfInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
                 <p class="text-gray-400 text-lg mb-2">No active strategies found</p>
                 <p class="text-gray-500 text-sm">Start at least one daemon to see portfolio data</p>
+            </div>
+        </div>
+
+        <!-- Collector Panel -->
+        <div id="panelCollector" class="tab-panel hidden">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold mb-1">Data Collector</h2>
+                <p class="text-gray-400 text-sm">멀티마켓 데이터 수집 현황 (Binance / Upbit / KR Stock)</p>
+            </div>
+
+            <div id="collectorInactive" class="hidden bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+                <p class="text-gray-400 text-lg mb-2">Collector not running</p>
+                <p class="text-gray-500 text-sm">Start with: <code class="bg-gray-700 px-2 py-1 rounded">collector --data-dir ~/.traveler</code></p>
+            </div>
+
+            <!-- Summary Cards -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">DB Size</div>
+                    <div id="colDbSize" class="text-2xl font-bold text-blue-400">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Total Candles</div>
+                    <div id="colTotalCandles" class="text-2xl font-bold text-green-400">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Orderbook Snapshots</div>
+                    <div id="colTotalOrderbook" class="text-2xl font-bold text-purple-400">-</div>
+                </div>
+                <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                    <div class="text-gray-400 text-sm mb-1">Crypto Signals</div>
+                    <div id="colTotalSignals" class="text-2xl font-bold text-yellow-400">-</div>
+                </div>
+            </div>
+
+            <!-- Market Breakdown -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Market Summary</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Table</th>
+                                <th class="text-left py-2 px-2">Market</th>
+                                <th class="text-right py-2 px-2">Records</th>
+                                <th class="text-right py-2 px-2">Latest</th>
+                                <th class="text-center py-2 px-2">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="colMarketTable"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Today's Collection by Symbol -->
+            <div class="bg-gray-800 rounded-xl p-4 mb-6 border border-gray-700">
+                <h3 class="font-semibold mb-3">Today's Collection</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 border-b border-gray-700">
+                                <th class="text-left py-2 px-2">Market</th>
+                                <th class="text-left py-2 px-2">Symbol</th>
+                                <th class="text-right py-2 px-2">Candles Today</th>
+                            </tr>
+                        </thead>
+                        <tbody id="colTodayTable"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -1364,7 +1854,7 @@
         </div>
     </div>
 
-    <script src="/js/chart.js?v=25"></script>
-    <script src="/js/app.js?v=25"></script>
+    <script src="/js/chart.js?v=30"></script>
+    <script src="/js/app.js?v=33"></script>
 </body>
 </html>

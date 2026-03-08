@@ -28,8 +28,8 @@ type UpbitProvider struct {
 func NewUpbitProvider() *UpbitProvider {
 	return &UpbitProvider{
 		client:    &http.Client{Timeout: 30 * time.Second},
-		limiter:   ratelimit.NewLimiter("upbit", 900), // 30 req/sec = 1800/min, conservative
-		rateLimit: 900,
+		limiter:   ratelimit.NewLimiter("upbit", 600), // 10 req/sec = 600/min (official limit)
+		rateLimit: 600,
 	}
 }
 

@@ -244,6 +244,20 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 		}
 	}
 
+	// Strong close filter: 종가가 당일 레인지 상위 영역 마감 (약한 마감 → 허위 돌파)
+	dayRange := today.High - today.Low
+	if dayRange > 0 {
+		closePosition := (today.Close - today.Low) / dayRange
+		details["close_position"] = closePosition
+		minClosePos := 0.6 // US: 상위 40%
+		if isKR {
+			minClosePos = 0.5 // KR: 상위 50% (변동성 큰 시장)
+		}
+		if closePosition < minClosePos {
+			return nil, nil
+		}
+	}
+
 	// Only return BUY signal if all 3 core conditions are met
 	if !breakout || !volumeConfirm || !aboveMA50 {
 		return nil, nil
@@ -282,7 +296,7 @@ func (s *BreakoutStrategy) Analyze(ctx context.Context, stock model.Stock) (*Sig
 // calculateTradeGuide generates trading guidance for breakout
 func (s *BreakoutStrategy) calculateTradeGuide(currentPrice, breakoutLevel, atr float64, candles []model.Candle) *TradeGuide {
 	// === 손절: 하이브리드 (ATR + breakout레벨 + 구조적 스윙로우) ===
-	atrStop := currentPrice - atr*2.0
+	atrStop := currentPrice - atr*2.5
 	breakoutStop := breakoutLevel * 0.97
 	stopLoss := math.Max(atrStop, breakoutStop)
 

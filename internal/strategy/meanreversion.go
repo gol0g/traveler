@@ -230,6 +230,15 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 		return nil, nil
 	}
 
+	// 낙하 중 진입 방지: 오늘 종가가 전일 종가보다 낮으면 아직 하락 중 → 스킵
+	// (반전 캔들이 있어도 전일 대비 추가 하락이면 칼날잡기)
+	if len(candles) >= 2 {
+		prevClose := candles[len(candles)-2].Close
+		if today.Close < prevClose {
+			return nil, nil
+		}
+	}
+
 	probability := calculateMeanReversionProbability(strength, ind.RSI14, inUptrend, volumeIncrease)
 	guide := s.calculateTradeGuide(today, ind)
 
@@ -249,9 +258,10 @@ func (s *MeanReversionStrategy) Analyze(ctx context.Context, stock model.Stock) 
 
 // calculateTradeGuide generates trading guidance for mean reversion
 func (s *MeanReversionStrategy) calculateTradeGuide(today model.Candle, ind *Indicators) *TradeGuide {
-	// ATR 기반 손절: 변동성에 맞춰 조절
-	atrStop := today.Close - ind.ATR14*1.5   // 1.5 ATR
-	lowStop := today.Low * 0.99              // 당일 저점 -1%
+	// ATR 기반 손절: 스윙 보유(5일)에 맞게 충분한 여유
+	// 1.5 ATR → 12분 만에 노이즈에 손절되던 문제 수정
+	atrStop := today.Close - ind.ATR14*2.5   // 2.5 ATR
+	lowStop := today.Low * 0.985             // 당일 저점 -1.5%
 	stopLoss := math.Max(atrStop, lowStop)   // 둘 중 보수적(높은) 쪽
 
 	// 최소 보장: -5% floor

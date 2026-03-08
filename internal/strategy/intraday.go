@@ -33,6 +33,13 @@ type IntradayConfig struct {
 }
 
 // DefaultIntradayConfig 기본 설정
+// DefaultIntradayConfig returns the backtested intraday config.
+// DipBuy backtest (90d, crypto 5m proxy):
+//   Drop -3%: 47 trades, WR 36%, Net -4.6% → LOSING at crypto comm (0.04%)
+//   Drop -3% at KR comm (0.25%): Net -24.3% → DISASTER
+//   Drop -4%: 15 trades, WR 53%, Net +12.3%, PF 2.11 (crypto comm)
+//   Drop -4% at KR comm (0.25%): Net +6.0% → marginal
+// Decision: raise DipMinDrop to -4.0% to filter out weak dips.
 func DefaultIntradayConfig() IntradayConfig {
 	return IntradayConfig{
 		ORBEnabled:     false,
@@ -40,11 +47,11 @@ func DefaultIntradayConfig() IntradayConfig {
 		ORBMinRange:    0.3,
 		ORBMaxRange:    5.0,
 		DipBuyEnabled:  true,
-		DipMinDrop:     -3.0,
+		DipMinDrop:     -4.0, // backtest: -3% loses money, -4% PF 2.11
 		DipLookbackMin: 30,
 		ScanInterval:   5 * time.Minute,
 		StopLossPct:    1.5,
-		TargetPct:      2.0,
+		TargetPct:      3.0,
 		MaxPositions:   3,
 		MaxDailyLoss:   3.0,
 		ForceCloseMin:  30,

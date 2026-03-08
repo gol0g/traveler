@@ -204,6 +204,18 @@ func (ps *PlanStore) UpdateTrailingStop(symbol string, highestSinceT1, newStopLo
 	return nil
 }
 
+// UpdateStopLoss updates only the stop loss price (for breakeven stop)
+func (ps *PlanStore) UpdateStopLoss(symbol string, newStopLoss float64) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	if plan, ok := ps.plans[symbol]; ok {
+		plan.StopLoss = newStopLoss
+		return ps.persist()
+	}
+	return nil
+}
+
 // UpdateConsecutiveDaysBelow updates the consecutive days below counter
 func (ps *PlanStore) UpdateConsecutiveDaysBelow(symbol string, days int) error {
 	ps.mu.Lock()

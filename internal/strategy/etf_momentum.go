@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	"traveler/internal/provider"
@@ -127,9 +128,28 @@ func (s *ETFMomentumStrategy) analyzeGEM(ctx context.Context, stock model.Stock)
 	}
 
 	atr := CalculateATR(candles, 14)
-	stopLoss := price * 0.92 // 8% trailing safety
-	target1 := price * 1.05  // 5% target (참고용)
-	target2 := price * 1.10
+	// GEM SL: 시그널 역전(SMA200 이탈)이 주 청산 기준
+	// 가격 SL은 극단적 폭락 방어용 safety net (7%)
+	stopLoss := price * 0.93
+	stopLossPct := 7.0
+	tp1Amount := atr * 3.0
+	tp1Pct := tp1Amount / price * 100
+	// GEM ETF TP 상한: TP1 5%, TP2 8%
+	if tp1Pct > 5.0 {
+		tp1Amount = price * 0.05
+		tp1Pct = 5.0
+	}
+	target1 := price + tp1Amount
+	target1Pct := tp1Pct
+	tp2Amount := atr * 5.0
+	tp2Pct := tp2Amount / price * 100
+	if tp2Pct > 8.0 {
+		tp2Amount = price * 0.08
+		tp2Pct = 8.0
+	}
+	target2 := price + tp2Amount
+	tp2Pct = tp2Amount / price * 100
+	rrRatio := tp1Amount / (price - stopLoss)
 
 	return &Signal{
 		Stock:       stock,
@@ -148,12 +168,12 @@ func (s *ETFMomentumStrategy) analyzeGEM(ctx context.Context, stock model.Stock)
 			EntryPrice:      price,
 			EntryType:       "market",
 			StopLoss:        stopLoss,
-			StopLossPct:     8.0,
+			StopLossPct:     stopLossPct,
 			Target1:         target1,
-			Target1Pct:      5.0,
+			Target1Pct:      target1Pct,
 			Target2:         target2,
-			Target2Pct:      10.0,
-			RiskRewardRatio: 1.25,
+			Target2Pct:      tp2Pct,
+			RiskRewardRatio: rrRatio,
 			EntryATR:        atr,
 		},
 		Candles: trimCandles(candles, 90),
@@ -194,9 +214,28 @@ func (s *ETFMomentumStrategy) analyzeTQQQSMA(ctx context.Context, stock model.St
 
 	price := tqqqCandles[len(tqqqCandles)-1].Close
 	atr := CalculateATR(tqqqCandles, 14)
-	stopLoss := price * 0.90 // 10% trailing (leveraged ETF)
-	target1 := price * 1.08
-	target2 := price * 1.15
+	// TQQQ SL: QQQ SMA200 이탈이 주 청산 기준
+	// 가격 SL은 극단적 폭락 방어용 safety net (12% - 레버리지)
+	stopLoss := price * 0.88
+	stopLossPct := 12.0
+	tp1Amount := atr * 3.0
+	tp1Pct := tp1Amount / price * 100
+	// TQQQ 레버리지 TP 상한: TP1 10%, TP2 15%
+	if tp1Pct > 10.0 {
+		tp1Amount = price * 0.10
+		tp1Pct = 10.0
+	}
+	target1 := price + tp1Amount
+	target1Pct := tp1Pct
+	tp2Amount := atr * 5.0
+	tp2Pct := tp2Amount / price * 100
+	if tp2Pct > 15.0 {
+		tp2Amount = price * 0.15
+		tp2Pct = 15.0
+	}
+	target2 := price + tp2Amount
+	tp2Pct = tp2Amount / price * 100
+	rrRatio := tp1Amount / (price - stopLoss)
 
 	pctAboveSMA := (qqqPrice - qqqSMA200) / qqqSMA200 * 100
 	reason := fmt.Sprintf("[TQQQ/SMA] QQQ $%.2f > SMA200 $%.2f (+%.1f%%), holding TQQQ",
@@ -219,12 +258,12 @@ func (s *ETFMomentumStrategy) analyzeTQQQSMA(ctx context.Context, stock model.St
 			EntryPrice:      price,
 			EntryType:       "market",
 			StopLoss:        stopLoss,
-			StopLossPct:     10.0,
+			StopLossPct:     stopLossPct,
 			Target1:         target1,
-			Target1Pct:      8.0,
+			Target1Pct:      target1Pct,
 			Target2:         target2,
-			Target2Pct:      15.0,
-			RiskRewardRatio: 1.5,
+			Target2Pct:      tp2Pct,
+			RiskRewardRatio: rrRatio,
 			EntryATR:        atr,
 		},
 		Candles: trimCandles(tqqqCandles, 60),
@@ -251,20 +290,28 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 	benchSMA200 := CalculateMA(benchCandles, 200)
 	isAboveSMA := benchPrice > benchSMA200
 
+	// 추세 강도 확인: SMA200 대비 거리
+	pctFromSMA := (benchPrice - benchSMA200) / benchSMA200 * 100
+
 	// 상승장: KODEX 200(069500), 하락장: 인버스(114800)
-	// 레버리지(122630)는 파생ETF 신청 필요 → 소규모 계좌에서 사용 불가
 	var target string
 	if isAboveSMA {
-		target = "069500" // KODEX 200 (파생ETF 동의서 불필요)
+		target = "069500"
 	} else {
-		target = "114800" // KODEX 인버스
+		target = "114800"
 	}
 
 	if sym != target {
 		return nil, nil
 	}
 
-	// 타겟 ETF 데이터 (069500이면 벤치마크 캔들 재사용)
+	// 추세 강도 필터: SMA200 근처(±2%)에서는 진입 보류 (whipsaw 방지)
+	if math.Abs(pctFromSMA) < 2.0 {
+		log.Printf("[KR-ETF] KODEX200 ₩%.0f too close to SMA200 ₩%.0f (%.1f%%), skip", benchPrice, benchSMA200, pctFromSMA)
+		return nil, nil
+	}
+
+	// 타겟 ETF 데이터
 	var candles []model.Candle
 	if sym == "069500" {
 		candles = benchCandles
@@ -280,19 +327,39 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 
 	price := candles[len(candles)-1].Close
 	atr := CalculateATR(candles, 14)
-	stopLoss := price * 0.92
-	target1 := price * 1.05
-	target2 := price * 1.10
 
-	pctFromSMA := (benchPrice - benchSMA200) / benchSMA200 * 100
+	// ETF SL: 시그널 역전(SMA200 이탈)이 주 청산 기준
+	// 가격 SL은 극단적 폭락 방어용 safety net (7%)
+	stopLoss := price * 0.93
+	stopLossPct := 7.0
+
+	tp1Amount := atr * 3.0
+	tp1Pct := tp1Amount / price * 100
+	// ETF TP 상한: TP1 5%, TP2 8% (비레버리지 ETF)
+	if tp1Pct > 5.0 {
+		tp1Amount = price * 0.05
+		tp1Pct = 5.0
+	}
+	target1 := price + tp1Amount
+	target1Pct := tp1Pct
+	tp2Amount := atr * 5.0
+	tp2Pct := tp2Amount / price * 100
+	if tp2Pct > 8.0 {
+		tp2Amount = price * 0.08
+		tp2Pct = 8.0
+	}
+	target2 := price + tp2Amount
+	tp2Pct = tp2Amount / price * 100
+	rrRatio := tp1Amount / (price - stopLoss)
+
 	var direction string
 	if isAboveSMA {
 		direction = "상승 (KODEX 200)"
 	} else {
 		direction = "하락 (인버스)"
 	}
-	reason := fmt.Sprintf("[KR-ETF] KODEX200 ₩%.0f vs SMA200 ₩%.0f (%+.1f%%) → %s",
-		benchPrice, benchSMA200, pctFromSMA, direction)
+	reason := fmt.Sprintf("[KR-ETF] KODEX200 ₩%.0f vs SMA200 ₩%.0f (%+.1f%%) → %s, ATR=₩%.0f",
+		benchPrice, benchSMA200, pctFromSMA, direction, atr)
 
 	return &Signal{
 		Stock:       stock,
@@ -311,12 +378,12 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 			EntryPrice:      price,
 			EntryType:       "market",
 			StopLoss:        stopLoss,
-			StopLossPct:     8.0,
+			StopLossPct:     stopLossPct,
 			Target1:         target1,
-			Target1Pct:      5.0,
+			Target1Pct:      target1Pct,
 			Target2:         target2,
-			Target2Pct:      10.0,
-			RiskRewardRatio: 1.25,
+			Target2Pct:      tp2Pct,
+			RiskRewardRatio: rrRatio,
 			EntryATR:        atr,
 		},
 		Candles: trimCandles(candles, 60),

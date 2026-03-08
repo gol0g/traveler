@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"traveler/internal/provider"
@@ -57,15 +58,17 @@ func DefaultStockMetaConfig(market string, capital ...float64) StockMetaConfig {
 		}
 	}
 
-	// Full / Hybrid tier: 기존 로직
+	// Full / Hybrid tier: 개별종목 + ETF 모멘텀 병행
+	// ETF는 항상 포함: 개별종목 시그널이 0일 때도 ETF 타이밍이 커버
+	// (강한 상승장에서 pullback/breakout 시그널 없는 문제 해결)
 	if market == "kr" {
 		return StockMetaConfig{
 			Name:         "extended-hold",
 			Market:       "kr",
 			BenchmarkSym: "069500",
-			Bull:         []string{"breakout", "pullback"},
-			Sideways:     []string{"mean-reversion", "oversold"},
-			Bear:         []string{"oversold"},
+			Bull:         []string{"etf-momentum", "breakout"},
+			Sideways:     []string{"etf-momentum", "mean-reversion", "oversold"},
+			Bear:         []string{"etf-momentum", "oversold"},
 			MaxHoldOverride: map[string]int{
 				"breakout": 20,
 			},
@@ -75,9 +78,9 @@ func DefaultStockMetaConfig(market string, capital ...float64) StockMetaConfig {
 		Name:         "breakout-bull",
 		Market:       "us",
 		BenchmarkSym: "SPY",
-		Bull:         []string{"breakout"},
-		Sideways:     []string{"mean-reversion", "oversold"},
-		Bear:         []string{"oversold"},
+		Bull:         []string{"etf-momentum", "etf-tqqq-sma", "breakout"},
+		Sideways:     []string{"etf-momentum", "oversold"},
+		Bear:         []string{"etf-momentum", "oversold"},
 	}
 }
 
@@ -137,12 +140,12 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 		if isKR {
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000
-			// KR bull: 풀백 조건 대폭 완화 (5일간 0 시그널 → 조건 축소)
+			// KR bull: 풀백 조건 적절히 완화
 			if regime == RegimeBull {
-				cfg.MA20TouchTolerance = 0.08    // 2% → 8% (불장에서 MA20 근처까지 안 내려옴)
-				cfg.MaxRSI = 65                  // 50 → 65 (불장 RSI 높음)
-				cfg.RequireVolumePattern = false  // 거래량 패턴 선택사항 (강도만 반영)
-				cfg.RequireBouncing = false       // 바운싱 선택사항 (강도만 반영)
+				cfg.MA20TouchTolerance = 0.04    // 2% → 4% (적당히 완화)
+				cfg.MaxRSI = 60                  // 50 → 60
+				cfg.RequireVolumePattern = false  // 거래량 패턴 선택사항
+				cfg.RequireBouncing = true        // 바운싱 필수 (반등 확인)
 			}
 		}
 		return NewPullbackStrategy(cfg, s.provider)
@@ -163,14 +166,17 @@ func (s *StockMetaStrategy) createStrategy(name string, regime Regime) Strategy 
 
 	case "mean-reversion":
 		cfg := DefaultMeanReversionConfig()
-		if isSideways {
-			cfg.RSIOversold = 35        // sideways: RSI 35까지 완화 (기본 30)
-			cfg.BBTouchTolerance = 0.02 // sideways: BB 하단 2% 허용 (기본 1%)
-			cfg.RequireUptrend = false  // sideways: MA200 상승추세 불요
-		}
+		// Strict conditions only (no sideways relaxation).
+		// 2026-02-27 교훈: RSI 35, BB 2%, MA200 면제 → 3W/8L 대참사.
+		// 기본값 유지: RSI < 30, BB 1%, MA200 필수.
+		//
+		// 추가 안전장치: SPY/KODEX200 > MA20 필터 (매크로 폭락일 진입 차단)
 		if isKR {
+			cfg.MarketRegimeSymbol = "069500"
 			cfg.MinPrice = 1000
 			cfg.MinDailyDollarVol = 500000000
+		} else {
+			cfg.MarketRegimeSymbol = "SPY"
 		}
 		return NewMeanReversionStrategy(cfg, s.provider)
 
@@ -247,6 +253,13 @@ func (s *StockMetaStrategy) Analyze(ctx context.Context, stock model.Stock) (*Si
 	}
 
 	if bestSignal == nil {
+		return nil, nil
+	}
+
+	// RR ratio 최소 1.5 강제 (개별종목만 — ETF는 시그널 역전 기반 청산이라 RR 무의미)
+	isETF := strings.Contains(bestSignal.Strategy, "etf-momentum")
+	if !isETF && bestSignal.Guide != nil && bestSignal.Guide.RiskRewardRatio > 0 && bestSignal.Guide.RiskRewardRatio < 1.45 {
+		log.Printf("[STOCK-META] %s %s rejected: RR %.2f < 1.45", stock.Symbol, bestSignal.Strategy, bestSignal.Guide.RiskRewardRatio)
 		return nil, nil
 	}
 

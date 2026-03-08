@@ -4,6 +4,8 @@ let chartInstance = null;
 let candleSeries = null;
 let ma20Series = null;
 let ma50Series = null;
+let bbUpperSeries = null;
+let bbLowerSeries = null;
 
 /**
  * Render a candlestick chart with moving averages and price levels
@@ -86,15 +88,33 @@ function renderChart(containerId, candles, guide) {
     });
     candleSeries.setData(chartData);
 
-    // Calculate and add MA20
+    // Calculate and add Bollinger Bands (MA20 ± 2σ)
     const ma20Data = calculateMA(chartData, 20);
+    const bbData = calculateBollingerBands(chartData, 20, 2);
     if (ma20Data.length > 0) {
         ma20Series = chartInstance.addLineSeries({
             color: '#f59e0b',
             lineWidth: 1,
-            title: 'MA20',
+            title: 'BB Mid',
         });
         ma20Series.setData(ma20Data);
+    }
+    if (bbData.upper.length > 0) {
+        bbUpperSeries = chartInstance.addLineSeries({
+            color: 'rgba(245, 158, 11, 0.4)',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            title: 'BB+',
+        });
+        bbUpperSeries.setData(bbData.upper);
+
+        bbLowerSeries = chartInstance.addLineSeries({
+            color: 'rgba(245, 158, 11, 0.4)',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            title: 'BB-',
+        });
+        bbLowerSeries.setData(bbData.lower);
     }
 
     // Calculate and add MA50
@@ -200,6 +220,38 @@ function calculateMA(data, period) {
 }
 
 /**
+ * Calculate Bollinger Bands (SMA ± k*σ)
+ * @param {Array} data - Array of candle objects with {time, close}
+ * @param {number} period - SMA period (default 20)
+ * @param {number} k - Standard deviation multiplier (default 2)
+ * @returns {Object} - {upper: [{time, value}], lower: [{time, value}]}
+ */
+function calculateBollingerBands(data, period, k) {
+    const upper = [];
+    const lower = [];
+
+    for (let i = period - 1; i < data.length; i++) {
+        let sum = 0;
+        for (let j = 0; j < period; j++) {
+            sum += data[i - j].close;
+        }
+        const mean = sum / period;
+
+        let sqSum = 0;
+        for (let j = 0; j < period; j++) {
+            const diff = data[i - j].close - mean;
+            sqSum += diff * diff;
+        }
+        const stddev = Math.sqrt(sqSum / period);
+
+        upper.push({ time: data[i].time, value: mean + k * stddev });
+        lower.push({ time: data[i].time, value: mean - k * stddev });
+    }
+
+    return { upper, lower };
+}
+
+/**
  * Destroy current chart instance
  */
 function destroyChart() {
@@ -209,6 +261,8 @@ function destroyChart() {
         candleSeries = null;
         ma20Series = null;
         ma50Series = null;
+        bbUpperSeries = null;
+        bbLowerSeries = null;
     }
 }
 

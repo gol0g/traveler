@@ -33,10 +33,22 @@ type optimizeResult struct {
 	Reasoning string  `json:"reasoning"`
 }
 
+// MarketContext provides current market conditions for AI risk assessment.
+// Kept minimal to conserve free-tier tokens.
+type MarketContext struct {
+	BenchmarkSymbol string  // e.g., "SPY", "069500"
+	BenchmarkPrice  float64 // current/latest price
+	BenchmarkMA20   float64 // 20-day MA
+	BenchmarkRSI    float64 // RSI(14)
+	IsMonday        bool    // weekend gap risk
+	VIX             float64 // VIX index (US only, 0 if unavailable)
+	FearGreed       int     // Crypto Fear & Greed (0-100, 0 if unavailable)
+}
+
 // FilterSignals sends signals to Gemini for quality evaluation.
 // Returns passed signals (with AIReason set) and a list of rejections for web display.
 // On any error, returns the original signals unchanged (graceful degradation).
-func (c *GeminiClient) FilterSignals(ctx context.Context, signals []strategy.Signal, regime string, market string) ([]strategy.Signal, []AIRejection) {
+func (c *GeminiClient) FilterSignals(ctx context.Context, signals []strategy.Signal, regime string, market string, mktCtx ...MarketContext) ([]strategy.Signal, []AIRejection) {
 	if c == nil || len(signals) == 0 {
 		return signals, nil
 	}
@@ -45,7 +57,11 @@ func (c *GeminiClient) FilterSignals(ctx context.Context, signals []strategy.Sig
 	aiCtx, aiCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer aiCancel()
 
-	prompt := buildFilterPrompt(signals, regime, market)
+	var mc MarketContext
+	if len(mktCtx) > 0 {
+		mc = mktCtx[0]
+	}
+	prompt := buildFilterPrompt(signals, regime, market, mc)
 	resp, err := c.Generate(aiCtx, prompt, 500)
 	if err != nil {
 		log.Printf("[AI] Filter request failed: %v", err)
@@ -102,14 +118,17 @@ func (c *GeminiClient) FilterSignals(ctx context.Context, signals []strategy.Sig
 // OptimizeGuides sends each signal to Gemini individually for optimized SL/TP levels.
 // One request per signal to avoid response truncation.
 // Updates Guide fields in-place. On error per signal, that signal keeps original levels.
+// If AI returns R/R < 1.0, the signal is BLOCKED (AI judges risk/reward unfavorable).
 func (c *GeminiClient) OptimizeGuides(ctx context.Context, signals []strategy.Signal, regime string, market string) []strategy.Signal {
 	if c == nil || len(signals) == 0 {
 		return signals
 	}
 
 	optimized := 0
+	var kept []strategy.Signal
 	for i := range signals {
 		if signals[i].Guide == nil {
+			kept = append(kept, signals[i])
 			continue
 		}
 
@@ -119,15 +138,18 @@ func (c *GeminiClient) OptimizeGuides(ctx context.Context, signals []strategy.Si
 		aiCancel()
 		if err != nil {
 			log.Printf("[AI] Optimize %s failed: %v", signals[i].Stock.Symbol, err)
+			kept = append(kept, signals[i])
 			continue
 		}
 
 		results, err := parseOptimizeResults(resp)
 		if err != nil {
 			log.Printf("[AI] Optimize %s parse failed: %v (raw: %s)", signals[i].Stock.Symbol, err, truncate(resp, 200))
+			kept = append(kept, signals[i])
 			continue
 		}
 		if len(results) == 0 {
+			kept = append(kept, signals[i])
 			continue
 		}
 
@@ -150,23 +172,35 @@ func (c *GeminiClient) OptimizeGuides(ctx context.Context, signals []strategy.Si
 			newT2 = opt.Target2
 		}
 
-		// Validate as a whole: R/R must be >= 1.5 with new levels
 		newRisk := g.EntryPrice - newSL
 		newReward := newT1 - g.EntryPrice
 		if newRisk <= 0 || newReward <= 0 {
 			log.Printf("[AI] SKIP %s: invalid levels (SL=%.2f T1=%.2f entry=%.2f)",
 				signals[i].Stock.Symbol, newSL, newT1, g.EntryPrice)
+			kept = append(kept, signals[i])
 			continue
 		}
 		newRR := newReward / newRisk
-		if newRR < 1.5 {
-			log.Printf("[AI] SKIP %s: R/R %.2f < 1.5 (SL=%.2f T1=%.2f)",
+
+		// R/R < 1.0: AI judges trade as unfavorable → BLOCK entirely
+		// (Bug #018: previously this only skipped optimization, trade still executed)
+		if newRR < 1.0 {
+			log.Printf("[AI] BLOCK %s: AI R/R %.2f < 1.0 (SL=%.2f T1=%.2f) — trade rejected",
 				signals[i].Stock.Symbol, newRR, newSL, newT1)
+			continue // do NOT append to kept
+		}
+
+		// R/R 1.0~1.5: skip optimization but keep trade with original levels
+		if newRR < 1.5 {
+			log.Printf("[AI] SKIP %s: R/R %.2f < 1.5 (SL=%.2f T1=%.2f) — keeping original levels",
+				signals[i].Stock.Symbol, newRR, newSL, newT1)
+			kept = append(kept, signals[i])
 			continue
 		}
 
 		// Check if anything actually changed
 		if newSL == g.StopLoss && newT1 == g.Target1 && newT2 == g.Target2 {
+			kept = append(kept, signals[i])
 			continue
 		}
 
@@ -184,23 +218,43 @@ func (c *GeminiClient) OptimizeGuides(ctx context.Context, signals []strategy.Si
 		optimized++
 		log.Printf("[AI] OPTIMIZE %s: SL=%.2f T1=%.2f T2=%.2f R/R=%.2f (%s)",
 			signals[i].Stock.Symbol, g.StopLoss, g.Target1, g.Target2, g.RiskRewardRatio, opt.Reasoning)
+		kept = append(kept, signals[i])
 	}
 
-	if optimized > 0 {
-		log.Printf("[AI] Optimized SL/TP for %d/%d signals", optimized, len(signals))
+	blocked := len(signals) - len(kept)
+	if blocked > 0 {
+		log.Printf("[AI] Optimize: %d blocked (R/R<1.0), %d optimized, %d kept", blocked, optimized, len(kept))
+	} else if optimized > 0 {
+		log.Printf("[AI] Optimized SL/TP for %d/%d signals", optimized, len(kept))
 	}
-	return signals
+	return kept
 }
 
-func buildFilterPrompt(signals []strategy.Signal, regime, market string) string {
+func buildFilterPrompt(signals []strategy.Signal, regime, market string, mc MarketContext) string {
 	var sb strings.Builder
 	sb.WriteString("You are a portfolio risk manager reviewing algorithmic trading signals.\n")
 	sb.WriteString("Technical analysis is ALREADY DONE by the algorithm. Do NOT re-evaluate technicals.\n")
 	sb.WriteString("Your job: assess RISKS the algorithm CANNOT detect.\n\n")
 	sb.WriteString(fmt.Sprintf("Market: %s, Regime: %s\n", market, regime))
-	sb.WriteString(fmt.Sprintf("Date: %s\n\n", time.Now().Format("2006-01-02")))
-	sb.WriteString("SIGNALS:\n")
+	sb.WriteString(fmt.Sprintf("Date: %s (%s)\n", time.Now().Format("2006-01-02"), time.Now().Format("Monday")))
 
+	// Market context (concise — token-efficient)
+	if mc.BenchmarkSymbol != "" {
+		sb.WriteString(fmt.Sprintf("Benchmark %s: price=%.0f, MA20=%.0f, RSI=%.1f\n",
+			mc.BenchmarkSymbol, mc.BenchmarkPrice, mc.BenchmarkMA20, mc.BenchmarkRSI))
+	}
+	if mc.VIX > 0 {
+		sb.WriteString(fmt.Sprintf("VIX: %.1f\n", mc.VIX))
+	}
+	if mc.FearGreed > 0 {
+		sb.WriteString(fmt.Sprintf("Crypto Fear&Greed: %d\n", mc.FearGreed))
+	}
+	if mc.IsMonday {
+		sb.WriteString("NOTE: Monday open — check for weekend geopolitical/macro events that may cause gap risk.\n")
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("SIGNALS:\n")
 	for i, sig := range signals {
 		g := sig.Guide
 		entry, sl, t1, rr := 0.0, 0.0, 0.0, 0.0
@@ -218,19 +272,20 @@ func buildFilterPrompt(signals []strategy.Signal, regime, market string) string 
 
 	sb.WriteString("\nEvaluate each signal for RISK FACTORS only:\n")
 	sb.WriteString("1. EARNINGS/EVENT RISK: Is earnings report imminent? FDA decision, product launch, legal ruling?\n")
-	sb.WriteString("   Swing trades (5-20 day hold) through earnings are dangerous.\n")
 	sb.WriteString("2. SECTOR HEADWINDS: Is this sector facing regulatory pressure, rotation out, or macro headwinds?\n")
-	sb.WriteString("3. CONCENTRATION: Multiple signals in same sector = correlated risk. Flag if >2 in one sector.\n")
+	sb.WriteString("3. GEOPOLITICAL/WAR: Any ongoing conflicts, sanctions, or geopolitical crises affecting markets?\n")
+	sb.WriteString("   Wars, military strikes, trade wars = REJECT broad market ETFs and high-beta stocks.\n")
 	sb.WriteString("4. MACRO MISMATCH: Does this trade conflict with current macro environment?\n")
-	sb.WriteString("   (e.g., leveraged bull ETF in deteriorating macro, defensive stock in risk-on regime)\n")
-	sb.WriteString("5. COMPANY-SPECIFIC: Known fundamental problems? Declining business? Accounting concerns?\n")
-	sb.WriteString("\nREJECT only for CLEAR risk factors. If no risks found, PASS.\n")
+	sb.WriteString("   Overbought benchmark (RSI>75) + leveraged bull ETF = elevated crash risk.\n")
+	sb.WriteString("5. WEEKEND GAP RISK (Monday only): Did major events happen over the weekend?\n")
+	sb.WriteString("   If yes, REJECT until market stabilizes (1-2 days).\n")
+	sb.WriteString("\nREJECT for CLEAR risk factors. If no risks found, PASS.\n")
 	sb.WriteString("Do NOT reject for technical reasons — the algorithm already handles that.\n\n")
 	sb.WriteString("Respond with JSON array:\n")
-	sb.WriteString(`[{"symbol":"AAPL","action":"PASS","reason":"no imminent risks, solid business"},`)
+	sb.WriteString(`[{"symbol":"AAPL","action":"PASS","reason":"no imminent risks"},`)
 	sb.WriteString("\n")
-	sb.WriteString(` {"symbol":"MSFT","action":"REJECT","reason":"earnings in 3 days, high IV risk for swing trade"}]`)
-	sb.WriteString("\nRespond ONLY with JSON array.")
+	sb.WriteString(` {"symbol":"SPY","action":"REJECT","reason":"geopolitical conflict escalation, gap-down risk"}]`)
+	sb.WriteString("\nJSON array ONLY, no markdown.")
 
 	return sb.String()
 }

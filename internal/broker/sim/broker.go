@@ -12,6 +12,7 @@ import (
 
 	"traveler/internal/broker"
 	"traveler/internal/provider"
+	"traveler/internal/symbols"
 )
 
 // SimBroker implements broker.Broker with virtual capital for paper trading.
@@ -323,8 +324,16 @@ func (sb *SimBroker) buildPositions(ctx context.Context) []broker.Position {
 			unrealizedPct = (currentPrice - p.AvgCost) / p.AvgCost * 100
 		}
 
+		name := p.Symbol
+		if symbols.IsKoreanSymbol(p.Symbol) {
+			if n := symbols.GetKRSymbolName(p.Symbol); n != "" {
+				name = n
+			}
+		}
+
 		out = append(out, broker.Position{
 			Symbol:        p.Symbol,
+			Name:          name,
 			Quantity:      p.Quantity,
 			AvgCost:       p.AvgCost,
 			CurrentPrice:  currentPrice,
