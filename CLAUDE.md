@@ -53,7 +53,7 @@
 - 백테스트: 86건, WR 77%, PF 2.97, MDD 4.1%
 
 ### BTC Futures Funding Long
-- 펀딩비 < -0.005%, RSI > 35, TP ATR×2.5, SL ATR×1.5
+- 펀딩비 < -0.005%, RSI > 40, TP ATR×2.5, SL ATR×1.5, MaxBars 48
 
 ### Funding Arb (BTCUSDT)
 - Spot long + Futures short, 펀딩비 > 0.01% 진입, 음수 시 청산

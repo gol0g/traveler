@@ -68,6 +68,17 @@
 
 ## BTC Futures Funding Long (BTCUSDT)
 
+### 2026-03-09: RSI min 35→40, MaxBars 24→48 (240-combo 그리드 서치)
+- **변경**: RSI min 35→40, MaxHoldBars 24→48 (SL=ATR*1.5 유지)
+- **배경**: 실거래 SL 청산 분석 — SL=ATR*1.5=$323(0.48%)가 타이트하다고 의심
+- **백테스트**: 180일, 240 combination grid search
+  - `go run ./cmd/backtest-futures/ 180`
+  - Fund -0.005/-0.01%, RSI 35/40, TP 2.0-3.5, SL 1.0-3.0, MaxBars 24/32/48
+  - **SL=1.5가 실제 최적** — SL 2.0/2.5/3.0 모두 Net 하락 확인
+  - 이전: RSI>35, MaxBars=24: 49건, WR 49%, Net +9.19%, PF 1.55, MDD 4.07%
+  - **최적: RSI>40, MaxBars=48: 43건, WR 48.8%, Net +11.51%, PF 1.78, MDD 4.44%**
+- **사유**: RSI>40이 저품질 시그널 필터링(+2.3%p), MaxBars=48이 TP 도달 시간 확보(+2.3%p)
+
 ### 2026-03-08: 백테스트 기반 완화
 - **변경**: Funding -0.01%→-0.005%, RSI min 40→35, TP ATR*2.0→2.5
 - **백테스트**: 180일

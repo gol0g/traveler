@@ -37,23 +37,23 @@ type FundingLongConfig struct {
 	CommissionPct    float64 // per side (0.04% for Binance Futures taker)
 }
 
-// DefaultFundingLongConfig returns the optimized config from 360-day backtest.
 // DefaultFundingLongConfig returns the optimized config from 180-day backtest.
-// Backtest: 49 trades, 49% WR, +9.19%, PF 1.55, Sharpe 1.31, MDD 4.07%
+// Backtest (240-combo grid, 2026-03-09):
+// 43 trades, WR 48.8%, Net +11.51%, PF 1.78, Sharpe 1.60, MDD 4.44%
 func DefaultFundingLongConfig() FundingLongConfig {
 	return FundingLongConfig{
 		Symbol:         "BTCUSDT",
 		CandleInterval: 15,
 		CandleCount:    100,
 
-		FundingThreshold: -0.00005, // -0.005% (relaxed from -0.01%)
-		RSIMin:           35,       // lowered from 40
+		FundingThreshold: -0.00005, // -0.005%
+		RSIMin:           40,       // raised from 35 → 40 (filter low-quality signals, +2.3%p Net)
 		RSIPeriod:        7,
 
-		TPAtrMultiple: 2.5, // raised from 2.0
-		SLAtrMultiple: 1.5,
+		TPAtrMultiple: 2.5,
+		SLAtrMultiple: 1.5, // SL=1.5 is optimal — higher SLs (2.0-3.0) all worse
 		ATRPeriod:     14,
-		MaxHoldBars:   24, // 6 hours
+		MaxHoldBars:   48, // 12 hours (raised from 24, +2.3%p Net — more time to reach TP)
 
 		OrderAmountUSDT: 80,
 		Leverage:        2,

@@ -87,27 +87,26 @@ func main() {
 		fmt.Printf("Candles with negative funding: %d/%d\n\n", candlesWithNegFunding, len(candles)-50)
 	}
 
-	// Parameter grid search
-	configs := []Config{
-		// Original
-		{-0.0001, 40, 7, 2.0, 1.5, 14, 24, 0.04},
-		// Relaxed funding threshold
-		{-0.00005, 40, 7, 2.0, 1.5, 14, 24, 0.04},
-		{0, 35, 7, 2.0, 1.5, 14, 24, 0.04}, // any negative funding
-		// Tighter RSI filter + relaxed funding
-		{-0.00005, 35, 7, 2.5, 1.5, 14, 24, 0.04},
-		{-0.00005, 30, 7, 2.0, 1.5, 14, 24, 0.04},
-		// RSI oversold focus (no funding requirement)
-		{0.0001, 30, 7, 2.0, 1.5, 14, 32, 0.04},
-		{0.0001, 25, 7, 2.5, 1.0, 14, 32, 0.04},
-		// Different TP/SL ratios
-		{-0.00005, 35, 7, 3.0, 1.5, 14, 32, 0.04},
-		{-0.00005, 35, 7, 2.0, 1.0, 14, 24, 0.04},
-		{-0.00005, 40, 7, 1.5, 1.0, 14, 20, 0.04},
-		// More aggressive: funding < 0 + RSI < 45
-		{0, 45, 7, 2.0, 1.5, 14, 24, 0.04},
-		{0, 45, 7, 1.5, 1.0, 14, 20, 0.04},
+	// Parameter grid search: comprehensive SL/TP/MaxBars sweep
+	var configs []Config
+	fundingThresholds := []float64{-0.0001, -0.00005}
+	rsiMins := []float64{35, 40}
+	tpMults := []float64{2.0, 2.5, 3.0, 3.5}
+	slMults := []float64{1.0, 1.5, 2.0, 2.5, 3.0}
+	maxBars := []int{24, 32, 48}
+
+	for _, fund := range fundingThresholds {
+		for _, rsi := range rsiMins {
+			for _, tp := range tpMults {
+				for _, sl := range slMults {
+					for _, bars := range maxBars {
+						configs = append(configs, Config{fund, rsi, 7, tp, sl, 14, bars, 0.04})
+					}
+				}
+			}
+		}
 	}
+	fmt.Printf("Grid search: %d combinations\n\n", len(configs))
 
 	type Result struct {
 		Cfg     Config
