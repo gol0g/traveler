@@ -12,6 +12,7 @@ import (
 
 	"traveler/internal/broker"
 	binanceBroker "traveler/internal/broker/binance"
+	"traveler/internal/notify"
 	"traveler/internal/strategy"
 )
 
@@ -90,6 +91,9 @@ type BinanceScalpDaemon struct {
 	// Simple Earn Flexible: idle capital management
 	earnProductID string  // USDT Flexible product ID
 	earnAPY       float64 // current APY for logging
+
+	// Notifications
+	notifier *notify.TelegramNotifier
 }
 
 // NewBinanceScalpDaemon creates a new Binance short scalping daemon.
@@ -103,6 +107,7 @@ func NewBinanceScalpDaemon(cfg strategy.ShortScalpConfig, b *binanceBroker.Clien
 		ctx:            ctx,
 		cancel:         cancel,
 		dailyLossLimit: -20.0, // $20 daily loss limit
+		notifier:       notify.NewTelegramNotifier(),
 	}
 }
 
@@ -356,6 +361,10 @@ func (d *BinanceScalpDaemon) executeShort(sig strategy.ShortScalpSignal) error {
 	log.Printf("[BSCALP] FILLED SHORT %s: qty=%.4f @ $%.4f, SL=$%.4f, TP=$%.4f",
 		sig.Symbol, quantity, entryPrice, pos.StopLoss, pos.TakeProfit)
 
+	// Notify
+	d.notifier.TradeAlert(d.ctx, "B-Short", sig.Symbol, "SHORT", orderAmount, "$", 0,
+		fmt.Sprintf("RSI=%.0f, Str=%.0f", sig.RSI, sig.Strength))
+
 	// Entry commission
 	commission := orderAmount * float64(d.config.Leverage) * d.config.CommissionPct / 100.0
 	d.stateMu.Lock()
@@ -423,6 +432,10 @@ func (d *BinanceScalpDaemon) executeCoverShort(pos *strategy.ShortScalpPosition,
 
 	log.Printf("[BSCALP] CLOSED SHORT %s: pnl=$%.2f (%.2f%%), comm=$%.4f, net=$%.2f, hold=%s, reason=%s",
 		pos.Symbol, grossPnL, pnlPct, totalCommission, netPnL, holdDuration, reason)
+
+	// Notify
+	d.notifier.TradeAlert(d.ctx, "B-Short", pos.Symbol, "COVER", pos.AmountUSDT, "$", netPnL,
+		fmt.Sprintf("%s (%.1f%%, %s)", reason, pnlPct, holdDuration))
 
 	// Update stats
 	d.stateMu.Lock()

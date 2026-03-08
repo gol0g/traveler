@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"traveler/internal/broker"
+	"traveler/internal/notify"
 	"traveler/internal/strategy"
 )
 
@@ -81,6 +82,7 @@ type ScalpDaemon struct {
 	cancel context.CancelFunc
 
 	dailyLossLimit float64 // KRW, e.g. -30000
+	notifier       *notify.TelegramNotifier
 }
 
 // NewScalpDaemon creates a new scalping daemon.
@@ -94,6 +96,7 @@ func NewScalpDaemon(cfg strategy.ScalpConfig, b broker.Broker, p strategy.ScalpP
 		ctx:            ctx,
 		cancel:         cancel,
 		dailyLossLimit: -30000, // ₩30,000 daily loss limit
+		notifier:       notify.NewTelegramNotifier(),
 	}
 }
 
@@ -382,6 +385,9 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 	log.Printf("[SCALP] FILLED %s: qty=%.8f @ ₩%.2f, SL=₩%.2f, TP=₩%.2f",
 		sig.Symbol, quantity, entryPrice, pos.StopLoss, pos.TakeProfit)
 
+	d.notifier.TradeAlert(d.ctx, "Scalp", sig.Symbol, "BUY", orderAmount, "₩", 0,
+		fmt.Sprintf("RSI=%.0f, Str=%.0f", sig.RSI, sig.Strength))
+
 	commission := orderAmount * d.config.CommissionPct / 100.0
 	d.stateMu.Lock()
 	d.state.DailyStats.Commission += commission
@@ -448,6 +454,9 @@ func (d *ScalpDaemon) executeSell(pos *strategy.ScalpPosition, exitPrice float64
 
 	log.Printf("[SCALP] CLOSED %s: pnl=₩%.0f (%.2f%%), comm=₩%.0f, net=₩%.0f, hold=%s, reason=%s",
 		pos.Symbol, grossPnL, pnlPct, totalCommission, netPnL, holdDuration, reason)
+
+	d.notifier.TradeAlert(d.ctx, "Scalp", pos.Symbol, "SELL", pos.EntryPrice*pos.Quantity, "₩", netPnL,
+		fmt.Sprintf("%s (%.1f%%, %s)", reason, pnlPct, holdDuration))
 
 	// Update stats
 	d.stateMu.Lock()
