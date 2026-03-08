@@ -233,10 +233,10 @@ func (d *BinanceScalpDaemon) scanAndExecute() {
 	}
 }
 
-// calculateOrderAmountUSDT determines the order size based on available Futures balance.
-// Uses balance-proportional sizing for compounding: availableUSDT / maxPositions.
-// Falls back to config default if balance check fails.
-func (d *BinanceScalpDaemon) calculateOrderAmountUSDT() float64 {
+// calculateOrderAmountUSDT determines the order size based on available Futures balance and signal strength.
+// Uses balance-proportional sizing for compounding, scaled by signal confidence.
+// Strength multiplier: <30 → 0.7x, 30-60 → 1.0x, >60 → 1.5x
+func (d *BinanceScalpDaemon) calculateOrderAmountUSDT(strength float64) float64 {
 	const minOrderUSDT = 20.0   // Binance Futures minimum
 	const maxOrderUSDT = 500.0  // Safety cap
 
@@ -258,6 +258,16 @@ func (d *BinanceScalpDaemon) calculateOrderAmountUSDT() float64 {
 
 	orderAmount := bal.CashBalance / float64(remainingSlots)
 
+	// Signal strength multiplier: bet more on high-conviction signals
+	// Short scalp strength range is typically 15-80 (threshold 15)
+	strengthMult := 1.0
+	if strength >= 60 {
+		strengthMult = 1.5
+	} else if strength < 30 {
+		strengthMult = 0.7
+	}
+	orderAmount *= strengthMult
+
 	// Apply floor and cap
 	if orderAmount < minOrderUSDT {
 		orderAmount = minOrderUSDT
@@ -266,15 +276,15 @@ func (d *BinanceScalpDaemon) calculateOrderAmountUSDT() float64 {
 		orderAmount = maxOrderUSDT
 	}
 
-	log.Printf("[BSCALP] Dynamic sizing: balance=$%.2f, slots=%d, order=$%.2f",
-		bal.CashBalance, remainingSlots, orderAmount)
+	log.Printf("[BSCALP] Dynamic sizing: balance=$%.2f, slots=%d, strength=%.0f (×%.1f), order=$%.2f",
+		bal.CashBalance, remainingSlots, strength, strengthMult, orderAmount)
 	return orderAmount
 }
 
 // executeShort places a market SELL order to open a short position.
 func (d *BinanceScalpDaemon) executeShort(sig strategy.ShortScalpSignal) error {
-	// Dynamic position sizing: balance-proportional for compounding
-	orderAmount := d.calculateOrderAmountUSDT()
+	// Dynamic position sizing: balance-proportional + strength-scaled
+	orderAmount := d.calculateOrderAmountUSDT(sig.Strength)
 
 	log.Printf("[BSCALP] SHORT %s: $%.2f (RSI=%.1f, Vol=%.1fx, strength=%.0f)",
 		sig.Symbol, orderAmount, sig.RSI, sig.VolumeRatio, sig.Strength)

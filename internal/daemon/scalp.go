@@ -255,10 +255,10 @@ func (d *ScalpDaemon) getOtherDaemonSymbols(scalpPositions map[string]*strategy.
 	return result
 }
 
-// calculateOrderAmount determines the order size based on available balance.
-// Uses balance-proportional sizing for compounding: availableKRW / maxPositions.
-// Falls back to config default if balance check fails.
-func (d *ScalpDaemon) calculateOrderAmount() float64 {
+// calculateOrderAmount determines the order size based on available balance and signal strength.
+// Uses balance-proportional sizing for compounding, scaled by signal confidence.
+// Strength multiplier: <50 → 0.7x, 50-70 → 1.0x, >70 → 1.5x
+func (d *ScalpDaemon) calculateOrderAmount(strength float64) float64 {
 	const minOrderKRW = 30000.0  // Upbit minimum + buffer
 	const maxOrderKRW = 500000.0 // Safety cap
 
@@ -268,7 +268,7 @@ func (d *ScalpDaemon) calculateOrderAmount() float64 {
 		return d.config.OrderAmountKRW
 	}
 
-	// Available KRW divided by remaining slots (not total max, but AVAILABLE slots)
+	// Available KRW divided by remaining slots
 	d.stateMu.RLock()
 	activeCount := len(d.state.ActivePositions)
 	d.stateMu.RUnlock()
@@ -280,6 +280,15 @@ func (d *ScalpDaemon) calculateOrderAmount() float64 {
 
 	orderAmount := bal.CashBalance / float64(remainingSlots)
 
+	// Signal strength multiplier: bet more on high-conviction signals
+	strengthMult := 1.0
+	if strength >= 70 {
+		strengthMult = 1.5
+	} else if strength < 50 {
+		strengthMult = 0.7
+	}
+	orderAmount *= strengthMult
+
 	// Apply floor and cap
 	if orderAmount < minOrderKRW {
 		orderAmount = minOrderKRW
@@ -288,8 +297,8 @@ func (d *ScalpDaemon) calculateOrderAmount() float64 {
 		orderAmount = maxOrderKRW
 	}
 
-	log.Printf("[SCALP] Dynamic sizing: balance=₩%.0f, slots=%d, order=₩%.0f",
-		bal.CashBalance, remainingSlots, orderAmount)
+	log.Printf("[SCALP] Dynamic sizing: balance=₩%.0f, slots=%d, strength=%.0f (×%.1f), order=₩%.0f",
+		bal.CashBalance, remainingSlots, strength, strengthMult, orderAmount)
 	return orderAmount
 }
 
@@ -307,8 +316,8 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 		}
 	}
 
-	// Dynamic position sizing: balance-proportional for compounding
-	orderAmount := d.calculateOrderAmount()
+	// Dynamic position sizing: balance-proportional + strength-scaled
+	orderAmount := d.calculateOrderAmount(sig.Strength)
 
 	order := broker.Order{
 		Symbol: sig.Symbol,
