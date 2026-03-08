@@ -255,6 +255,44 @@ func (d *ScalpDaemon) getOtherDaemonSymbols(scalpPositions map[string]*strategy.
 	return result
 }
 
+// calculateOrderAmount determines the order size based on available balance.
+// Uses balance-proportional sizing for compounding: availableKRW / maxPositions.
+// Falls back to config default if balance check fails.
+func (d *ScalpDaemon) calculateOrderAmount() float64 {
+	const minOrderKRW = 30000.0  // Upbit minimum + buffer
+	const maxOrderKRW = 500000.0 // Safety cap
+
+	bal, err := d.broker.GetBalance(d.ctx)
+	if err != nil || bal.CashBalance <= 0 {
+		log.Printf("[SCALP] Balance check failed, using default ₩%.0f", d.config.OrderAmountKRW)
+		return d.config.OrderAmountKRW
+	}
+
+	// Available KRW divided by remaining slots (not total max, but AVAILABLE slots)
+	d.stateMu.RLock()
+	activeCount := len(d.state.ActivePositions)
+	d.stateMu.RUnlock()
+
+	remainingSlots := d.config.MaxPositions - activeCount
+	if remainingSlots <= 0 {
+		return d.config.OrderAmountKRW
+	}
+
+	orderAmount := bal.CashBalance / float64(remainingSlots)
+
+	// Apply floor and cap
+	if orderAmount < minOrderKRW {
+		orderAmount = minOrderKRW
+	}
+	if orderAmount > maxOrderKRW {
+		orderAmount = maxOrderKRW
+	}
+
+	log.Printf("[SCALP] Dynamic sizing: balance=₩%.0f, slots=%d, order=₩%.0f",
+		bal.CashBalance, remainingSlots, orderAmount)
+	return orderAmount
+}
+
 // executeBuy places a market buy order and registers the position.
 func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 	// Record pre-buy quantity to isolate our purchase from other daemons' holdings
@@ -269,15 +307,18 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 		}
 	}
 
+	// Dynamic position sizing: balance-proportional for compounding
+	orderAmount := d.calculateOrderAmount()
+
 	order := broker.Order{
 		Symbol: sig.Symbol,
 		Side:   broker.OrderSideBuy,
 		Type:   broker.OrderTypeMarket,
-		Amount: d.config.OrderAmountKRW, // KRW market buy
+		Amount: orderAmount, // KRW market buy (dynamic)
 	}
 
 	log.Printf("[SCALP] BUY %s: ₩%.0f (RSI=%.1f, Vol=%.1fx, strength=%.0f, preBuyQty=%.8f)",
-		sig.Symbol, d.config.OrderAmountKRW, sig.RSI, sig.VolumeRatio, sig.Strength, preBuyQty)
+		sig.Symbol, orderAmount, sig.RSI, sig.VolumeRatio, sig.Strength, preBuyQty)
 
 	result, err := d.broker.PlaceOrder(d.ctx, order)
 	if err != nil {
@@ -291,7 +332,7 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 	}
 
 	// Calculate quantity from order amount (fallback)
-	quantity := d.config.OrderAmountKRW / entryPrice
+	quantity := orderAmount / entryPrice
 
 	// Wait briefly then check actual position to get precise fill
 	time.Sleep(2 * time.Second)
@@ -305,7 +346,7 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 				if ourQty > 0 {
 					quantity = ourQty
 					// Estimate our fill price from amount/quantity
-					entryPrice = d.config.OrderAmountKRW / ourQty
+					entryPrice = orderAmount / ourQty
 				}
 				break
 			}
@@ -316,7 +357,7 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 		Symbol:     sig.Symbol,
 		EntryPrice: entryPrice,
 		Quantity:   quantity,
-		AmountKRW:  d.config.OrderAmountKRW,
+		AmountKRW:  orderAmount,
 		EntryTime:  time.Now(),
 		EntryBar:   d.state.BarCounter,
 		StopLoss:   d.scalper.CalculateStopLoss(entryPrice),
@@ -332,7 +373,7 @@ func (d *ScalpDaemon) executeBuy(sig strategy.ScalpSignal) error {
 	log.Printf("[SCALP] FILLED %s: qty=%.8f @ ₩%.2f, SL=₩%.2f, TP=₩%.2f",
 		sig.Symbol, quantity, entryPrice, pos.StopLoss, pos.TakeProfit)
 
-	commission := d.config.OrderAmountKRW * d.config.CommissionPct / 100.0
+	commission := orderAmount * d.config.CommissionPct / 100.0
 	d.stateMu.Lock()
 	d.state.DailyStats.Commission += commission
 	d.state.TotalStats.TotalCommission += commission

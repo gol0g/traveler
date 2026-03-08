@@ -233,17 +233,58 @@ func (d *BinanceScalpDaemon) scanAndExecute() {
 	}
 }
 
+// calculateOrderAmountUSDT determines the order size based on available Futures balance.
+// Uses balance-proportional sizing for compounding: availableUSDT / maxPositions.
+// Falls back to config default if balance check fails.
+func (d *BinanceScalpDaemon) calculateOrderAmountUSDT() float64 {
+	const minOrderUSDT = 20.0   // Binance Futures minimum
+	const maxOrderUSDT = 500.0  // Safety cap
+
+	bal, err := d.broker.GetBalance(d.ctx)
+	if err != nil || bal.CashBalance <= 0 {
+		log.Printf("[BSCALP] Balance check failed, using default $%.0f", d.config.OrderAmountUSDT)
+		return d.config.OrderAmountUSDT
+	}
+
+	// Available USDT divided by remaining slots
+	d.stateMu.RLock()
+	activeCount := len(d.state.ActivePositions)
+	d.stateMu.RUnlock()
+
+	remainingSlots := d.config.MaxPositions - activeCount
+	if remainingSlots <= 0 {
+		return d.config.OrderAmountUSDT
+	}
+
+	orderAmount := bal.CashBalance / float64(remainingSlots)
+
+	// Apply floor and cap
+	if orderAmount < minOrderUSDT {
+		orderAmount = minOrderUSDT
+	}
+	if orderAmount > maxOrderUSDT {
+		orderAmount = maxOrderUSDT
+	}
+
+	log.Printf("[BSCALP] Dynamic sizing: balance=$%.2f, slots=%d, order=$%.2f",
+		bal.CashBalance, remainingSlots, orderAmount)
+	return orderAmount
+}
+
 // executeShort places a market SELL order to open a short position.
 func (d *BinanceScalpDaemon) executeShort(sig strategy.ShortScalpSignal) error {
-	log.Printf("[BSCALP] SHORT %s: $%.0f (RSI=%.1f, Vol=%.1fx, strength=%.0f)",
-		sig.Symbol, d.config.OrderAmountUSDT, sig.RSI, sig.VolumeRatio, sig.Strength)
+	// Dynamic position sizing: balance-proportional for compounding
+	orderAmount := d.calculateOrderAmountUSDT()
+
+	log.Printf("[BSCALP] SHORT %s: $%.2f (RSI=%.1f, Vol=%.1fx, strength=%.0f)",
+		sig.Symbol, orderAmount, sig.RSI, sig.VolumeRatio, sig.Strength)
 
 	// Open short: SELL to open
 	order := broker.Order{
 		Symbol: sig.Symbol,
 		Side:   broker.OrderSideSell,
 		Type:   broker.OrderTypeMarket,
-		Amount: d.config.OrderAmountUSDT,
+		Amount: orderAmount,
 	}
 
 	result, err := d.broker.PlaceOrder(d.ctx, order)
@@ -258,14 +299,14 @@ func (d *BinanceScalpDaemon) executeShort(sig strategy.ShortScalpSignal) error {
 
 	quantity := result.FilledQty
 	if quantity <= 0 {
-		quantity = d.config.OrderAmountUSDT * float64(d.config.Leverage) / entryPrice
+		quantity = orderAmount * float64(d.config.Leverage) / entryPrice
 	}
 
 	pos := &strategy.ShortScalpPosition{
 		Symbol:     sig.Symbol,
 		EntryPrice: entryPrice,
 		Quantity:   quantity,
-		AmountUSDT: d.config.OrderAmountUSDT,
+		AmountUSDT: orderAmount,
 		Leverage:   d.config.Leverage,
 		EntryTime:  time.Now(),
 		EntryBar:   d.state.BarCounter,
@@ -283,7 +324,7 @@ func (d *BinanceScalpDaemon) executeShort(sig strategy.ShortScalpSignal) error {
 		sig.Symbol, quantity, entryPrice, pos.StopLoss, pos.TakeProfit)
 
 	// Entry commission
-	commission := d.config.OrderAmountUSDT * float64(d.config.Leverage) * d.config.CommissionPct / 100.0
+	commission := orderAmount * float64(d.config.Leverage) * d.config.CommissionPct / 100.0
 	d.stateMu.Lock()
 	d.state.DailyStats.Commission += commission
 	d.state.TotalStats.TotalCommission += commission
