@@ -39,6 +39,7 @@
 - Bull: ETF momentum + breakout (보유 20일)
 - Sideways: ETF momentum + mean-reversion + oversold
 - Bear: ETF momentum + oversold
+- ETF momentum: KODEX200 RSI(14)>70 과매수 필터 (진입 차단)
 - 백테스트: Sharpe 2.05, +23.6%
 
 ### Upbit RSI Scalp (9페어)

@@ -311,6 +311,13 @@ func (s *ETFMomentumStrategy) analyzeKRTiming(ctx context.Context, stock model.S
 		return nil, nil
 	}
 
+	// RSI 과매수 필터: RSI(14) > 70이면 진입 보류 (반전 위험)
+	rsi14 := CalculateRSI(benchCandles, 14)
+	if rsi14 > 70 {
+		log.Printf("[KR-ETF] KODEX200 RSI=%.1f > 70, overbought skip", rsi14)
+		return nil, nil
+	}
+
 	// 타겟 ETF 데이터
 	var candles []model.Candle
 	if sym == "069500" {
