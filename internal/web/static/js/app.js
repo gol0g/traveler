@@ -496,6 +496,46 @@ class TravelerApp {
         }
     }
 
+    async openScalpChart(symbol, exchange) {
+        if (!symbol) return;
+        try {
+            const endpoint = exchange === 'binance'
+                ? `/api/binance-scalp/chart?symbol=${symbol}`
+                : `/api/scalp/chart?symbol=${symbol}`;
+            const res = await fetch(endpoint);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            const guide = data.guide ? {
+                entry_price: data.guide.entry_price,
+                stop_loss: data.guide.stop_loss,
+                target_1: data.guide.take_profit,
+            } : null;
+
+            const label = exchange === 'binance' ? symbol : symbol.replace('KRW-', '');
+            document.getElementById('modalTitle').textContent = `${label} (15m)`;
+            document.getElementById('modalEntry').textContent = guide ? guide.entry_price.toFixed(exchange === 'binance' ? 4 : 0) : '--';
+            document.getElementById('modalStopLoss').textContent = guide ? guide.stop_loss.toFixed(exchange === 'binance' ? 4 : 0) : '--';
+            document.getElementById('modalTarget1').textContent = guide ? guide.target_1.toFixed(exchange === 'binance' ? 4 : 0) : '--';
+            document.getElementById('modalTarget2').textContent = '--';
+            document.getElementById('modalShares').value = 0;
+            document.getElementById('modalReason').textContent = data.guide ? `RSI at entry: ${(data.guide.rsi_at_entry || 0).toFixed(1)}` : 'No position';
+
+            if (data.candles && data.candles.length > 0) {
+                renderChart('chartContainer', data.candles, guide);
+            }
+
+            document.getElementById('modalInvestment').textContent = '--';
+            document.getElementById('modalRiskAmount').textContent = '--';
+            document.getElementById('modalRiskPct').textContent = '--';
+            document.getElementById('excludeBtn').classList.add('hidden');
+            document.getElementById('applySharesBtn').classList.add('hidden');
+            document.getElementById('stockModal').classList.remove('hidden');
+        } catch (e) {
+            console.error('Failed to load scalp chart:', e);
+        }
+    }
+
     // ==================== HELPER ====================
     pctDiff(base, target) {
         if (!base || base === 0) return '0%';
@@ -1711,7 +1751,7 @@ class TravelerApp {
                 document.getElementById('scalpLastScan').textContent = ls.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
             }
             if (d.pairs) {
-                document.getElementById('scalpPairs').textContent = d.pairs.map(p => p.replace('KRW-', '')).join(', ');
+                document.getElementById('scalpPairs').innerHTML = d.pairs.map(p => `<span class="text-blue-400 cursor-pointer hover:underline" onclick="app.openScalpChart('${p}', 'upbit')">${p.replace('KRW-', '')}</span>`).join(', ');
             }
 
             // Recent trades
@@ -1762,7 +1802,7 @@ class TravelerApp {
             const entryTime = p.entry_time ? new Date(p.entry_time) : null;
             const timeStr = entryTime ? entryTime.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
             return `<tr class="border-b border-gray-700 hover:bg-gray-750">
-                <td class="py-2 px-2 font-medium text-blue-400">${name}</td>
+                <td class="py-2 px-2 font-medium text-blue-400 cursor-pointer hover:underline" onclick="app.openScalpChart('${p.symbol}', 'upbit')">${name}</td>
                 <td class="py-2 px-2 text-right">₩${Math.round(p.entry_price || 0).toLocaleString()}</td>
                 <td class="py-2 px-2 text-right">₩${Math.round(p.amount_krw || 0).toLocaleString()}</td>
                 <td class="py-2 px-2 text-right text-red-400">₩${Math.round(p.stop_loss || 0).toLocaleString()}</td>
@@ -1856,7 +1896,7 @@ class TravelerApp {
                 document.getElementById('bsLastScan').textContent = ls.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
             }
             if (d.pairs) {
-                document.getElementById('bsPairs').textContent = d.pairs.join(', ');
+                document.getElementById('bsPairs').innerHTML = d.pairs.map(p => `<span class="text-red-400 cursor-pointer hover:underline" onclick="app.openScalpChart('${p}', 'binance')">${p}</span>`).join(', ');
             }
 
             // Recent trades
@@ -1877,7 +1917,7 @@ class TravelerApp {
             const entryTime = p.entry_time ? new Date(p.entry_time) : null;
             const timeStr = entryTime ? entryTime.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
             return `<tr class="border-b border-gray-700 hover:bg-gray-750">
-                <td class="py-2 px-2 font-medium text-red-400">${p.symbol || ''}</td>
+                <td class="py-2 px-2 font-medium text-red-400 cursor-pointer hover:underline" onclick="app.openScalpChart('${p.symbol}', 'binance')">${p.symbol || ''}</td>
                 <td class="py-2 px-2 text-right">$${(p.entry_price || 0).toFixed(4)}</td>
                 <td class="py-2 px-2 text-right">$${(p.amount_usdt || 0).toFixed(2)}</td>
                 <td class="py-2 px-2 text-right">${p.leverage || 2}x</td>

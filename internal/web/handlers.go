@@ -1359,6 +1359,126 @@ func (s *Server) handleBinanceScalpStatus(w http.ResponseWriter, r *http.Request
 	w.Write([]byte("}"))
 }
 
+// handleScalpChart returns 15-min candles from Upbit for a given symbol.
+func (s *Server) handleScalpChart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	symbol := r.URL.Query().Get("symbol") // e.g. "KRW-ETH"
+	if symbol == "" {
+		http.Error(w, "symbol required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	upbit := provider.NewUpbitProvider()
+	candles, err := upbit.GetRecentMinuteCandles(ctx, symbol, 15, 96) // 24h of 15m candles
+	if err != nil {
+		http.Error(w, fmt.Sprintf("fetch candles: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Read position info from scalp_status.json
+	var guide map[string]interface{}
+	if data, err := os.ReadFile(filepath.Join(s.dataDir, "scalp_status.json")); err == nil {
+		var status map[string]interface{}
+		if json.Unmarshal(data, &status) == nil {
+			if positions, ok := status["active_positions"].(map[string]interface{}); ok {
+				if pos, ok := positions[symbol].(map[string]interface{}); ok {
+					guide = map[string]interface{}{
+						"entry_price":  pos["entry_price"],
+						"stop_loss":    pos["stop_loss"],
+						"take_profit":  pos["take_profit"],
+						"rsi_at_entry": pos["rsi_at_entry"],
+					}
+				}
+			}
+		}
+	}
+
+	type candleJSON struct {
+		Time  int64   `json:"time"`
+		Open  float64 `json:"open"`
+		High  float64 `json:"high"`
+		Low   float64 `json:"low"`
+		Close float64 `json:"close"`
+	}
+	out := make([]candleJSON, len(candles))
+	for i, c := range candles {
+		out[i] = candleJSON{c.Time.Unix(), c.Open, c.High, c.Low, c.Close}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"symbol":  symbol,
+		"candles": out,
+		"guide":   guide,
+	})
+}
+
+// handleBinanceScalpChart returns 15-min candles from Binance for a given symbol.
+func (s *Server) handleBinanceScalpChart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	symbol := r.URL.Query().Get("symbol") // e.g. "ETHUSDT"
+	if symbol == "" {
+		http.Error(w, "symbol required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	binance := provider.NewBinanceProvider()
+	candles, err := binance.GetRecentMinuteCandles(ctx, symbol, 15, 96)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("fetch candles: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Read position info from binance_status.json
+	var guide map[string]interface{}
+	if data, err := os.ReadFile(filepath.Join(s.dataDir, "binance_status.json")); err == nil {
+		var status map[string]interface{}
+		if json.Unmarshal(data, &status) == nil {
+			if positions, ok := status["active_positions"].(map[string]interface{}); ok {
+				if pos, ok := positions[symbol].(map[string]interface{}); ok {
+					guide = map[string]interface{}{
+						"entry_price":  pos["entry_price"],
+						"stop_loss":    pos["stop_loss"],
+						"take_profit":  pos["take_profit"],
+						"rsi_at_entry": pos["rsi_at_entry"],
+					}
+				}
+			}
+		}
+	}
+
+	type candleJSON struct {
+		Time  int64   `json:"time"`
+		Open  float64 `json:"open"`
+		High  float64 `json:"high"`
+		Low   float64 `json:"low"`
+		Close float64 `json:"close"`
+	}
+	out := make([]candleJSON, len(candles))
+	for i, c := range candles {
+		out[i] = candleJSON{c.Time.Unix(), c.Open, c.High, c.Low, c.Close}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"symbol":  symbol,
+		"candles": out,
+		"guide":   guide,
+	})
+}
+
 // handleBinanceArbStatus returns the current Binance funding arb status (read from arb_status.json)
 func (s *Server) handleBinanceArbStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
