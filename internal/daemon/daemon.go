@@ -382,6 +382,12 @@ func (d *Daemon) Run() error {
 				continue
 			}
 
+			// KR DCA 타겟 심볼은 자동 플랜 생성에서 제외 (DCA 데몬이 관리)
+			if p.Symbol == "069500" {
+				log.Printf("  → Skipping %s (KR DCA target, managed by kr-dca daemon)", p.Symbol)
+				continue
+			}
+
 			// 주식(US/KR): 플랜 없으면 기술 분석 기반으로 플랜 자동 생성
 			plan := d.generatePlanFromAnalysis(p.Symbol, p.AvgCost, p.Quantity)
 			if plan != nil {
