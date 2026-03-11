@@ -68,6 +68,20 @@
 
 ## BTC Futures Funding Long (BTCUSDT)
 
+### 2026-03-12: MinATR=300 필터 추가 (48-combo 그리드 서치)
+- **변경**: MinATR=300 추가 (ATR < 300이면 진입 차단)
+- **배경**: 실거래 7건 분석 — WR 28.6%, 5건 SL, ATR 낮을 때 SL 거리가 $322~$452로 15분 노이즈에 취약
+  - #4: RSI 97.9, ATR 289, 1봉 만에 SL (-$1.17)
+  - #5: ATR 301, 4봉 만에 SL (-$1.20)
+  - #6: ATR 387, 4봉 만에 SL (-$1.53)
+- **백테스트**: 180일, 48 combinations (RSImax × 쿨다운 × MinATR)
+  - `go run ./cmd/backtest-futures/ 180`
+  - RSImax {none,75,80,85}, Cooldown {0,3,6,12}, MinATR {0,200,300}
+  - **쿨다운: 효과 미미** — 기회만 줄임
+  - **RSI max: 오히려 악화** — 이전 백테스트와 동일 결론
+  - **MinATR=300이 최대 개선**: Net 15.17%→17.18%(+2%p), WR 50%→58.8%, PF 1.91→2.48, Sharpe 1.98→2.43
+- **사유**: ATR<300일 때 SL=ATR*1.5=$450 미만 → BTC 15분 변동성 대비 너무 타이트, 노이즈 SL 다발
+
 ### 2026-03-09: RSI min 35→40, MaxBars 24→48 (240-combo 그리드 서치)
 - **변경**: RSI min 35→40, MaxHoldBars 24→48 (SL=ATR*1.5 유지)
 - **배경**: 실거래 SL 청산 분석 — SL=ATR*1.5=$323(0.48%)가 타이트하다고 의심

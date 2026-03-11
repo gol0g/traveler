@@ -21,6 +21,7 @@ type FundingLongConfig struct {
 	FundingThreshold float64 // entry when funding < this (e.g. -0.0001 = -0.01%)
 	RSIMin           float64 // RSI must be above this (filter out deep downtrend)
 	RSIPeriod        int
+	MinATR           float64 // minimum ATR to enter (filter out low-volatility = tight SL)
 
 	// Exit — ATR-based dynamic TP/SL
 	TPAtrMultiple    float64 // TP = entry + ATR * multiple
@@ -38,8 +39,8 @@ type FundingLongConfig struct {
 }
 
 // DefaultFundingLongConfig returns the optimized config from 180-day backtest.
-// Backtest (240-combo grid, 2026-03-09):
-// 43 trades, WR 48.8%, Net +11.51%, PF 1.78, Sharpe 1.60, MDD 4.44%
+// Backtest (48-combo grid, 2026-03-12):
+// 34 trades, WR 58.8%, Net +17.18%, PF 2.48, Sharpe 2.43, MDD 4.44%
 func DefaultFundingLongConfig() FundingLongConfig {
 	return FundingLongConfig{
 		Symbol:         "BTCUSDT",
@@ -47,13 +48,14 @@ func DefaultFundingLongConfig() FundingLongConfig {
 		CandleCount:    100,
 
 		FundingThreshold: -0.00005, // -0.005%
-		RSIMin:           40,       // raised from 35 → 40 (filter low-quality signals, +2.3%p Net)
+		RSIMin:           40,       // filter deep downtrend
 		RSIPeriod:        7,
+		MinATR:           300,      // ATR<300 → SL too tight, noise exits (+2%p Net, WR 50→58.8%)
 
 		TPAtrMultiple: 2.5,
 		SLAtrMultiple: 1.5, // SL=1.5 is optimal — higher SLs (2.0-3.0) all worse
 		ATRPeriod:     14,
-		MaxHoldBars:   48, // 12 hours (raised from 24, +2.3%p Net — more time to reach TP)
+		MaxHoldBars:   48, // 12 hours
 
 		OrderAmountUSDT: 80,
 		Leverage:        2,
@@ -239,6 +241,13 @@ func (s *FundingLongStrategy) Scan(ctx context.Context) (*FundingLongSignal, *Fu
 	if atr <= 0 {
 		result.Signal = "no_atr"
 		result.Reason = "ATR is zero"
+		return nil, result, nil
+	}
+
+	// 4c. MinATR filter: ATR too small → SL too tight → noise exits
+	if s.config.MinATR > 0 && atr < s.config.MinATR {
+		result.Signal = "filtered_atr"
+		result.Reason = fmt.Sprintf("ATR=%.1f < %.0f (SL too tight)", atr, s.config.MinATR)
 		return nil, result, nil
 	}
 

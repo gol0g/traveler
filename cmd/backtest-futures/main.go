@@ -38,12 +38,15 @@ type TradeResult struct {
 type Config struct {
 	FundingThreshold float64
 	RSIMin           float64
+	RSIMax           float64 // 0 = no upper limit
 	RSIPeriod        int
 	TPAtrMult        float64
 	SLAtrMult        float64
 	ATRPeriod        int
 	MaxHoldBars      int
 	CommissionPct    float64
+	CooldownBars     int     // bars to wait after exit before re-entry (0 = no cooldown)
+	MinATR           float64 // minimum ATR to enter (0 = no minimum)
 }
 
 func main() {
@@ -87,22 +90,28 @@ func main() {
 		fmt.Printf("Candles with negative funding: %d/%d\n\n", candlesWithNegFunding, len(candles)-50)
 	}
 
-	// Parameter grid search: comprehensive SL/TP/MaxBars sweep
+	// Parameter grid search: cooldown + RSI max + minATR
 	var configs []Config
-	fundingThresholds := []float64{-0.0001, -0.00005}
-	rsiMins := []float64{35, 40}
-	tpMults := []float64{2.0, 2.5, 3.0, 3.5}
-	slMults := []float64{1.0, 1.5, 2.0, 2.5, 3.0}
-	maxBars := []int{24, 32, 48}
+	rsiMaxes := []float64{0, 75, 80, 85}           // 0 = no limit
+	cooldowns := []int{0, 3, 6, 12}                // bars (0/45m/90m/3h)
+	minATRs := []float64{0, 200, 300}              // minimum ATR filter
 
-	for _, fund := range fundingThresholds {
-		for _, rsi := range rsiMins {
-			for _, tp := range tpMults {
-				for _, sl := range slMults {
-					for _, bars := range maxBars {
-						configs = append(configs, Config{fund, rsi, 7, tp, sl, 14, bars, 0.04})
-					}
-				}
+	for _, rsiMax := range rsiMaxes {
+		for _, cd := range cooldowns {
+			for _, minATR := range minATRs {
+				configs = append(configs, Config{
+					FundingThreshold: -0.00005,
+					RSIMin:           40,
+					RSIMax:           rsiMax,
+					RSIPeriod:        7,
+					TPAtrMult:        2.5,
+					SLAtrMult:        1.5,
+					ATRPeriod:        14,
+					MaxHoldBars:      48,
+					CommissionPct:    0.04,
+					CooldownBars:     cd,
+					MinATR:           minATR,
+				})
 			}
 		}
 	}
@@ -183,23 +192,39 @@ func main() {
 		return results[i].NetPnL > results[j].NetPnL
 	})
 
-	fmt.Printf("%-6s %-5s %-5s %-5s %-5s %-6s %-8s %-6s %-6s %-6s\n",
-		"Fund%", "RSIm", "TP", "SL", "Bars", "Trades", "Net%", "WR%", "PF", "MDD%")
-	fmt.Println("--------------------------------------------------------------------------")
-	for _, r := range results {
-		fmt.Printf("%-6.3f %-5.0f %-5.1f %-5.1f %-5d %-6d %-8.2f %-6.1f %-6.2f %-6.2f\n",
-			r.Cfg.FundingThreshold*100, r.Cfg.RSIMin,
-			r.Cfg.TPAtrMult, r.Cfg.SLAtrMult, r.Cfg.MaxHoldBars,
-			r.Trades, r.NetPnL, r.WR, r.PF, r.MaxDD)
+	fmt.Printf("%-5s %-5s %-4s %-6s %-6s %-8s %-6s %-6s %-6s %-6s\n",
+		"RSIx", "CD", "mATR", "Trades", "Net%", "WR%", "PF", "MDD%", "Sharpe", "")
+	fmt.Println("------------------------------------------------------------------------")
+	for i, r := range results {
+		rsiMaxStr := "none"
+		if r.Cfg.RSIMax > 0 {
+			rsiMaxStr = fmt.Sprintf("%.0f", r.Cfg.RSIMax)
+		}
+		minATRStr := "0"
+		if r.Cfg.MinATR > 0 {
+			minATRStr = fmt.Sprintf("%.0f", r.Cfg.MinATR)
+		}
+		marker := ""
+		if i == 0 {
+			marker = " ← BEST"
+		}
+		fmt.Printf("%-5s %-5d %-4s %-6d %-8.2f %-6.1f %-6.2f %-6.2f %-6.2f%s\n",
+			rsiMaxStr, r.Cfg.CooldownBars, minATRStr,
+			r.Trades, r.NetPnL, r.WR, r.PF, r.MaxDD, r.Sharpe, marker)
 	}
 
 	// Print best config details
 	if len(results) > 0 && results[0].Trades > 0 {
 		best := results[0]
 		fmt.Printf("\n=== Best Config ===\n")
-		fmt.Printf("Funding < %.4f%%, RSI > %.0f, TP=ATR*%.1f, SL=ATR*%.1f, MaxBars=%d\n",
-			best.Cfg.FundingThreshold*100, best.Cfg.RSIMin,
+		rsiMaxLabel := "none"
+		if best.Cfg.RSIMax > 0 {
+			rsiMaxLabel = fmt.Sprintf("%.0f", best.Cfg.RSIMax)
+		}
+		fmt.Printf("Funding < %.4f%%, RSI > %.0f < %s, TP=ATR*%.1f, SL=ATR*%.1f, MaxBars=%d\n",
+			best.Cfg.FundingThreshold*100, best.Cfg.RSIMin, rsiMaxLabel,
 			best.Cfg.TPAtrMult, best.Cfg.SLAtrMult, best.Cfg.MaxHoldBars)
+		fmt.Printf("Cooldown=%d bars, MinATR=%.0f\n", best.Cfg.CooldownBars, best.Cfg.MinATR)
 		fmt.Printf("Trades=%d, WR=%.1f%%, Net=%.2f%%, PF=%.2f, MDD=%.2f%%, Sharpe=%.2f\n",
 			best.Trades, best.WR, best.NetPnL, best.PF, best.MaxDD, best.Sharpe)
 	}
@@ -215,6 +240,7 @@ func runBacktest(candles []model.Candle, fundingRates []FundingRate, cfg Config)
 	var entryPrice, sl, tp, entryFunding, entryRSI, entryATR float64
 	var entryTime time.Time
 	var entryBar int
+	lastExitBar := -999 // for cooldown
 
 	for i := 50; i < len(candles); i++ {
 		c := candles[i]
@@ -253,7 +279,13 @@ func runBacktest(candles []model.Candle, fundingRates []FundingRate, cfg Config)
 					Funding: entryFunding, RSI: entryRSI, ATR: entryATR,
 				})
 				inPosition = false
+				lastExitBar = i
 			}
+			continue
+		}
+
+		// Cooldown: wait N bars after last exit
+		if cfg.CooldownBars > 0 && (i-lastExitBar) < cfg.CooldownBars {
 			continue
 		}
 
@@ -267,9 +299,17 @@ func runBacktest(candles []model.Candle, fundingRates []FundingRate, cfg Config)
 		if rsi > 0 && rsi < cfg.RSIMin {
 			continue
 		}
+		if cfg.RSIMax > 0 && rsi > cfg.RSIMax {
+			continue
+		}
 
 		atr := calcATR(candles[:i+1], cfg.ATRPeriod)
 		if atr <= 0 {
+			continue
+		}
+
+		// MinATR filter: skip if ATR too small (SL too tight)
+		if cfg.MinATR > 0 && atr < cfg.MinATR {
 			continue
 		}
 
