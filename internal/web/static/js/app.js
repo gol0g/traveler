@@ -2119,8 +2119,17 @@ class TravelerApp {
     }
 
     renderBTCFuturesCharts(data) {
-        const scans = data.scans || [];
-        const signals = data.signals || [];
+        // Deduplicate by time (lightweight-charts requires unique ascending times)
+        const dedup = (arr) => {
+            const seen = new Set();
+            return arr.filter(s => {
+                if (seen.has(s.time)) return false;
+                seen.add(s.time);
+                return true;
+            }).sort((a, b) => a.time - b.time);
+        };
+        const scans = dedup(data.scans || []);
+        const signals = dedup(data.signals || []);
         const trades = data.trades || [];
 
         // 1. Price chart + EMA50 + trade markers
