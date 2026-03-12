@@ -38,12 +38,14 @@ echo "[1/6] Building for linux/arm64..."
 cd "${PROJECT_DIR}"
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "${BINARY}" ./cmd/traveler/
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "${PROJECT_DIR}/collector-linux-arm64" ./cmd/collector/
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "${PROJECT_DIR}/datacollector-linux-arm64" ./cmd/datacollector/
 echo "  Built: traveler=$(ls -lh "${BINARY}" | awk '{print $5}'), collector=$(ls -lh "${PROJECT_DIR}/collector-linux-arm64" | awk '{print $5}')"
 
 # 2. Upload
 echo "[2/6] Uploading binaries..."
 scp -q "${BINARY}" "${PI_USER}@${PI_HOST}:/tmp/traveler"
 scp -q "${PROJECT_DIR}/collector-linux-arm64" "${PI_USER}@${PI_HOST}:/tmp/collector"
+scp -q "${PROJECT_DIR}/datacollector-linux-arm64" "${PI_USER}@${PI_HOST}:/tmp/datacollector"
 
 # 3. Stop all + replace + restart + verify (single SSH session)
 echo "[3/6] Stopping services, replacing binary, restarting..."
@@ -64,21 +66,23 @@ sudo systemctl stop traveler-web traveler-arb traveler-binance traveler-btcfutur
 # Also stop market daemons if running (timer-triggered oneshot)
 sudo systemctl stop traveler-kr traveler-us 2>/dev/null || true
 
-# --- Kill any nohup traveler processes (sim-kr, sim-us, etc.) ---
+# --- Kill any nohup processes (sim, datacollector, etc.) ---
 echo "  Killing nohup processes..."
 SIM_PIDS=$(sudo pgrep -f 'traveler.*--sim' 2>/dev/null || true)
-if [ -n "$SIM_PIDS" ]; then
-    sudo kill $SIM_PIDS 2>/dev/null || true
-    sleep 1
-fi
+DC_PIDS=$(sudo pgrep -f 'datacollector' 2>/dev/null || true)
+for P in $SIM_PIDS $DC_PIDS; do
+    sudo kill "$P" 2>/dev/null || true
+done
+sleep 1
 
 # --- Verify all stopped ---
-REMAINING=$(sudo pgrep -af traveler 2>/dev/null | grep -v pgrep | grep -v sentinel || true)
+REMAINING=$(sudo pgrep -af 'traveler|datacollector|collector' 2>/dev/null | grep -v pgrep | grep -v sentinel || true)
 if [ -n "$REMAINING" ]; then
     echo "  WARNING: still running:"
     echo "$REMAINING"
     echo "  Force killing..."
     sudo pkill -9 -f 'traveler' 2>/dev/null || true
+    sudo pkill -9 -f 'datacollector' 2>/dev/null || true
     sleep 1
 fi
 
@@ -88,6 +92,8 @@ sudo cp /tmp/traveler /usr/local/bin/traveler
 sudo chmod +x /usr/local/bin/traveler
 sudo cp /tmp/collector /usr/local/bin/collector
 sudo chmod +x /usr/local/bin/collector
+sudo cp /tmp/datacollector /usr/local/bin/datacollector
+sudo chmod +x /usr/local/bin/datacollector
 
 # --- Restart systemd services ---
 echo "  Starting systemd services..."
@@ -109,6 +115,12 @@ fi
 if [ -d "$DATA_DIR/sim_us" ]; then
     echo "  Starting sim-us daemon..."
     nohup /usr/local/bin/traveler --daemon --market us --sim --sleep-on-exit=false --data-dir "$DATA_DIR" >> "$DATA_DIR/sim_us/daemon.log" 2>&1 &
+fi
+
+# --- Restart datacollector (BTC signals CSV for OBI chart) ---
+if [ -f /usr/local/bin/datacollector ]; then
+    echo "  Starting datacollector..."
+    nohup /usr/local/bin/datacollector "$DATA_DIR/btc_signals" >> "$DATA_DIR/daemon_datacollector.log" 2>&1 &
 fi
 
 sleep 2
