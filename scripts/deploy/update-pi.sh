@@ -37,11 +37,13 @@ echo ""
 echo "[1/6] Building for linux/arm64..."
 cd "${PROJECT_DIR}"
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "${BINARY}" ./cmd/traveler/
-echo "  Built: $(ls -lh "${BINARY}" | awk '{print $5}')"
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "${PROJECT_DIR}/collector-linux-arm64" ./cmd/collector/
+echo "  Built: traveler=$(ls -lh "${BINARY}" | awk '{print $5}'), collector=$(ls -lh "${PROJECT_DIR}/collector-linux-arm64" | awk '{print $5}')"
 
 # 2. Upload
-echo "[2/6] Uploading binary..."
+echo "[2/6] Uploading binaries..."
 scp -q "${BINARY}" "${PI_USER}@${PI_HOST}:/tmp/traveler"
+scp -q "${PROJECT_DIR}/collector-linux-arm64" "${PI_USER}@${PI_HOST}:/tmp/collector"
 
 # 3. Stop all + replace + restart + verify (single SSH session)
 echo "[3/6] Stopping services, replacing binary, restarting..."
@@ -58,7 +60,7 @@ done
 
 # --- Stop all systemd services ---
 echo "  Stopping systemd services..."
-sudo systemctl stop traveler-web traveler-arb traveler-binance traveler-crypto traveler-dca traveler-scalp traveler-kr-dca 2>/dev/null || true
+sudo systemctl stop traveler-web traveler-arb traveler-binance traveler-btcfutures traveler-collector traveler-crypto traveler-dca traveler-scalp traveler-kr-dca 2>/dev/null || true
 # Also stop market daemons if running (timer-triggered oneshot)
 sudo systemctl stop traveler-kr traveler-us 2>/dev/null || true
 
@@ -80,14 +82,16 @@ if [ -n "$REMAINING" ]; then
     sleep 1
 fi
 
-# --- Replace binary ---
-echo "  Replacing binary..."
+# --- Replace binaries ---
+echo "  Replacing binaries..."
 sudo cp /tmp/traveler /usr/local/bin/traveler
 sudo chmod +x /usr/local/bin/traveler
+sudo cp /tmp/collector /usr/local/bin/collector
+sudo chmod +x /usr/local/bin/collector
 
 # --- Restart systemd services ---
 echo "  Starting systemd services..."
-sudo systemctl start traveler-web traveler-arb traveler-binance traveler-crypto traveler-dca traveler-scalp traveler-kr-dca
+sudo systemctl start traveler-web traveler-arb traveler-binance traveler-btcfutures traveler-collector traveler-crypto traveler-dca traveler-scalp traveler-kr-dca
 # Re-trigger market daemons if within market hours (they were stopped above)
 for MARKET_SVC in traveler-kr traveler-us; do
     TIMER="${MARKET_SVC}.timer"
@@ -113,7 +117,7 @@ sleep 2
 echo ""
 echo "=== SERVICE STATUS ==="
 FAIL=0
-for svc in traveler-web traveler-arb traveler-binance traveler-crypto traveler-dca traveler-scalp traveler-kr-dca; do
+for svc in traveler-web traveler-arb traveler-binance traveler-btcfutures traveler-collector traveler-crypto traveler-dca traveler-scalp traveler-kr-dca; do
     STATUS=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
     if [ "$STATUS" = "active" ]; then
         echo "  ✓ $svc"

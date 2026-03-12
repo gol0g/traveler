@@ -2221,21 +2221,22 @@ class TravelerApp {
             }
         }
 
-        // 4. Volume chart
-        if (scans.length > 0) {
+        // 4. Volume chart (filter hold rows with volume=0)
+        const volScans = scans.filter(s => s.volume > 0);
+        if (volScans.length > 0) {
             const chart = this.createBFChart('bfChartVolume', 180);
             if (chart) {
                 const volSeries = chart.addHistogramSeries({
                     color: '#3b82f6', priceFormat: { type: 'volume' }, title: 'Volume'
                 });
-                volSeries.setData(scans.map(s => ({
+                volSeries.setData(volScans.map(s => ({
                     time: s.time, value: s.volume,
                     color: s.volume > s.avg_volume * 1.5 ? '#22c55e' : '#3b82f680'
                 })));
 
                 // Average volume line
                 const avgSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lineStyle: 2, title: 'Avg' });
-                avgSeries.setData(scans.filter(s => s.avg_volume > 0).map(s => ({ time: s.time, value: s.avg_volume })));
+                avgSeries.setData(volScans.filter(s => s.avg_volume > 0).map(s => ({ time: s.time, value: s.avg_volume })));
                 chart.timeScale().fitContent();
             }
         }
