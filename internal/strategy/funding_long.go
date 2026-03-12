@@ -285,16 +285,42 @@ func (s *FundingLongStrategy) CheckExit(ctx context.Context, pos *FundingLongPos
 		Signal: "hold",
 	}
 
-	candles, err := s.candleProv.GetRecentMinuteCandles(ctx, pos.Symbol, s.config.CandleInterval, 20)
+	candles, err := s.candleProv.GetRecentMinuteCandles(ctx, pos.Symbol, s.config.CandleInterval, s.config.CandleCount)
 	if err != nil || len(candles) == 0 {
 		return false, "", 0, scanData
 	}
 
-	latest := candles[len(candles)-1]
+	// Use completed candles for indicators (drop in-progress candle)
+	completedCandles := candles[:len(candles)-1]
+	if len(completedCandles) == 0 {
+		return false, "", 0, scanData
+	}
+
+	latest := completedCandles[len(completedCandles)-1]
 	currentPrice = latest.Close
 	pnlPct := (currentPrice - pos.EntryPrice) / pos.EntryPrice * 100
 
 	scanData.Price = currentPrice
+
+	// Fill indicators for chart logging
+	scanData.RSI7 = CalculateRSI(completedCandles, s.config.RSIPeriod)
+	scanData.ATR14 = CalculateATR(completedCandles, s.config.ATRPeriod)
+	scanData.EMA50 = CalculateEMA(completedCandles, 50)
+	scanData.Volume = float64(latest.Volume)
+	if len(completedCandles) > 1 {
+		scanData.AvgVolume = CalculateAvgVolume(completedCandles[:len(completedCandles)-1], 20)
+	}
+	// Funding rate
+	if fr, _, frErr := s.fundingProv.GetFundingRate(ctx, pos.Symbol); frErr == nil {
+		scanData.FundingRate = fr
+	}
+	// OI
+	if s.oiProv != nil {
+		if oi, oiErr := s.oiProv.GetOpenInterest(ctx, pos.Symbol); oiErr == nil && oi > 0 {
+			scanData.OI = oi
+			scanData.OIDivergence = "n/a"
+		}
+	}
 
 	// Dynamic TP/SL based on entry ATR
 	tpPrice := pos.TakeProfit
