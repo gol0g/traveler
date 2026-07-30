@@ -1,0 +1,25 @@
+{
+  "_doc": "traveler 감사 시스템 거래 귀속 맵. owner=traveler(시스템이 명령/자동매매) 또는 user(사용자 본인). 이 파일이 Toss 분리의 단일 권위. 수정 후 audit_report.py 재실행.",
+  "_updated": "2026-07-29",
+  "accounts": {
+    "upbit":      { "owner": "traveler", "strategy": "crypto_dca + upbit_scalp", "note": "데몬 전용 계좌 전량 traveler" },
+    "kis_main":   { "owner": "traveler", "strategy": "tqqq_sma225 + us_leverage_modified_b", "note": "US 레버리지 데몬 계좌" },
+    "kis_kr":     { "owner": "traveler", "strategy": "isa_portfolio_rebalancer", "note": "ISA 리밸런서 데몬 계좌" },
+    "kis_battle": { "owner": "traveler", "strategy": "hantu_battle_etf", "note": "한투배틀 데몬 계좌" },
+    "binance":    { "owner": "traveler", "strategy": "binance_short_scalp", "note": "선물 숏 스캘프 데몬 계좌" },
+    "toss":       { "owner": "mixed",    "note": "사용자+traveler 혼재. 종목별 toss_symbols 맵으로 분리" }
+  },
+  "toss_traveler_symbols": {
+    "196170":  { "note": "알테오젠 - tenbagger 시스템 Tier1 추천매수" },
+    "알테오젠":  { "note": "알테오젠 (이름 매칭)" },
+    "326030":  { "note": "SK바이오팜 - tenbagger 시스템 Tier1 추천매수" },
+    "SK바이오팜": { "note": "SK바이오팜 (이름 매칭)" },
+    "SYM":     { "note": "Symbotic - tenbagger 시스템 Tier1 추천매수(lottery frame)" },
+    "CGNX":    { "note": "Cognex - tenbagger 시스템 Tier1 추천매수(quality frame)" }
+  },
+  "toss_user_explicit": {
+    "AUR":     { "note": "오로라 - 사용자 본인 매수(2026-07-29 정정). traveler 추천 아님" },
+    "000660":  { "note": "SK하이닉스 - 사용자 본인 사이클 베팅" }
+  },
+  "default_toss_owner": "user"
+}
