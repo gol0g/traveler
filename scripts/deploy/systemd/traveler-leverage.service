@@ -1,0 +1,17 @@
+[Unit]
+Description=Traveler F&G Leverage ETF Switching (US Market)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=junghyun
+WorkingDirectory=/home/junghyun
+ExecStart=/usr/local/bin/traveler --daemon --leverage-switch --data-dir /home/junghyun/.traveler
+Restart=on-failure
+RestartSec=60
+StandardOutput=append:/home/junghyun/.traveler/daemon_leverage.log
+StandardError=append:/home/junghyun/.traveler/daemon_leverage.log
+
+[Install]
+WantedBy=multi-user.target

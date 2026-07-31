@@ -1,39 +1,8 @@
-package main
-
-import (
-	"context"
-	"fmt"
-	"time"
-
-	"traveler/internal/provider"
-	"traveler/internal/strategy"
-)
-
-func main() {
-	p := provider.NewUpbitProvider()
-	ctx := context.Background()
-
-	syms := []string{"KRW-UNI", "KRW-XRP", "KRW-LINK", "KRW-NEAR", "KRW-OP"}
-
-	for _, sym := range syms {
-		candles, err := p.GetDailyCandles(ctx, sym, 30)
-		if err != nil {
-			fmt.Printf("%s: error %v\n", sym, err)
-			continue
-		}
-
-		fmt.Printf("\n=== %s ===\n", sym)
-		fmt.Printf("%-7s %10s %10s %10s %6s\n", "Date", "Close", "Low", "High", "RSI")
-
-		for i, c := range candles {
-			rsi := 0.0
-			if i >= 15 {
-				ind := strategy.CalculateIndicators(candles[:i+1])
-				rsi = ind.RSI14
-			}
-			fmt.Printf("%-7s %10.0f %10.0f %10.0f %6.1f\n",
-				c.Time.Format("01-02"), c.Close, c.Low, c.High, rsi)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v3" manifestVersion="1.0" copyright="Copyright (c) Microsoft Corporation. All Rights Reserved.">
+  <assemblyIdentity name="Microsoft-Windows-Licenses-ServerStandard-Package" version="10.0.26100.1742" processorArchitecture="amd64" language="fi-FI" buildType="release" publicKeyToken="31bf3856ad364e35" />
+  <package identifier="Microsoft-Windows-Licenses-ServerStandard-Package" releaseType="Language Pack">
+    <parent disposition="detect" integrate="separate">
+      <assemblyIdentity name="Microsoft-Windows-Licenses-ServerStandard-Package" version="10.0.26100.1742" processorArchitecture="amd64" language="neutral" buildType="release" publicKeyToken="31bf3856ad364e35" />
+    </parent>
+    <update name="Microsoft-Window

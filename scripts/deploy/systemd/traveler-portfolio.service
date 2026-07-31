@@ -1,0 +1,18 @@
+[Unit]
+Description=Traveler KR ISA Portfolio Rebalancer (Regime-Based)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=junghyun
+Group=junghyun
+EnvironmentFile=/home/junghyun/.traveler/.env
+ExecStart=/usr/local/bin/traveler --daemon --portfolio-rebalance --data-dir /home/junghyun/.traveler
+Restart=always
+RestartSec=30
+StandardOutput=append:/home/junghyun/.traveler/daemon_portfolio.log
+StandardError=append:/home/junghyun/.traveler/daemon_portfolio.log
+
+[Install]
+WantedBy=multi-user.target

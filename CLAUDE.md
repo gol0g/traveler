@@ -15,46 +15,26 @@
 ```
 이 패턴이 감지되면 즉시 중단. 백테스트 그리드 서치로 최적값을 찾아라.
 
+## 전략 status와 파라미터의 단일 권위
+
+**`strategy_manifest.yaml`** (파이: `~/strategy_manifest.yaml`)이 모든 전략의 status·Governor 한도·검증된 파라미터의 유일한 권위다. 코드 수정 전 이 파일을 읽고 status를 검증할 것. manifest에 없는 전략의 주문은 governance가 차단한다.
+
 ## 배포
 
 - 빌드: `GOOS=linux GOARCH=arm64 go build -o traveler-linux-arm64 ./cmd/traveler/`
 - 배포: `bash scripts/deploy/update-pi.sh` (전 서비스 stop → binary 교체 → 전 서비스 start)
-- 서비스: traveler-web, traveler-arb, traveler-binance, traveler-crypto, traveler-dca, traveler-scalp, traveler-kr-dca
-- 타이머: traveler-us.timer (23:20 KST), traveler-kr.timer (08:40 KST)
-- Pi: `junghyun@100.78.139.68` (Tailscale), binary `/usr/local/bin/traveler`
+- Pi: `junghyun@100.78.139.68` (Tailscale), binary `/usr/local/bin/traveler`, 데이터 `~/.traveler/`
+- 서비스 11종: traveler-web(:8080), battle-etf, binance, btc-futures, collector, crypto, datacollector, dca, leverage, macro, portfolio
+- 타이머: traveler-us.timer (23:20 KST), traveler-kr.timer (08:40 KST), macro.timer (07:00 KST)
 
 ## API 주의사항
 
 - Binance/Upbit klines API 마지막 캔들은 미완성 → 분석 시 `candles[:len-1]` 사용
 - MATICUSDT 상장 폐지 (POL 리브랜딩) — Symbol is closed 에러 발생
+- KIS 토큰 발급은 1분당 1회 제한(EGW00133), 조회는 초당 건수 제한(EGW00215) → 한 사이클에서 토큰 재요청 금지
+- Upbit RSI 스캘프: **EMA50 필터 절대 제거 금지** (제거 시 -31%)
 
-## 현재 전략 파라미터 (2026-03-08)
+## 2026-07 디스크 사고 관련
 
-### US Stock (breakout-bull)
-- Bull: ETF momentum + TQQQ/SMA + breakout
-- Sideways/Bear: ETF momentum + oversold
-- 백테스트: Sharpe 0.60, +2.2%
-
-### KR Stock (extended-hold)
-- Bull: ETF momentum + breakout (보유 20일)
-- Sideways: ETF momentum + mean-reversion + oversold
-- Bear: ETF momentum + oversold
-- ETF momentum: KODEX200 RSI(14)>70 과매수 필터 (진입 차단)
-- 백테스트: Sharpe 2.05, +23.6%
-
-### Upbit RSI Scalp (9페어)
-- RSI(7)<30 entry, >60 exit, TP +2.5%, SL -2.5%, MaxBars 32
-- EMA50 필터 절대 제거 금지 (제거 시 -31%)
-- 페어: ETH, LINK, SOL, AVAX, SUI, XRP, ADA, DOGE, TRX
-
-### Binance Short Scalp (8페어)
-- RSI(7)>75 entry, <45 exit, TP 3%, SL 3%, MaxBars 32
-- EMA50 below 필터, $80/건 × 2x 레버리지, 최대 4포지션
-- 페어: ETH, SOL, XRP, LINK, DOGE, ADA, AVAX, BNB
-- 백테스트: 86건, WR 77%, PF 2.97, MDD 4.1%
-
-### BTC Futures Funding Long
-- 펀딩비 < -0.005%, RSI > 40, MinATR 300, TP ATR×2.5, SL ATR×1.5, MaxBars 48
-
-### Funding Arb (BTCUSDT)
-- Spot long + Futures short, 펀딩비 > 0.01% 진입, 음수 시 청산
+- 2026-03-12 이후 작성된 Go 소스는 로컬·파이 모두 소실(바이너리만 배포하는 방식이었음). 현재 파이에서 도는 것은 7/6 빌드 바이너리다.
+- 소스 재작성 시 참조: GitHub 3/12판(`Desktop/traveler-github`), 파이 백업(`pi_backup_2026-07-20`), strategy_manifest.yaml
